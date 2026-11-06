@@ -72,7 +72,8 @@ include { collect_positions; dataset_name; check_environment } from './modules/c
 include { flat_field_init_wf; flat_field_run_wf } from './modules/flat_field'
 include { deskew_init_wf; deskew_run_wf } from './modules/deskew'
 include { reconstruct_init_wf; reconstruct_tf_wf; reconstruct_run_wf } from './modules/reconstruct'
-include { virtual_stain_init_wf; virtual_stain_run_wf } from './modules/virtual_stain'
+include { reconstruct_run_wf as reconstruct_rest_run_wf } from './modules/reconstruct'
+include { virtual_stain_init_wf; virtual_stain_run_wf; virtual_stain_source_channels } from './modules/virtual_stain'
 include { assemble_init_wf; assemble_run_wf } from './modules/assembly'
 include { project_init_wf; project_run_wf } from './modules/project'
 include { segment_init_wf; segment_run_wf } from './modules/segment'
@@ -429,35 +430,57 @@ workflow {
     deskew_done = deskew_run_wf(all_positions, ff_output, deskew_output,
                                 params.deskew_config, dk_init.resources, ff_done.done)
 
-    // The transfer function is built from the deskewed plate's SHAPE alone, so
-    // it is gated on init_done rather than on the deskew data. It overlaps
+    // The transfer functions are built from the deskewed plate's SHAPE alone, so
+    // they are gated on init_done rather than on the deskew data. They overlap
     // flat-field and deskew instead of sitting between them and reconstruction.
+    // One task per reconstruction of the reconstruct config.
     tf = reconstruct_tf_wf(deskew_output, reconstruct_output, params.reconstruct_config,
-                           init_done)
+                           rc_init.resources, init_done)
 
-    // Phase reconstruction runs on the deskewed output. Which channel is
-    // reconstructed is set by `input_channel_names` in the reconstruct config.
-    reconstruct_done = reconstruct_run_wf(all_positions, deskew_output, reconstruct_output,
-                                          params.reconstruct_config, rc_init.resources,
-                                          tf.done, deskew_done.done)
+    // Reconstruction runs on the deskewed output, every reconstruction of the
+    // config (e.g. phase from BF, Richardson-Lucy deconvolution of GFP and
+    // mCherry) as its own per-position tasks into the one output plate. They
+    // run in two groups: the reconstructions writing the channels virtual
+    // staining reads (phase, for Phase3D) and the rest. Virtual staining waits
+    // only for the first group, so its preprocess and prediction run beside the
+    // fluorescence deconvolutions instead of after them; assemble waits for
+    // both. Each group is one invocation of reconstruct_run_wf, because its
+    // `done` fires only when every task of that invocation has finished.
+    def vs_sources = virtual_stain_source_channels(params.virtual_stain_config)
+    tf_groups = tf.done.branch { meta ->
+        vs_input: meta.channels.any { c -> c in vs_sources }
+        rest: true
+    }
+    rc_vs_input = reconstruct_run_wf(all_positions, deskew_output, reconstruct_output,
+                                     params.reconstruct_config, tf_groups.vs_input,
+                                     deskew_done.done)
+    rc_rest = reconstruct_rest_run_wf(all_positions, deskew_output, reconstruct_output,
+                                      params.reconstruct_config, tf_groups.rest,
+                                      deskew_done.done)
+    reconstruct_done = rc_vs_input.done.map { 'done' }
+        .combine(rc_rest.done.map { 'done' })
+        .map { _vs_input, _rest -> 'done' }
 
     // Virtual staining runs cytoland (VisCy) prediction on the reconstructed
-    // output. Its `viscy preprocess` pass reads every position's pixels and
-    // writes the normalization statistics prediction reads back, which is why
-    // this step keeps a whole-plate barrier ahead of it.
+    // output. Its `viscy preprocess` pass reads every position's source channels
+    // and writes the normalization statistics prediction reads back, which is
+    // why this step keeps a whole-plate barrier ahead of it.
     virtual_stain_done = virtual_stain_run_wf(all_positions, reconstruct_output,
                                               virtual_stain_output,
                                               params.virtual_stain_config,
-                                              vs_init.resources, reconstruct_done.done)
+                                              vs_init.resources, rc_vs_input.done)
 
     // Concatenate the deskew, reconstruct and virtual-stain outputs channel-wise
     // into a single multichannel plate, one task per position like every other
-    // step (one `-i` per source store; see modules/assembly.nf).
+    // step (one `-i` per source store; see modules/assembly.nf). It reads every
+    // reconstruction, so it also waits for the ones virtual staining did not.
     if (assemble_on) {
         assemble_done = assemble_run_wf(all_positions, deskew_output, reconstruct_output,
                                         virtual_stain_output, assemble_output,
                                         params.concatenate_config, as_init.resources,
-                                        virtual_stain_done.done)
+                                        virtual_stain_done.done.map { 'done' }
+                                            .combine(reconstruct_done)
+                                            .map { _vs, _rc -> 'done' })
     }
 
     // Projection reads the assembled plate, one task per position, and writes the
@@ -636,7 +659,7 @@ workflow {
         [label: 'initialize',           done: init_done,                 output: out],
         [label: 'flat-field',           done: ff_done.done,              output: ff_output],
         [label: 'deskew',               done: deskew_done.done,          output: deskew_output],
-        [label: 'phase reconstruction', done: reconstruct_done.done,     output: reconstruct_output],
+        [label: 'reconstruction',       done: reconstruct_done,          output: reconstruct_output],
         [label: 'virtual staining',     done: virtual_stain_done.done,   output: virtual_stain_output],
     ]
     if (assemble_on) step_events << [label: 'assemble', done: assemble_done.done, output: assemble_output]

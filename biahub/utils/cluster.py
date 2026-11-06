@@ -14,7 +14,7 @@ import numpy as np
 from numpy.typing import DTypeLike
 
 
-def echo_resources(num_cpus: int, mem_gb: int, time_minutes: int) -> None:
+def echo_resources(num_cpus: int, mem_gb: int, time_minutes: int, **fields) -> None:
     """Emit the per-position resource request consumed by the Nextflow pipeline.
 
     Every step CLI calls this from its ``--init`` path so there is a single
@@ -36,11 +36,14 @@ def echo_resources(num_cpus: int, mem_gb: int, time_minutes: int) -> None:
         TOTAL memory per position in GB (not per-CPU).
     time_minutes : int
         Wall-clock budget per position in minutes.
+    **fields
+        Further JSON-serializable keys for steps whose init sizes more than one kind
+        of task (reconstruct emits one line per reconstruction, naming it).
     """
     # Coerce to plain int: estimators may return numpy integers, which json
     # cannot serialize.
     payload = {"cpus": int(num_cpus), "mem_gb": int(mem_gb), "time_minutes": int(time_minutes)}
-    click.echo("RESOURCES:" + json.dumps(payload))
+    click.echo("RESOURCES:" + json.dumps(payload | fields))
 
 
 def local_executor_parameters(timeout_min: float, gpu: bool = True) -> dict:

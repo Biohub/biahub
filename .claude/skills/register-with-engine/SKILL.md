@@ -63,8 +63,9 @@ method -- for ants, pick one FOV with good structure); several give one list eac
 Locations differ per project family (`references/datasets.md`). Check both stores exist for
 the beads well and read one chunk. If the project's `1-preprocess` intermediates were
 cleaned, regenerate just the beads FOV first (deskew and reconstruct that position with the
-project's own `deskew_settings.yml` / `phase_config.yaml`, into a separate folder; give each
-reconstruct its own folder, since they share the transfer-function file name).
+project's own `deskew_settings.yml` / `phase_config.yaml`, the latter nested under
+`reconstructions:`, into a separate folder; give each reconstruct its own folder, since
+they share the transfer-function folder; see `references/datasets.md`).
 
 ## 3. Identify the beads well
 

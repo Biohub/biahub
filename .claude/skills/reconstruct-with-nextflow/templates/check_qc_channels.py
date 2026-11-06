@@ -80,13 +80,14 @@ def assembled_channels(raw_zarr, reconstruct_cfg, virtual_stain_cfg):
     with open_ome_zarr(str(raw_zarr), mode="r") as s:
         _, fov = next(iter(s.positions()))
         raw = list(fov.channel_names)  # flat-field and deskew preserve names
-    from waveorder.cli.settings import ReconstructionSettings
+    from biahub.settings import ReconstructSettings
 
-    rc = ReconstructionSettings(**yaml.safe_load(Path(reconstruct_cfg).read_text()))
+    rc = ReconstructSettings(**yaml.safe_load(Path(reconstruct_cfg).read_text()))
     vs = yaml.safe_load(Path(virtual_stain_cfg).read_text())
     tgt = vs["data"]["init_args"]["target_channel"]
     tgt = [tgt] if isinstance(tgt, str) else list(tgt)
-    return raw + list(rc.output_channel_names) + tgt
+    reconstructed = [c for r in rc.reconstructions.values() for c in r.output_channel_names]
+    return raw + reconstructed + tgt
 
 
 def instance_count_entries(qc_cfg):

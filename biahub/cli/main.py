@@ -123,17 +123,17 @@ COMMANDS = [
     {
         "name": "compute-tf",
         "import_path": "biahub.compute_transfer_function.compute_transfer_function_cli",
-        "help": "Compute transfer function using PSF",
+        "help": "Compute the transfer functions of a reconstruct config",
     },
     {
         "name": "apply-inv-tf",
         "import_path": "biahub.apply_inverse_transfer_function.apply_inverse_transfer_function_cli",
-        "help": "Apply inverse transfer function to dataset",
+        "help": "Apply the inverse transfer functions of a reconstruct config",
     },
     {
         "name": "reconstruct",
         "import_path": "biahub.reconstruct.reconstruct_cli",
-        "help": "Reconstruct a dataset using config",
+        "help": "Reconstruct phase/birefringence and deconvolve fluorescence",
     },
     {
         "name": "estimate-psf",

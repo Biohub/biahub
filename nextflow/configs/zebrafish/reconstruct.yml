@@ -1,25 +1,87 @@
-# input_channel_names must match the brightfield channel name in the DESKEWED
-# store exactly — a mismatch fails at compute_transfer_function, after
-# flat-field and deskew have already run.
-input_channel_names: ["BF"]
-time_indices: "all"
-reconstruction_dimension: 3
-phase:
-  transfer_function:
-    # Pixel sizes of the DESKEWED store, derived from deskew.yml. waveorder does
-    # not read them from the zarr: omitted, they silently default to 0.1 / 0.25.
-    #   yx_pixel_size = pixel_size_um
-    #   z_pixel_size  = average_n_slices * sin(ls_angle_deg) * pixel_size_um
-    yx_pixel_size: 0.1133
-    z_pixel_size: 0.17
-    wavelength_illumination: 0.532
-    z_padding: 5
-    index_of_refraction_media: 1.4
-    numerical_aperture_detection: 1.35
-    numerical_aperture_illumination: 0.52
-    invert_phase_contrast: false
-  apply_inverse:
-    reconstruction_algorithm: Tikhonov
-    regularization_strength: 0.01
-    TV_rho_strength: 0.001
-    TV_iterations: 1
+# One waveorder config per named reconstruction, all read from the DESKEWED
+# store and written into one reconstruct plate. Each name gets its own transfer
+# function (2-reconstruct/transfer_functions/<name>.zarr) and its own
+# per-position tasks; `biahub compute-tf` / `apply-inv-tf -r <name>` run one.
+#
+# input_channel_names must match the channel names in the DESKEWED store
+# exactly — a mismatch fails at compute_transfer_function, after flat-field and
+# deskew have already run.
+#
+# Pixel sizes of the DESKEWED store, derived from deskew.yml. waveorder does
+# not read them from the zarr: omitted, they silently default to 0.1 / 0.25.
+#   yx_pixel_size = pixel_size_um
+#   z_pixel_size  = average_n_slices * sin(ls_angle_deg) * pixel_size_um
+reconstructions:
+  phase:
+    input_channel_names: ["BF"]
+    time_indices: "all"
+    reconstruction_dimension: 3
+    phase:
+      transfer_function:
+        yx_pixel_size: 0.1133
+        z_pixel_size: 0.17
+        wavelength_illumination: 0.532
+        z_padding: 5
+        index_of_refraction_media: 1.4
+        numerical_aperture_detection: 1.35
+        numerical_aperture_illumination: 0.52
+        invert_phase_contrast: false
+      apply_inverse:
+        reconstruction_algorithm: Tikhonov
+        regularization_strength: 0.01
+        TV_rho_strength: 0.001
+        TV_iterations: 1
+
+  # Richardson-Lucy deconvolution of the two fluorescence channels, on a GPU
+  # (`device: cuda`), into "<channel>_Density3D". The settings were chosen from
+  # single-volume sweeps on the mantis V2 neuromast time-lapse
+  # 2026_06_11_dynatrack_debug_48hpf (FOV 0/2/2): the confocal-pinhole model
+  # with a 4 um pinhole (sample space), 160 iterations, matched back projector.
+  #
+  # rl.background is the RL forward model's constant background, in counts, and
+  # depends on the dataset: the mean of the empty voxels of the deskewed input
+  # at t = 0. The values below were measured on 2026_06_11 (camera offset 30).
+  # The QC step's per-volume median (tables/qc/stage5_position.parquet, metric
+  # intensity_stats_median) at t = 0 is within 0.1 of it, since most voxels are
+  # empty.
+  gfp:
+    input_channel_names: ["GFP EX488 EM525-45"]
+    time_indices: "all"
+    reconstruction_dimension: 3
+    device: cuda
+    fluorescence:
+      transfer_function:
+        yx_pixel_size: 0.1133
+        z_pixel_size: 0.16995
+        z_padding: 16
+        index_of_refraction_media: 1.40
+        numerical_aperture_detection: 1.35
+        wavelength_emission: 0.525
+        confocal_pinhole_diameter: 4.0
+      apply_inverse:
+        reconstruction_algorithm: RL
+        rl:
+          iterations: 160
+          background: 31.01
+          back_projector: matched
+
+  mcherry:
+    input_channel_names: ["mCherry EX561 EM600-37"]
+    time_indices: "all"
+    reconstruction_dimension: 3
+    device: cuda
+    fluorescence:
+      transfer_function:
+        yx_pixel_size: 0.1133
+        z_pixel_size: 0.16995
+        z_padding: 16
+        index_of_refraction_media: 1.40
+        numerical_aperture_detection: 1.35
+        wavelength_emission: 0.600
+        confocal_pinhole_diameter: 4.0
+      apply_inverse:
+        reconstruction_algorithm: RL
+        rl:
+          iterations: 160
+          background: 31.21
+          back_projector: matched

@@ -24,7 +24,8 @@
 //   resources       value map from parse_resources          (<step>_init_wf)
 //   collected_done  `run_<step> | collect` — a LIST         (<step>_run_wf)
 //   single_done     run_concatenate's single output path    (assemble_run_wf)
-//   tf_done         compute_transfer_function's `val true`  (reconstruct_tf_wf)
+//   tf_done         compute_transfer_function's RESOURCES map, one per
+//                   reconstruction                         (reconstruct_tf_wf)
 //   queue_trigger   an N-item queue fed to a step's init   (<step>_init_wf)
 
 nextflow.enable.dsl = 2
@@ -44,7 +45,11 @@ workflow {
     resources      = channel.value(meta)
     collected_done = channel.fromList(keys).collect()      // a step's `done`: a LIST
     single_done    = channel.value('/path/out.zarr')  // run_concatenate's `done`
-    tf_done        = channel.value(true)
+    // compute_transfer_function emits each reconstruction's RESOURCES map
+    tf_done        = channel.fromList([
+        meta + [reconstruction: 'phase', channels: ['Phase3D'], gpus: 0],
+        meta + [reconstruction: 'gfp', channels: ['GFP_Density3D'], gpus: 1],
+    ])
 
     // flat_field_run_wf / deskew_run_wf / track_run_wf
     positions.flatMap { it }
@@ -54,14 +59,34 @@ workflow {
         .collect()
         .subscribe { check('per-position gate', it.size(), keys.size() * 2) }
 
-    // reconstruct_run_wf — two gates
-    positions.flatMap { it }
-        .combine(resources)
-        .combine(tf_done.map { 'ready' })
+    // reconstruct_run_wf — a task per reconstruction and position, split by GPU
+    tasks = tf_done
+        .combine(positions.flatMap { items -> items })
         .combine(collected_done.map { 'done' })
-        .map { pos, m, _tf, _gate -> [pos, m] }
-        .collect()
-        .subscribe { check('reconstruct gate', it.size(), keys.size() * 2) }
+        .map { m, pos, _gate -> [pos, m] }
+        .branch { _pos, m ->
+            gpu: m.gpus > 0
+            cpu: true
+        }
+    tasks.cpu.map { pos, m -> [pos, m.reconstruction] }
+        .collect(flat: false)
+        .subscribe { got -> check('reconstruct gate (cpu)', got, keys.collect { k -> [k, 'phase'] }) }
+    tasks.gpu.map { pos, m -> [pos, m.reconstruction] }
+        .collect(flat: false)
+        .subscribe { got -> check('reconstruct gate (gpu)', got, keys.collect { k -> [k, 'gfp'] }) }
+
+    // reconstruct_run_wf's `done` for a group given no reconstruction: it must
+    // still fire, or the assemble gate below would never open.
+    channel.empty().collect().ifEmpty([])
+        .map { 'done' }
+        .subscribe { got -> check('empty reconstruction group', got, 'done') }
+
+    // mantis-v2: assemble waits for virtual staining and every reconstruction
+    collected_done.map { 'done' }
+        .combine(collected_done.map { 'done' }.combine(channel.value([]).map { 'done' })
+                     .map { _vs_input, _rest -> 'done' })
+        .map { _vs, _rc -> 'done' }
+        .subscribe { got -> check('assemble after every reconstruction', got, 'done') }
 
     // assemble_run_wf — single-shot, gate only
     resources.combine(collected_done.map { 'done' })

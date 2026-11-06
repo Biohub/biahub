@@ -5,7 +5,7 @@
 The data acquired by Micromanager is converted to ome zarr format using [iohub](https://github.com/czbiohub-sf/iohub) library.
 
 ## Quantitative label-free (phase) reconstruction
-Brightfield volumes were reconstructed to get phase information using [waveorder](https://github.com/mehta-lab/waveorder). Phase image is more informative as it enhances the morphological features visible in the brightfield images and adds information on the relative density distribution in cells.
+Brightfield volumes were reconstructed to get phase information using [waveorder](https://github.com/Biohub/waveorder). Phase image is more informative as it enhances the morphological features visible in the brightfield images and adds information on the relative density distribution in cells.
 
 ## Image registration
 The three image channels were registered using [biahub](https://github.com/czbiohub-sf/biahub). BF and fluorescence channels were misregistered due to different views of the two different cameras, and the two fluorescence channels were misregistered due to differences in optics used for filtering the specific wavelengths of light.

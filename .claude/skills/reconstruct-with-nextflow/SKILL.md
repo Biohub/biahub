@@ -249,7 +249,8 @@ over-predict).
 
 ### 5b. Check the reconstruct pixel sizes against the deskew geometry
 
-`reconstruct.yml`'s `yx_pixel_size` / `z_pixel_size` must describe the
+The `yx_pixel_size` / `z_pixel_size` of every reconstruction in
+`reconstruct.yml` (phase and each fluorescence deconvolution) must describe the
 deskewed store, which `deskew.yml` determines (`references/caveats.md` §3).
 waveorder does not read them from the zarr, so a stale or missing value
 silently yields a wrong transfer function. Run from the biahub checkout:
@@ -258,12 +259,14 @@ silently yields a wrong transfer function. Run from the biahub checkout:
 .venv/bin/python - <OUTPUT>/configs <<'EOF'
 import math, sys, yaml
 d = yaml.safe_load(open(f"{sys.argv[1]}/deskew.yml"))
-tf = yaml.safe_load(open(f"{sys.argv[1]}/reconstruct.yml"))["phase"]["transfer_function"]
+recons = yaml.safe_load(open(f"{sys.argv[1]}/reconstruct.yml"))["reconstructions"]
+tfs = {name: r[kind]["transfer_function"] for name, r in recons.items()
+       for kind in ("phase", "fluorescence") if kind in r}
 px = d["pixel_size_um"]
 want = {"yx_pixel_size": px,
         "z_pixel_size": d.get("average_n_slices", 3) * math.sin(math.radians(d["ls_angle_deg"])) * px}
-bad = [f"{k}: config={tf.get(k)} expected={v:.4f}" for k, v in want.items()
-       if tf.get(k) is None or not math.isclose(tf[k], v, rel_tol=0.01)]
+bad = [f"{name}.{k}: config={tf.get(k)} expected={v:.4f}" for name, tf in tfs.items()
+       for k, v in want.items() if tf.get(k) is None or not math.isclose(tf[k], v, rel_tol=0.01)]
 print("\n".join(bad) or "pixel sizes OK"); sys.exit(bool(bad))
 EOF
 ```

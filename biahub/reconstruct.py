@@ -2,10 +2,6 @@ from pathlib import Path
 
 import click
 
-from waveorder.cli.compute_transfer_function import (
-    compute_transfer_function_cli as compute_transfer_function,
-)
-
 from biahub.apply_inverse_transfer_function import apply_inverse_transfer_function
 from biahub.cli.parsing import (
     cluster,
@@ -13,15 +9,18 @@ from biahub.cli.parsing import (
     input_position_dirpaths,
     monitor,
     output_dirpath,
+    reconstruction_names,
     resume,
     sbatch_filepath,
 )
+from biahub.compute_transfer_function import compute_transfer_functions
 
 
 @click.command("reconstruct")
 @input_position_dirpaths()
 @config_filepath()
 @output_dirpath()
+@reconstruction_names()
 @sbatch_filepath()
 @cluster()
 @monitor()
@@ -30,51 +29,46 @@ def reconstruct_cli(
     input_position_dirpaths: list[Path],
     config_filepath: Path,
     output_dirpath: Path,
+    reconstruction_names: tuple[str, ...] = (),
     sbatch_filepath: str | None = None,
     cluster: str = "slurm",
     monitor: bool = False,
     resume: bool = False,
 ):
-    """Reconstruct a dataset using a configuration file.
+    """Reconstruct a dataset using a reconstruct config.
 
-    This is a convenience function for a `compute-tf` call followed by a
-    `apply-inv-tf` call.
+    This is a convenience function for a `compute-tf` call followed by an
+    `apply-inv-tf` call, for every reconstruction under the config's
+    `reconstructions:` (or those named with -r).
 
-    Calculates the transfer function based on the shape of the first position
-    in the list `input-position-dirpaths`, then applies that transfer function
-    to all positions in the list `input-position-dirpaths`, so all positions
-    must have the same TCZYX shape.
+    Calculates the transfer functions from the shape of the first position in
+    the list `input-position-dirpaths`, into `transfer_functions/` beside the
+    output plate, then applies them to all positions in the list
+    `input-position-dirpaths`, so all positions must have the same TCZYX shape.
 
-    See https://github.com/mehta-lab/waveorder/tree/main/docs/examples for example configuration files.
+    See https://github.com/Biohub/waveorder/tree/main/docs/examples/cli/configs for the
+    waveorder settings each reconstruction takes.
 
     \b
-    >>> biahub reconstruct -i ./input.zarr/*/*/* -c ./examples/birefringence.yml -o ./output.zarr
+    >>> biahub reconstruct -i ./input.zarr/*/*/* -c ./reconstruct.yml -o ./output.zarr
     """  # noqa: D301
-    # glob all positions in input_position_dirpaths
-
-    # Handle transfer function path
-    transfer_function_path = output_dirpath.parent / Path(
-        "transfer_function_" + config_filepath.stem + ".zarr"
-    )
-
-    # Compute transfer function
-    # call cli function directly
-    compute_transfer_function(
+    transfer_functions_dirpath = Path(output_dirpath).parent / "transfer_functions"
+    compute_transfer_functions(
         input_position_dirpaths[0],
         config_filepath,
-        transfer_function_path,
+        transfer_functions_dirpath,
+        reconstruction_names,
     )
-
-    # Apply inverse transfer function
     apply_inverse_transfer_function(
         input_position_dirpaths,
-        transfer_function_path,
+        transfer_functions_dirpath,
         config_filepath,
         output_dirpath,
         sbatch_filepath,
         cluster,
         monitor,
         resume=resume,
+        reconstruction_names=reconstruction_names,
     )
 
 

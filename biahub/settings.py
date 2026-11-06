@@ -1,3 +1,4 @@
+import re
 import warnings
 
 from itertools import product
@@ -22,6 +23,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from waveorder.cli.settings import ReconstructionSettings
 
 
 # All settings classes inherit from MyBaseModel, which forbids extra parameters to guard against typos
@@ -819,6 +821,61 @@ class DeconvolveSettings(MyBaseModel):
     regularization_strength: PositiveFloat = 0.001
     # When None, preserve the OME-Zarr version of the input store.
     output_ome_zarr_version: Literal["0.4", "0.5"] | None = None
+
+
+# Names one reconstruction of the reconstruct step: its transfer function
+# (`<tf dir>/<name>.zarr`) and its Nextflow tasks.
+RECONSTRUCTION_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_-]*"
+
+
+class ReconstructSettings(MyBaseModel):
+    """The reconstruct step: named waveorder reconstructions of one input plate.
+
+    Each entry under ``reconstructions`` is a complete waveorder config. waveorder
+    takes one kind of reconstruction per config (fluorescence cannot share a
+    config with phase or birefringence, and reads exactly one channel), so a step
+    that reconstructs phase from BF and deconvolves GFP and mCherry lists three
+    entries. Each gets its own transfer function and its own per-position runs,
+    and all of them write their channels into the one output plate.
+    """
+
+    reconstructions: dict[str, ReconstructionSettings] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_bare_waveorder_config(cls, data):
+        waveorder_keys = set(ReconstructionSettings.model_fields)
+        if isinstance(data, dict) and waveorder_keys & set(data):
+            raise ValueError(
+                "a reconstruct config lists its reconstructions by name under "
+                "`reconstructions:`; nest this waveorder config under a name, e.g. "
+                "`reconstructions: {phase: <this config>}`"
+            )
+        return data
+
+    @field_validator("reconstructions")
+    @classmethod
+    def _check_names(cls, reconstructions):
+        bad = [n for n in reconstructions if not re.fullmatch(RECONSTRUCTION_NAME_PATTERN, n)]
+        if bad:
+            raise ValueError(
+                f"reconstruction names {bad} must start with a letter or digit and "
+                "contain only letters, digits, '_' and '-'"
+            )
+        return reconstructions
+
+    @model_validator(mode="after")
+    def _check_output_channels(self):
+        writer = {}
+        for name, settings in self.reconstructions.items():
+            for channel in settings.output_channel_names:
+                if channel in writer:
+                    raise ValueError(
+                        f"reconstructions {writer[channel]!r} and {name!r} both write "
+                        f"channel {channel!r}"
+                    )
+                writer[channel] = name
+        return self
 
 
 class CharacterizeSettings(MyBaseModel):

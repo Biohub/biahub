@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 import yaml
@@ -7,33 +9,67 @@ from iohub.ngff import TransformationMeta, open_ome_zarr
 
 from biahub.cli.main import cli
 
+PHASE = {
+    "input_channel_names": ["Phase3D"],
+    "time_indices": "all",
+    "reconstruction_dimension": 3,
+    "phase": {
+        "transfer_function": {
+            "wavelength_illumination": 0.450,
+            "yx_pixel_size": 0.1,
+            "z_pixel_size": 0.25,
+            "z_padding": 0,
+            "index_of_refraction_media": 1.3,
+            "numerical_aperture_detection": 1.2,
+            "numerical_aperture_illumination": 0.5,
+            "invert_phase_contrast": False,
+        },
+        "apply_inverse": {
+            "reconstruction_algorithm": "Tikhonov",
+            "regularization_strength": 1e-3,
+        },
+    },
+}
+
+# Deconvolves the test plate's one channel, so it writes Phase3D_Density3D.
+FLUORESCENCE = {
+    "input_channel_names": ["Phase3D"],
+    "time_indices": "all",
+    "reconstruction_dimension": 3,
+    "fluorescence": {
+        "transfer_function": {
+            "yx_pixel_size": 0.1,
+            "z_pixel_size": 0.25,
+            "wavelength_emission": 0.5,
+            "confocal_pinhole_diameter": 4.0,
+        },
+        "apply_inverse": {"reconstruction_algorithm": "RL", "rl": {"iterations": 3}},
+    },
+}
+
+
+def write_config(path, **reconstructions):
+    path.write_text(yaml.dump({"reconstructions": reconstructions}, sort_keys=False))
+    return path
+
+
+def run(*args):
+    result = CliRunner().invoke(cli, [str(a) for a in args])
+    assert result.exit_code == 0, result.output
+    return result
+
+
+def resources_lines(output):
+    return [
+        json.loads(line.removeprefix("RESOURCES:"))
+        for line in output.splitlines()
+        if line.startswith("RESOURCES:")
+    ]
+
 
 @pytest.fixture()
 def reconstruct_config(tmp_path):
-    cfg = {
-        "input_channel_names": ["Phase3D"],
-        "time_indices": "all",
-        "reconstruction_dimension": 3,
-        "phase": {
-            "transfer_function": {
-                "wavelength_illumination": 0.450,
-                "yx_pixel_size": 0.1,
-                "z_pixel_size": 0.25,
-                "z_padding": 0,
-                "index_of_refraction_media": 1.3,
-                "numerical_aperture_detection": 1.2,
-                "numerical_aperture_illumination": 0.5,
-                "invert_phase_contrast": False,
-            },
-            "apply_inverse": {
-                "reconstruction_algorithm": "Tikhonov",
-                "regularization_strength": 1e-3,
-            },
-        },
-    }
-    config_path = tmp_path / "reconstruct.yml"
-    config_path.write_text(yaml.dump(cfg, default_flow_style=False))
-    return config_path
+    return write_config(tmp_path / "reconstruct.yml", phase=PHASE)
 
 
 @pytest.fixture()
@@ -52,8 +88,8 @@ def reconstruct_plate(tmp_path):
 
     for row, col, fov in position_list:
         position = plate.create_position(row, col, fov)
-        # Match the pixel sizes declared in reconstruct_config so waveorder
-        # doesn't emit a PixelSizeMismatchWarning during reconstruction.
+        # Match the pixel sizes declared in the configs so waveorder doesn't
+        # emit a PixelSizeMismatchWarning during reconstruction.
         position.create_image(
             "0",
             np.random.uniform(1.0, 100.0, size=(1, 1, 5, 8, 8)).astype(np.float32),
@@ -67,25 +103,95 @@ def reconstruct_plate(tmp_path):
 def test_apply_inv_tf_cli_init_only(tmp_path, reconstruct_plate, reconstruct_config):
     output_path = tmp_path / "output.zarr"
 
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        [
-            "apply-inv-tf",
-            "--init",
-            "-i",
-            str(reconstruct_plate) + "/A/1/0",
-            str(reconstruct_plate) + "/B/1/0",
-            "-c",
-            str(reconstruct_config),
-            "-o",
-            str(output_path),
-        ],
+    result = run(
+        "apply-inv-tf",
+        "--init",
+        "-i",
+        f"{reconstruct_plate}/A/1/0",
+        f"{reconstruct_plate}/B/1/0",
+        "-c",
+        reconstruct_config,
+        "-o",
+        output_path,
     )
 
-    assert result.exit_code == 0, result.output
     assert output_path.exists()
     assert "RESOURCES:" in result.output
+
+
+def test_apply_inv_tf_init_sizes_each_reconstruction(tmp_path, reconstruct_plate):
+    """--init writes every reconstruction's channels into one plate and emits one
+    RESOURCES line per reconstruction, which the pipeline routes by name: a GPU
+    reconstruction asks for a GPU and runs one worker."""
+    config = write_config(
+        tmp_path / "reconstruct.yml",
+        phase=PHASE,
+        gfp=FLUORESCENCE | {"device": "cuda"},
+    )
+    output_path = tmp_path / "output.zarr"
+
+    result = run(
+        "apply-inv-tf", "--init", "-i", f"{reconstruct_plate}/A/1/0",
+        "-c", config, "-o", output_path,
+    )  # fmt: skip
+
+    with open_ome_zarr(output_path / "A" / "1" / "0") as reconstructed:
+        assert reconstructed.channel_names == ["Phase3D", "Phase3D_Density3D"]
+    phase, gfp = resources_lines(result.output)
+    assert (phase["reconstruction"], phase["gpus"]) == ("phase", 0)
+    assert (gfp["reconstruction"], gfp["gpus"]) == ("gfp", 1)
+    assert gfp["tf_mem_gb"] >= 64
+
+
+def test_apply_inv_tf_runs_only_the_named_reconstruction(tmp_path, reconstruct_plate):
+    """-r runs one reconstruction of the config against its own transfer function
+    and leaves the other's channels untouched."""
+    config = write_config(tmp_path / "reconstruct.yml", phase=PHASE, gfp=FLUORESCENCE)
+    position = f"{reconstruct_plate}/A/1/0"
+    output_path = tmp_path / "output.zarr"
+    tf_dir = tmp_path / "transfer_functions"
+
+    run("apply-inv-tf", "--init", "-i", position, "-c", config, "-o", output_path)
+    run("compute-tf", "-i", position, "-c", config, "-o", tf_dir, "-r", "gfp")
+    assert sorted(p.name for p in tf_dir.iterdir()) == ["gfp.zarr"]
+    run(
+        "apply-inv-tf", "--cluster", "debug", "-i", position, "-t", tf_dir,
+        "-c", config, "-o", output_path, "-r", "gfp",
+    )  # fmt: skip
+
+    with open_ome_zarr(output_path / "A" / "1" / "0") as reconstructed:
+        phase, gfp = reconstructed["0"][0]
+        assert np.all(phase == 0)
+        assert np.any(gfp != 0)
+
+
+def test_reconstruction_name_not_in_config_is_a_usage_error(
+    tmp_path, reconstruct_plate, reconstruct_config
+):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "apply-inv-tf", "--init", "-i", f"{reconstruct_plate}/A/1/0",
+            "-c", str(reconstruct_config), "-o", str(tmp_path / "output.zarr"), "-r", "gfp",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 2
+    assert "no reconstruction named ['gfp']" in result.output
+    assert not (tmp_path / "output.zarr").exists()
+
+
+def test_reconstruct_config_rejects_two_reconstructions_writing_one_channel():
+    from biahub.settings import ReconstructSettings
+
+    with pytest.raises(ValueError, match="both write channel 'Phase3D_Density3D'"):
+        ReconstructSettings(reconstructions={"a": FLUORESCENCE, "b": FLUORESCENCE})
+
+
+def test_reconstruct_config_points_a_bare_waveorder_config_at_reconstructions():
+    from biahub.settings import ReconstructSettings
+
+    with pytest.raises(ValueError, match="nest this waveorder config under a name"):
+        ReconstructSettings(**PHASE)
 
 
 def test_apply_inv_tf_cli_debug_single_position(
@@ -93,58 +199,23 @@ def test_apply_inv_tf_cli_debug_single_position(
 ):
     """Exercise biahub's --cluster debug submitit fan-out path.
 
-    compute-tf (a thin waveorder pass-through) and the reconstruction math are
-    covered upstream in waveorder; here we only assert that biahub's debug
-    orchestration runs to completion against a real position.
+    The reconstruction math is covered upstream in waveorder; here we only
+    assert that biahub's debug orchestration runs to completion against a real
+    position.
     """
+    position = f"{reconstruct_plate}/A/1/0"
     output_path = tmp_path / "output.zarr"
-    tf_path = tmp_path / "tf.zarr"
-
-    runner = CliRunner()
+    tf_path = tmp_path / "transfer_functions"
 
     # Setup: init the output plate, then compute a TF to feed the debug run.
-    for cmd in (
-        [
-            "apply-inv-tf",
-            "--init",
-            "-i",
-            str(reconstruct_plate) + "/A/1/0",
-            "-c",
-            str(reconstruct_config),
-            "-o",
-            str(output_path),
-        ],
-        [
-            "compute-tf",
-            "-i",
-            str(reconstruct_plate) + "/A/1/0",
-            "-c",
-            str(reconstruct_config),
-            "-o",
-            str(tf_path),
-        ],
-    ):
-        result = runner.invoke(cli, cmd)
-        assert result.exit_code == 0, result.output
+    run("apply-inv-tf", "--init", "-i", position, "-c", reconstruct_config, "-o", output_path)
+    run("compute-tf", "-i", position, "-c", reconstruct_config, "-o", tf_path)
 
     # Apply inv TF in debug mode (the biahub-specific in-process fan-out).
-    result = runner.invoke(
-        cli,
-        [
-            "apply-inv-tf",
-            "--cluster",
-            "debug",
-            "-i",
-            str(reconstruct_plate) + "/A/1/0",
-            "-t",
-            str(tf_path),
-            "-c",
-            str(reconstruct_config),
-            "-o",
-            str(output_path),
-        ],
-    )
-    assert result.exit_code == 0, result.output
+    result = run(
+        "apply-inv-tf", "--cluster", "debug", "-i", position, "-t", tf_path,
+        "-c", reconstruct_config, "-o", output_path,
+    )  # fmt: skip
     assert "Apply-inv-tf complete:" in result.output
 
 
@@ -161,25 +232,12 @@ def test_apply_inv_tf_cli_passes_resume(
         lambda *args, **kwargs: calls.append(kwargs),
     )
 
-    result = CliRunner().invoke(
-        cli,
-        [
-            "apply-inv-tf",
-            "--cluster",
-            "debug",
-            "-i",
-            str(reconstruct_plate) + "/A/1/0",
-            "-t",
-            str(tmp_path / "tf.zarr"),
-            "-c",
-            str(reconstruct_config),
-            "-o",
-            str(tmp_path / "output.zarr"),
-            *flag,
-        ],
-    )
+    run(
+        "apply-inv-tf", "--cluster", "debug", "-i", f"{reconstruct_plate}/A/1/0",
+        "-t", tmp_path / "transfer_functions", "-c", reconstruct_config,
+        "-o", tmp_path / "output.zarr", *flag,
+    )  # fmt: skip
 
-    assert result.exit_code == 0, result.output
     assert [call["resume"] for call in calls] == [expected]
 
 
@@ -197,28 +255,13 @@ def test_apply_inv_tf_cli_resume_skips_finished_timepoints(tmp_path, reconstruct
         )
     position = str(plate_path) + "/A/1/0"
     output_path = tmp_path / "output.zarr"
-    tf_path = tmp_path / "tf.zarr"
-    runner = CliRunner()
+    tf_path = tmp_path / "transfer_functions"
 
-    def run(*args):
-        result = runner.invoke(cli, list(args))
-        assert result.exit_code == 0, result.output
-        return result
-
-    run(
-        "apply-inv-tf",
-        "--init",
-        "-i",
-        position,
-        "-c",
-        str(reconstruct_config),
-        "-o",
-        str(output_path),
-    )
-    run("compute-tf", "-i", position, "-c", str(reconstruct_config), "-o", str(tf_path))
+    run("apply-inv-tf", "--init", "-i", position, "-c", reconstruct_config, "-o", output_path)
+    run("compute-tf", "-i", position, "-c", reconstruct_config, "-o", tf_path)
     apply = (
-        "apply-inv-tf", "--cluster", "debug", "-i", position, "-t", str(tf_path),
-        "-c", str(reconstruct_config), "-o", str(output_path),
+        "apply-inv-tf", "--cluster", "debug", "-i", position, "-t", tf_path,
+        "-c", reconstruct_config, "-o", output_path,
     )  # fmt: skip
     run(*apply)
     with open_ome_zarr(output_path / "A" / "1" / "0", mode="r+") as result:
@@ -236,48 +279,28 @@ def test_apply_inv_tf_cli_resume_skips_finished_timepoints(tmp_path, reconstruct
 
 
 def test_apply_inv_tf_init_keeps_one_provenance_key_per_reconstruction(
-    tmp_path, reconstruct_plate, reconstruct_config
+    tmp_path, reconstruct_plate
 ):
-    """Two configs initialized into one plate each keep their settings, under
-    their own top-level key, and a downstream plate carries both forward."""
+    """Each reconstruction of a config keeps its settings under its own top-level
+    key, and a downstream plate carries all of them forward."""
     from iohub.ngff.utils import create_empty_plate
-    from waveorder.cli.settings import FluorescenceSettings, ReconstructionSettings
 
-    from biahub.utils.config import model_to_yaml, yaml_to_model
+    from biahub.settings import ReconstructSettings
     from biahub.utils.ngff import PROVENANCE_METADATA_KEYS
 
-    phase_settings = yaml_to_model(reconstruct_config, ReconstructionSettings)
-    fluor_settings = ReconstructionSettings(
-        input_channel_names=["Phase3D"],
-        reconstruction_dimension=3,
-        fluorescence=FluorescenceSettings(),
-    )
-    fluor_config = tmp_path / "fluor.yml"
-    model_to_yaml(fluor_settings, fluor_config)
+    config = write_config(tmp_path / "reconstruct.yml", phase=PHASE, gfp=FLUORESCENCE)
+    settings = ReconstructSettings(**yaml.safe_load(config.read_text())).reconstructions
     output_path = tmp_path / "output.zarr"
-    position = str(reconstruct_plate) + "/A/1/0"
 
-    for config in (reconstruct_config, fluor_config):
-        result = CliRunner().invoke(
-            cli,
-            [
-                "apply-inv-tf",
-                "--init",
-                "-i",
-                position,
-                "-c",
-                str(config),
-                "-o",
-                str(output_path),
-            ],
-        )
-        assert result.exit_code == 0, result.output
+    run(
+        "apply-inv-tf", "--init", "-i", f"{reconstruct_plate}/A/1/0",
+        "-c", config, "-o", output_path,
+    )  # fmt: skip
 
     with open_ome_zarr(output_path / "A" / "1" / "0") as reconstructed:
-        assert reconstructed.channel_names == ["Phase3D", "Phase3D_Density3D"]
-        assert reconstructed.zattrs["waveorder-Phase3D"] == phase_settings.model_dump()
+        assert reconstructed.zattrs["waveorder-Phase3D"] == settings["phase"].model_dump()
         assert (
-            reconstructed.zattrs["waveorder-Phase3D_Density3D"] == fluor_settings.model_dump()
+            reconstructed.zattrs["waveorder-Phase3D_Density3D"] == settings["gfp"].model_dump()
         )
         assert "waveorder" not in reconstructed.zattrs
 
