@@ -709,10 +709,10 @@ class Transform:
             raise NotImplementedError("ANTs backend only supports 3D transforms")
 
         # Convert to ANTs images
-        moving_ants = ants.from_numpy(moving.astype(np.float32))
+        moving_ants = ants.from_numpy(moving.astype(np.float32, copy=False))
 
         if reference is not None:
-            reference_ants = ants.from_numpy(reference.astype(np.float32))
+            reference_ants = ants.from_numpy(reference.astype(np.float32, copy=False))
         else:
             reference_ants = moving_ants
 

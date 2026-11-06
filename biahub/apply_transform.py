@@ -69,13 +69,13 @@ def _apply_transform_czyx(
     warped = np.stack(
         [
             transform.apply(
-                np.nan_to_num(zyx, nan=0).astype(np.float32),
+                np.nan_to_num(zyx, nan=0).astype(np.float32, copy=False),
                 reference=canvas,
                 interpolation=interpolation,
             )
             for zyx in czyx_data
         ]
-    ).astype(np.float32)
+    ).astype(np.float32, copy=False)
     if crop_output_slicing is not None:
         warped = warped[(slice(None), *crop_output_slicing)]
     return warped
