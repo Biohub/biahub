@@ -77,3 +77,46 @@ def test_filter_matches_skips_a_filter_whose_threshold_is_none_or_zero():
             kept,
             matcher.filter_matches(matches, mg, rg, angle_threshold=0, direction_threshold=0),
         )
+
+
+def _edge_cost_by_definition(moving, reference, attrs_of, default_cost):
+    """Each pair's cost, one edge pair at a time: the mean of the best assignment."""
+    from scipy.optimize import linear_sum_assignment
+
+    mov_attrs, ref_attrs = attrs_of(moving), attrs_of(reference)
+    cost = np.full((moving.n_nodes, reference.n_nodes), default_cost, dtype=np.float32)
+    for i, i_nb in moving.neighbor_map.items():
+        for j, j_nb in reference.neighbor_map.items():
+            local = np.full((len(i_nb), len(j_nb)), default_cost, dtype=np.float32)
+            for ii, ni in enumerate(i_nb):
+                for jj, nj in enumerate(j_nb):
+                    if (i, ni) in mov_attrs and (j, nj) in ref_attrs:
+                        local[ii, jj] = abs(mov_attrs[(i, ni)] - ref_attrs[(j, nj)])
+            rows, cols = linear_sum_assignment(local)
+            cost[i, j] = local[rows, cols].mean()
+    return cost
+
+
+def test_the_edge_cost_is_the_mean_of_each_pairs_best_edge_assignment():
+    # integer positions tie many edge lengths; a radius graph leaves some nodes with
+    # fewer neighbours than others, and an isolated node with none
+    from biahub.core.nodes.costs import edge_consistency_cost
+
+    rng = np.random.default_rng(4)
+    for dim, attr, attrs_of in [
+        (3, "distance", lambda g: g.edge_distances),
+        (2, "angle", lambda g: g.edge_angles),
+    ]:
+        ref = rng.integers(0, 40, size=(30, dim)).astype(float)
+        ref[0] = 500.0  # no neighbour within the radius
+        mov = ref[rng.permutation(30)][:25] + rng.integers(-1, 2, size=(25, dim))
+        moving = Graph.from_nodes(mov, mode="knn", k=4)
+        reference = Graph.from_nodes(ref, mode="radius", radius=12.0)
+        # an edge without a value takes the default, as one missing from the dict would
+        del reference.edge_distances[reference.edges[0]]
+        if attr == "angle":
+            del reference.edge_angles[reference.edges[1]]
+        expected = _edge_cost_by_definition(moving, reference, attrs_of, 7.0)
+        actual = edge_consistency_cost(moving, reference, attr, 7.0)
+        assert actual.dtype == np.float32
+        np.testing.assert_array_equal(actual, expected)

@@ -69,6 +69,15 @@ def spectral_affinity(
     return csr_matrix((vals, (rows, cols)), shape=(n_m * n_r, n_m * n_r))
 
 
+def _edge_values(neighbors: dict[int, list[int]], attrs: dict) -> dict[int, np.ndarray]:
+    """Each node's edge values (`attrs`), in neighbour order; nan for an edge without one."""
+    return {
+        i: np.array([attrs.get((i, n), np.nan) for n in nbs], dtype=float)
+        for i, nbs in neighbors.items()
+        if nbs
+    }
+
+
 def edge_consistency_cost(
     moving: Graph,
     reference: Graph,
@@ -94,36 +103,25 @@ def edge_consistency_cost(
     else:
         raise ValueError(f"Unknown attr_type: {attr_type}")
 
-    mov_neighbors = moving.neighbor_map
-    ref_neighbors = reference.neighbor_map
+    mov_values = _edge_values(moving.neighbor_map, mov_attrs)
+    ref_values = _edge_values(reference.neighbor_map, ref_attrs)
+    if not mov_values or not ref_values:
+        return cost_matrix
+    # every reference node's edge values in one array, padded to the most neighbours
+    ref_nodes = list(ref_values)
+    ref_counts = [len(ref_values[j]) for j in ref_nodes]
+    ref_padded = np.full((len(ref_nodes), max(ref_counts)), np.nan)
+    for row, j in enumerate(ref_nodes):
+        ref_padded[row, : ref_counts[row]] = ref_values[j]
 
-    for i in range(n):
-        i_neighbors = mov_neighbors.get(i, [])
-        if not i_neighbors:
-            continue
-
-        for j in range(m):
-            j_neighbors = ref_neighbors.get(j, [])
-            if not j_neighbors:
-                continue
-
-            C_local = np.full(
-                (len(i_neighbors), len(j_neighbors)), default_cost, dtype=np.float32
-            )
-
-            for ii, ni in enumerate(i_neighbors):
-                for jj, nj in enumerate(j_neighbors):
-                    mov_edge = (i, ni)
-                    ref_edge = (j, nj)
-
-                    if mov_edge in mov_attrs and ref_edge in ref_attrs:
-                        C_local[ii, jj] = abs(mov_attrs[mov_edge] - ref_attrs[ref_edge])
-
+    for i, values in mov_values.items():
+        # |difference| of each of i's edges with each edge of every reference node
+        local = np.abs(values[None, :, None] - ref_padded[:, None, :])
+        local = np.where(np.isnan(local), default_cost, local).astype(np.float32)
+        for row, j in enumerate(ref_nodes):
+            C_local = local[row, :, : ref_counts[row]]
             row_ind, col_ind = linear_sum_assignment(C_local)
-            matched_costs = C_local[row_ind, col_ind]
-            cost_matrix[i, j] = (
-                matched_costs.mean() if len(matched_costs) > 0 else default_cost
-            )
+            cost_matrix[i, j] = C_local[row_ind, col_ind].mean()
 
     return cost_matrix
 
