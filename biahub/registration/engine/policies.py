@@ -99,7 +99,10 @@ class FixedFrame:
 
 def is_empty(volume: ArrayLike) -> bool:
     """Return whether a frame has no data (all zeros or all NaN)."""
-    return not np.any(np.nan_to_num(np.asarray(volume)))
+    volume = np.asarray(volume)
+    planes = volume.reshape(-1, *volume.shape[-2:]) if volume.ndim > 2 else [volume]
+    # plane by plane: no copy of the whole volume, and a frame with data stops early
+    return not any(np.any(np.nan_to_num(plane)) for plane in planes)
 
 
 class PreviousFrame:

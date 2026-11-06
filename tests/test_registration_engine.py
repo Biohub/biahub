@@ -739,3 +739,16 @@ def test_the_propagation_budget_scales_with_timepoints_within_the_partition():
     assert _propagation_minutes(1) == 30  # the floor
     assert _propagation_minutes(125) == 1250  # 10 min per timepoint
     assert _propagation_minutes(1000) == MAX_MINUTES == 2880  # sbatch rejects more
+
+
+def test_a_frame_is_empty_when_every_voxel_is_zero_or_nan():
+    from biahub.registration.engine.policies import is_empty
+
+    frame = np.zeros((4, 6, 8), dtype=np.float32)
+    assert is_empty(frame)
+    frame[1] = np.nan
+    assert is_empty(frame)  # NaN is no data
+    frame[3, 5, 7] = 1.0
+    assert not is_empty(frame)  # one voxel of data, in the last plane
+    assert not is_empty(np.full((4, 6, 8), np.inf))  # inf is data, not padding
+    assert is_empty(np.zeros((6, 8), dtype=np.uint16)) and not is_empty(np.eye(3))  # 2D
