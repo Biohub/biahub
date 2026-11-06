@@ -38,6 +38,7 @@ from biahub.registration.methods.landmark.bead_matching import (
     warped_bead_peaks,
 )
 from biahub.registration.preprocess import SOBEL_FOOTPRINT, away_from_padding
+from biahub.registration.utils import Remembered
 from biahub.settings import BeadsMatchSettings
 
 
@@ -567,6 +568,24 @@ class ComparablePair:
     compare: str
 
 
+# Each volume as `prepare_pair` compares it, kept while a job compares several transforms
+# of the same pair (an evaluation's candidates, local phase correlation's rounds).
+_COMPARABLE = Remembered(2)
+
+
+def _comparable(volume: ArrayLike, compare: str) -> np.ndarray:
+    """Return `volume` in float32 with NaN as 0; its Sobel magnitude for `edges`."""
+
+    def compute():
+        out = np.nan_to_num(np.asarray(volume, dtype=np.float32))
+        if compare == "edges":
+            out = filters.sobel(out).astype(np.float32)
+        out.flags.writeable = False  # shared: a caller must not change it
+        return out
+
+    return _COMPARABLE((volume,), (compare,), compute)
+
+
 def prepare_pair(transform: Transform, mov: ArrayLike, ref: ArrayLike, compare: str = "edges"):
     """Return the pair `tile_residuals` and `z_residuals` compare, to share between them.
 
@@ -576,10 +595,7 @@ def prepare_pair(transform: Transform, mov: ArrayLike, ref: ArrayLike, compare: 
     """
     if compare not in ("edges", "intensity"):
         raise ValueError(f"compare must be 'edges' or 'intensity', got {compare!r}")
-    mov = np.nan_to_num(np.asarray(mov, dtype=np.float32))
-    ref = np.nan_to_num(np.asarray(ref, dtype=np.float32))
-    if compare == "edges":
-        mov, ref = filters.sobel(mov).astype(np.float32), filters.sobel(ref).astype(np.float32)
+    mov, ref = _comparable(mov, compare), _comparable(ref, compare)
     if transform.is_identity and mov.shape == ref.shape:
         # the unregistered pair: an identity warp returns the volume unchanged
         return ComparablePair(mov, ref, np.ones(ref.shape, dtype=bool), compare)

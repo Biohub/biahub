@@ -623,3 +623,25 @@ def test_corner_crops_of_the_same_place_give_no_tilt():
     mov = _ndi_shift(ref, (2.0, 0.0, 0.0), order=1, mode="nearest")
     r = z_residuals(Transform.identity(3), mov, ref, VOX3, crop_px=768)
     assert r["tilt_dz_um"] is None
+
+
+def test_an_evaluation_takes_each_volumes_edges_once_for_all_its_transforms(monkeypatch):
+    # every candidate (and the unregistered pair) took the Sobel of both unwarped
+    # volumes again: ~16 s per candidate on a 2048 x 2048 pair
+    from biahub.registration import metrics
+    from biahub.registration.evaluate import evaluate
+
+    ref = _cells(shape=(24, 128, 128))
+    mov = _ndi_shift(ref, (0.0, 2.0, -1.0), order=1, mode="nearest")
+    sobels = []
+    real = metrics.filters.sobel
+    monkeypatch.setattr(metrics.filters, "sobel", lambda v: sobels.append(1) or real(v))
+    first = None
+    for shift in ([0.0, -2.0, 1.0], [0.0, -1.0, 1.0], [0.0, -2.0, 0.0]):
+        record = evaluate(Transform.from_translation(shift), mov, ref, VOX3, VOX3, tile_px=64)
+        first = first or record.tiles
+    assert len(sobels) == 2  # one per volume
+    again = evaluate(
+        Transform.from_translation([0.0, -2.0, 1.0]), mov, ref, VOX3, VOX3, tile_px=64
+    )
+    assert again.tiles == first
