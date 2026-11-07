@@ -211,6 +211,7 @@ class Remembered:
             self._results.move_to_end(key)
             return hit[1]
         result = compute()
+        self._results.pop(key, None)  # a freed array's entry: the new result is the newest
         self._results[key] = (refs, result)
         while len(self._results) > self.kept:
             self._results.popitem(last=False)

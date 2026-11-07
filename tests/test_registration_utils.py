@@ -24,3 +24,29 @@ def test_the_centred_window_takes_whole_axes_when_the_crop_is_larger_and_keeps_o
     # crop_xy is (X, Y), the legacy center_crop_xy convention; slices are (y, x)
     assert center_window_yx((100, 80), (40, 21)) == (slice(40, 61), slice(20, 60))
     assert center_window_yx((100, 80), (150, 150)) == (slice(0, 100), slice(0, 80))
+
+
+def test_a_result_recomputed_over_a_freed_arrays_entry_is_the_newest():
+    # a new array at a freed one's address finds that entry dead and recomputes it; the
+    # entry kept its old place, so the next result evicted it first
+    import weakref
+
+    from biahub.registration.utils import Remembered
+
+    memo = Remembered(2)
+    x, y, z = np.zeros(1), np.zeros(1), np.zeros(1)
+    calls = []
+
+    def compute(name):
+        return lambda: calls.append(name) or name
+
+    memo((x,), (), compute("x"))
+    memo((y,), (), compute("y"))
+    freed = np.zeros(1)
+    dead = weakref.ref(freed)
+    del freed
+    memo._results[((id(x),), ())] = ((dead,), "freed")  # x's entry, as a freed array left it
+    memo((x,), (), compute("x"))  # recomputed
+    memo((z,), (), compute("z"))  # evicts the oldest: y, not the x just computed
+    assert memo((x,), (), compute("x")) == "x"
+    assert calls == ["x", "y", "x", "z"]
