@@ -138,6 +138,11 @@ def _footprint(prepare, *, sobel: bool = False) -> int:
     return getattr(prepare, "footprint", 0) + (SOBEL_FOOTPRINT if sobel else 0)
 
 
+# Voxels counted into the joint histogram at a time: histogram2d holds ~40 bytes per voxel
+# (float64 samples, int64 bin indices), ~10 volumes for a whole overlap at once.
+HISTOGRAM_CHUNK = 2**22
+
+
 def normalized_mutual_information(
     transform: Transform,
     mov: ArrayLike,
@@ -173,12 +178,15 @@ def normalized_mutual_information(
     b_lo, b_hi = np.percentile(b, percentiles)
     if a_hi <= a_lo or b_hi <= b_lo:
         return float("nan")
-    joint, _, _ = np.histogram2d(
-        np.clip(a, a_lo, a_hi),
-        np.clip(b, b_lo, b_hi),
-        bins=bins,
-        range=[[a_lo, a_hi], [b_lo, b_hi]],
-    )
+    joint = np.zeros((bins, bins))
+    for k in range(0, a.size, HISTOGRAM_CHUNK):
+        chunk = slice(k, k + HISTOGRAM_CHUNK)
+        joint += np.histogram2d(
+            np.clip(a[chunk], a_lo, a_hi),
+            np.clip(b[chunk], b_lo, b_hi),
+            bins=bins,
+            range=[[a_lo, a_hi], [b_lo, b_hi]],
+        )[0]
     p = joint / joint.sum()
     pa, pb = p.sum(axis=1), p.sum(axis=0)
 

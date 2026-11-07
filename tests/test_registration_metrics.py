@@ -243,3 +243,17 @@ def test_a_smoothed_track_drops_single_frame_jumps_and_fills_gaps():
     np.testing.assert_allclose(smoothed[10], 5.0, atol=0.5)
     np.testing.assert_allclose(smoothed[5], 2.5, atol=0.3)
     np.testing.assert_allclose(smoothed[3:18, 0], np.linspace(1.5, 8.5, 15), atol=0.5)
+
+
+def test_mutual_information_counts_its_joint_histogram_in_chunks(monkeypatch):
+    # one histogram2d over the whole overlap held ~10 volumes of float64 and int64
+    # copies; counted chunk by chunk the counts, and so the score, are the same
+    from biahub.registration import metrics
+
+    rng = np.random.default_rng(5)
+    ref = rng.normal(100, 20, size=(8, 64, 64)).astype(np.float32)
+    mov = (0.5 * ref + rng.normal(0, 10, size=ref.shape)).astype(np.float32)
+    transform = Transform.from_translation([0.0, 1.0, -1.0])
+    whole = normalized_mutual_information(transform, mov, ref)
+    monkeypatch.setattr(metrics, "HISTOGRAM_CHUNK", 1000)  # many chunks, a partial last one
+    assert normalized_mutual_information(transform, mov, ref) == whole
