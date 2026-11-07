@@ -71,17 +71,21 @@ def plot_cross_correlation(
 
 
 def _cross_power(F_ref: np.ndarray, F_mov: np.ndarray, normalization) -> np.ndarray:
-    """Return F_ref * conj(F_mov), normalised as asked.
+    """Return F_ref * conj(F_mov), normalised as asked, computed in `F_mov`'s memory.
 
     "magnitude": by its own magnitude (phase only); "classic": by |F_ref| |F_mov|; None:
-    as it is. Zero magnitudes are guarded (they would give NaNs).
+    as it is. Zero magnitudes are guarded (they would give NaNs). `F_mov` is the caller's
+    scratch (a spectrum computed for this call): a full spectrum is 4 volumes.
     """
-    product = F_ref * F_mov.conj()
-    eps = np.finfo(product.real.dtype).eps
+    eps = np.finfo(F_mov.real.dtype).eps
+    if normalization == "classic":
+        magnitudes = np.fmax(np.abs(F_ref) * np.abs(F_mov), eps)
+    # conj(F_mov) *= F_ref, the order numpy's temporary elision computed F_ref * F_mov.conj() in
+    product = np.multiply(np.conjugate(F_mov, out=F_mov), F_ref, out=F_mov)
     if normalization == "magnitude":
         product /= np.fmax(np.abs(product), eps)
     elif normalization == "classic":
-        product /= np.fmax(np.abs(F_ref) * np.abs(F_mov), eps)
+        product /= magnitudes
     return product
 
 
@@ -195,19 +199,20 @@ def phase_cross_corr(
 
     # the spatial shape: without it an odd last axis comes back one sample short
     corr = np.fft.irfftn(prod, s=np.shape(ref_img), axes=tuple(range(np.ndim(ref_img))))
-    corr_shifted = np.fft.fftshift(np.abs(corr))
+    float_dtype = prod.real.dtype
+    del prod
+    magnitude = np.abs(corr)
+    maxima = np.unravel_index(np.argmax(magnitude), corr.shape)
+    midpoint = np.array([np.fix(axis_size / 2) for axis_size in corr.shape])
+    corr_shifted = np.fft.fftshift(magnitude)
+    del corr, magnitude  # the refinement below holds two full spectra
     if output_path:
         plot_cross_correlation(
             corr_shifted, title="Cross-Correlation", output_path=output_path
         )
-    maxima = np.unravel_index(np.argmax(np.abs(corr)), corr.shape)
-    midpoint = np.array([np.fix(axis_size / 2) for axis_size in corr.shape])
-
-    float_dtype = prod.real.dtype
-    del prod
 
     shift = np.stack(maxima).astype(float_dtype, copy=False)
-    shift[shift > midpoint] -= np.array(corr.shape)[shift > midpoint]
+    shift[shift > midpoint] -= np.array(corr_shifted.shape)[shift > midpoint]
     if upsample_factor > 1:
         shift = _refine_shift(ref_img, mov_img, shift, normalization, upsample_factor)
 
@@ -232,7 +237,9 @@ def _refine_shift(ref_img, mov_img, shift, normalization, upsample_factor: int) 
     region = int(np.ceil(upsample_factor * 1.5))
     centre = np.fix(region / 2.0)
     offsets = centre - shift * upsample_factor
-    correlation = _upsampled_dft(product.conj(), region, upsample_factor, offsets).conj()
+    correlation = _upsampled_dft(
+        np.conjugate(product, out=product), region, upsample_factor, offsets
+    ).conj()
     peak = np.unravel_index(np.argmax(np.abs(correlation)), correlation.shape)
     return shift + (np.stack(peak).astype(float) - centre) / upsample_factor
 

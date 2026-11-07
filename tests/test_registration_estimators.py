@@ -1080,3 +1080,21 @@ def test_every_estimator_declares_the_members_the_engine_reads():
     )
     assert NodeGraphEstimator.accepts_competitor
     assert isinstance(ChainedEstimator([PCCEstimator()]), TransformEstimator)
+
+
+@pytest.mark.parametrize("normalization", [None, "magnitude", "classic"])
+def test_the_cross_power_is_its_definition_computed_in_place(normalization):
+    # computed in the moving spectrum's memory (it is the caller's scratch), not in copies
+    from biahub.registration.methods.intensity.phase_cross_corr import _cross_power
+
+    rng = np.random.default_rng(6)
+    f_ref = np.fft.fftn(rng.random((6, 8, 10)))
+    f_mov = np.fft.fftn(rng.random((6, 8, 10)))
+    f_mov[0, 0, 0] = 0.0  # a zero magnitude: guarded, not a NaN
+    expected = f_mov.conj() * f_ref  # complex products round by operand order
+    eps = np.finfo(expected.real.dtype).eps
+    if normalization == "magnitude":
+        expected /= np.fmax(np.abs(expected), eps)
+    elif normalization == "classic":
+        expected /= np.fmax(np.abs(f_ref) * np.abs(f_mov), eps)
+    np.testing.assert_array_equal(_cross_power(f_ref, f_mov.copy(), normalization), expected)
