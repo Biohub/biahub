@@ -280,3 +280,18 @@ def test_equal_transforms_hash_alike():
     a = Transform.from_translation([0.0, 0.0, 0.12345651])
     b = Transform.from_translation([0.0, 0.0, 0.12345649])
     assert a == b and hash(a) == hash(b)
+
+
+@pytest.mark.parametrize("ndim", [2, 3])
+def test_covers_agrees_with_coverage(ndim):
+    # one edge rule for both: a point is covered exactly where the coverage mask says so
+    rng = np.random.default_rng(4)
+    mov_shape, ref_shape = (9, 12, 11)[-ndim:], (10, 11, 13)[-ndim:]
+    for _ in range(10):
+        matrix = np.eye(ndim + 1)
+        matrix[:ndim, :ndim] += 0.05 * rng.normal(size=(ndim, ndim))
+        matrix[:ndim, ndim] = rng.uniform(-3, 3, ndim)
+        transform = Transform(matrix)
+        grid = np.indices(ref_shape).reshape(ndim, -1).T
+        expected = transform.coverage(mov_shape, ref_shape).ravel()
+        np.testing.assert_array_equal(transform.covers(grid, mov_shape), expected)
