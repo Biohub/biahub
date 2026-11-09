@@ -274,3 +274,28 @@ def test_the_voted_fit_is_the_runs_transform_type():
     fitted_part = corrected @ start.invert()  # what the correction composed after it
     linear = fitted_part.linear
     np.testing.assert_allclose(linear.T @ linear, np.eye(3), atol=1e-6)
+
+
+def test_vote_icp_fits_moving_onto_reference_directly():
+    # it fitted reference -> moving and inverted: residuals minimized in moving space,
+    # not where the result is judged (0.003 um apart on noisy pairs)
+    rng = np.random.default_rng(7)
+    mov = rng.uniform(0, 200, size=(40, 3))
+    truth = Transform(
+        np.array(
+            [
+                [1.02, 0.01, 0.0, 3.0],
+                [0.0, 0.98, 0.02, -2.0],
+                [0.01, 0.0, 1.01, 1.0],
+                [0, 0, 0, 1.0],
+            ]
+        )
+    )
+    ref = truth.apply_points(mov) + rng.normal(0, 0.3, size=mov.shape)
+    found, info = vote_icp_register(
+        mov, ref, Transform.identity(3), initial_capture_radius=20.0
+    )
+    assert info["n_inliers"] == len(mov)
+    np.testing.assert_allclose(
+        found.matrix, Transform.fit(mov, ref, "affine").matrix, atol=1e-9
+    )

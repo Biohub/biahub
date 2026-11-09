@@ -811,17 +811,16 @@ class VoteInitialTransformCorrection(EstimatorBase):
         note = f"drift={np.round(drift, 1).tolist()} votes={n_votes} pick={best}"
         if settings.mode == "vote_fit" and len(pairs) >= 4:
             # The cluster's votes are correspondences (warped moving peak p, reference
-            # peak q) in the uncorrected initial transform's warped frame; re-warping
-            # should sample p at q, C(q) = p, so the forward correction after the
-            # initial transform is C's inverse.
+            # peak q) in the initial transform's warped frame: the forward correction
+            # after the initial transform maps p onto q.
             p = np.asarray([a for a, _ in pairs], dtype=float)
             q = np.asarray([b for _, b in pairs], dtype=float)
             correction = (
-                Transform.fit(q, p, self.transform_type)
+                Transform.fit(p, q, self.transform_type)
                 if len(pairs) >= 6
-                else Transform.from_translation((p - q).mean(axis=0))
+                else Transform.from_translation((q - p).mean(axis=0))
             )
-            fitted = correction.invert() @ initial_transform
+            fitted = correction @ initial_transform
             nn_fitted = nn_median(fitted)
             if np.isfinite(nn_fitted) and nn_fitted < nn[best]:
                 corrected = fitted

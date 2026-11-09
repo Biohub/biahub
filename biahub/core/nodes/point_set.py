@@ -62,8 +62,8 @@ def vote_icp_register(
     split or fuzzy detection just casts extra votes outside the winning cluster.
 
     `initial_transform` and the returned transform are forward (moving points onto the
-    reference). Each fit is reference -> moving, as the votes pair them, then inverted
-    once. Returns `(None, info)` when voting abstained before any fit; `info` holds
+    reference), and so is each fit: the inliers' residuals are minimized in reference
+    space, where the result is judged. Returns `(None, info)` when voting abstained before any fit; `info` holds
     iterations, converged, n_inliers and the final capture radius.
     """
     mov_points = np.asarray(mov_points, dtype=float)
@@ -86,9 +86,7 @@ def vote_icp_register(
         # A fit needs a margin over its degrees of freedom; with fewer inliers the
         # translation update is the only fit that cannot hallucinate.
         if n_inliers >= ndim + 3:
-            new = Transform.fit(
-                ref_points[inlier_ref], mov_points[inlier_mov], transform_type
-            ).invert()
+            new = Transform.fit(mov_points[inlier_mov], ref_points[inlier_ref], transform_type)
         else:
             # the mapped points move by the votes' mean displacement
             new = Transform.from_translation(cluster_votes.mean(axis=0)) @ transform
