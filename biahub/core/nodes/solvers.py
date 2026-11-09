@@ -103,9 +103,10 @@ def spectral_assignment(
 def cross_checked(
     forward: NDArray[np.integer], backward: NDArray[np.integer]
 ) -> NDArray[np.integer]:
-    """Return the forward pairs (i, j) that the backward pass also chose, as (j, i)."""
+    """Return the forward pairs (i, j) the backward pass also chose (it holds them as (j, i))."""
     reverse_map = {(j, i) for i, j in backward}
-    return np.array([[i, j] for i, j in forward if (i, j) in reverse_map], dtype=np.int32)
+    kept = [[i, j] for i, j in forward if (i, j) in reverse_map]
+    return np.asarray(kept, dtype=np.int32).reshape(-1, 2)
 
 
 def medoid(distances: NDArray[np.floating]) -> int:

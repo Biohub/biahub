@@ -20,6 +20,8 @@ def test_cross_checked_keeps_pairs_both_directions_chose():
     forward = np.array([[0, 1], [1, 0], [2, 2]])
     backward = np.array([[1, 0], [0, 2], [2, 2]])  # (j, i): agrees on (0, 1) and (2, 2)
     assert cross_checked(forward, backward).tolist() == [[0, 1], [2, 2]]
+    # nothing in common: still N x 2, as every solver returns (matches[:, 0] indexes it)
+    assert cross_checked(np.array([[0, 1]]), np.array([[0, 0]])).shape == (0, 2)
 
 
 def _clouds():

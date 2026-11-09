@@ -602,7 +602,7 @@ class NodeGraphEstimator(EstimatorBase):
             matches = np.asarray(self.matcher(mov_nodes, ref_nodes))
         except MatchingTooLargeError as e:  # this matcher can't run here; others may
             raise EstimationError(str(e)) from e
-        if matches.ndim != 2 or len(matches) < 3:
+        if len(matches) < 3:
             raise EstimationError(
                 f"too few matches to fit a transform: {len(matches)} from "
                 f"{len(mov_nodes)} x {len(ref_nodes)} nodes (need >= 3)"
