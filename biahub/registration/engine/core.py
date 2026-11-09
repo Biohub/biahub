@@ -414,9 +414,12 @@ def _sweep_minutes(n_trials: int) -> int:
 # Memory of one estimate job, in volumes of the moving store, whatever its CPU count (the
 # peak is the job's copies, not per thread). ANTs copies both volumes several times (Sobel,
 # crop, its image pyramid): on a 66 x 2048 x 2048 pair it peaked at 14.5-22.6 GB (SLURM
-# MaxRSS, 12 jobs), i.e. ~22 volumes; 30 leaves ~30% headroom. The other methods fit in 10.
+# MaxRSS, 12 jobs), i.e. ~22 volumes; 30 leaves ~30% headroom. Phase correlation on a
+# 60 x 1024 x 1024 pair peaked at 9.6 volumes, 16.6 upsampled (the full complex spectra of
+# the refinement); the same headroom gives 13 and 22.
 RAM_VOLUMES_PER_JOB = {"ants": 30}
-DEFAULT_RAM_VOLUMES_PER_JOB = 10
+DEFAULT_RAM_VOLUMES_PER_JOB = 13
+UPSAMPLED_PCC_RAM_VOLUMES = 22
 # CPUs per estimate job: ANTs' optimizer runs ITK threads, one per CPU (`use_task_threads`);
 # the other methods are single-threaded.
 CPUS_PER_JOB = {"ants": 8}
@@ -425,22 +428,27 @@ DEFAULT_CPUS_PER_JOB = 2
 MIN_GB_PER_CPU = 4
 
 
+def _ram_volumes(block: EstimateTransformSettings) -> int:
+    """Return the volumes one block's estimate holds at its peak (RAM_VOLUMES_PER_JOB)."""
+    if block.method == "phase_cross_corr" and block.phase_cross_corr.upsample_factor > 1:
+        return UPSAMPLED_PCC_RAM_VOLUMES
+    return RAM_VOLUMES_PER_JOB.get(block.method, DEFAULT_RAM_VOLUMES_PER_JOB)
+
+
 def _estimate_job_resources(
-    method: str, zyx_shape: tuple[int, int, int], extra_volumes: int = 0, at_least: int = 0
+    method: str, zyx_shape: tuple[int, int, int], volumes: int, at_least: int = 0
 ) -> tuple[int, int]:
     """Return (cpus, GB of RAM per CPU) for one estimate job of `method` on this volume.
 
-    `extra_volumes`: volumes the reference holds besides the method's own (a neighbour
-    median holds its frames and the median). `at_least`: volumes a later step of the
-    job holds on its own, once the method's are freed (leftover motion's raw shift).
+    `volumes`: what the job holds at its peak (the method's, `_ram_volumes`, and the
+    reference's). `at_least`: volumes a later step of the job holds on its own, once the
+    method's are freed (leftover motion's raw shift).
     """
     # in CI the suite runs serially (as estimate_resources does)
     in_ci = os.environ.get("CI") == "true"
     num_cpus = 1 if in_ci else CPUS_PER_JOB.get(method, DEFAULT_CPUS_PER_JOB)
     gb_per_volume = np.prod(zyx_shape) * np.dtype(np.float32).itemsize / 2**30
-    volumes = max(
-        RAM_VOLUMES_PER_JOB.get(method, DEFAULT_RAM_VOLUMES_PER_JOB) + extra_volumes, at_least
-    )
+    volumes = max(volumes, at_least)
     job_gb = gb_per_volume * volumes
     gb_per_cpu = max(MIN_GB_PER_CPU, np.ceil(gb_per_volume), np.ceil(job_gb / num_cpus))
     return num_cpus, int(gb_per_cpu)
@@ -526,12 +534,12 @@ def init_run(
     num_cpus, gb_ram_per_cpu = max(
         (
             _estimate_job_resources(
-                m,
+                block.method,
                 volume_zyx,
-                reference_volumes,
+                _ram_volumes(block) + reference_volumes,
                 at_least=LEFTOVER_MOTION_VOLUMES if settings.reference.leftover_motion else 0,
             )
-            for m in settings.method_names
+            for block in settings.stack_settings()
         ),
         key=lambda r: r[0] * r[1],
     )

@@ -786,27 +786,60 @@ def test_estimate_transform_sweep_runs_on_flagged_timepoints_and_resumes(
 def test_an_ants_estimate_is_sized_for_its_measured_peak_memory():
     # ANTs on a 66 x 2048 x 2048 DragonFly pair peaked at 14.5-22.6 GB (SLURM MaxRSS over
     # 12 jobs); the plan once asked for 12 GB and every first attempt ran out of memory.
-    from biahub.registration.engine.core import _estimate_job_resources
+    from biahub.registration.engine.core import (
+        DEFAULT_RAM_VOLUMES_PER_JOB,
+        RAM_VOLUMES_PER_JOB,
+        _estimate_job_resources,
+    )
 
-    cpus, gb_ram_per_cpu = _estimate_job_resources("ants", (66, 2048, 2048))
+    cpus, gb_ram_per_cpu = _estimate_job_resources(
+        "ants", (66, 2048, 2048), RAM_VOLUMES_PER_JOB["ants"]
+    )
     assert cpus * gb_ram_per_cpu >= 1.25 * 22.6
-    beads_cpus, beads_gb = _estimate_job_resources("bead_matching", (66, 2048, 2048))
+    beads_cpus, beads_gb = _estimate_job_resources(
+        "bead_matching", (66, 2048, 2048), DEFAULT_RAM_VOLUMES_PER_JOB
+    )
     assert beads_cpus * beads_gb < cpus * gb_ram_per_cpu  # beads keeps its smaller footprint
 
 
 def test_an_ants_estimate_gets_cpus_for_its_threads(monkeypatch):
     # ITK sizes its threads from the job's CPUs; a made-up 2-volume shape once capped
     # every method at 2, so ANTs ran on 2 threads. The single-threaded methods keep 2.
-    from biahub.registration.engine.core import _estimate_job_resources
+    from biahub.registration.engine.core import RAM_VOLUMES_PER_JOB, _estimate_job_resources
 
     monkeypatch.delenv("CI", raising=False)
-    shape = (66, 2048, 2048)
-    assert _estimate_job_resources("ants", shape)[0] == 8
-    assert _estimate_job_resources("bead_matching", shape)[0] == 2
-    ants_gb = _estimate_job_resources("ants", shape)
+    shape, volumes = (66, 2048, 2048), RAM_VOLUMES_PER_JOB["ants"]
+    assert _estimate_job_resources("ants", shape, volumes)[0] == 8
+    assert _estimate_job_resources("bead_matching", shape, volumes)[0] == 2
+    ants_gb = _estimate_job_resources("ants", shape, volumes)
     assert ants_gb[0] * ants_gb[1] >= 1.25 * 22.6  # the job's RAM, now over more CPUs
     monkeypatch.setenv("CI", "true")  # the suite runs serially
-    assert _estimate_job_resources("ants", shape)[0] == 1
+    assert _estimate_job_resources("ants", shape, volumes)[0] == 1
+
+
+@pytest.mark.parametrize(
+    "block, measured",
+    [
+        ({"phase_cross_corr": {}}, 9.6),
+        ({"phase_cross_corr": {"upsample_factor": 10}}, 16.6),
+    ],
+)
+def test_a_phase_correlation_estimate_is_sized_for_its_measured_peak_memory(block, measured):
+    # peak RSS of one estimate job on a 60 x 1024 x 1024 pair, in volumes (import
+    # subtracted): the plan of 10 left 4% headroom, and an upsampled one ran out
+    from biahub.registration.engine.core import _estimate_job_resources, _ram_volumes
+
+    settings = EstimateTransformSettings(
+        moving={"channel": "GFP"},
+        reference={"frame": "cross", "channel": "Phase3D"},
+        method="phase_cross_corr",
+        **block,
+    )
+    shape = (60, 1024, 1024)
+    volumes = _ram_volumes(settings)
+    assert volumes >= 1.25 * measured
+    cpus, gb_ram_per_cpu = _estimate_job_resources("phase_cross_corr", shape, volumes)
+    assert cpus * gb_ram_per_cpu >= volumes * np.prod(shape) * 4 / 2**30
 
 
 def test_image_blocks_run_before_the_method_end_to_end(beads_plate, tmp_path):
