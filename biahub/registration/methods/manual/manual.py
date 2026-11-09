@@ -8,7 +8,6 @@ import numpy as np
 
 from numpy.typing import ArrayLike
 from skimage.transform import EuclideanTransform, SimilarityTransform
-from waveorder.focus import focus_from_transverse_band
 
 from biahub.core.transform import Transform
 from biahub.registration.estimators import EstimatorBase
@@ -96,6 +95,9 @@ def user_assisted_registration(
     - The function visually displays intermediate and final results in napari for user validation.
     """
     # Find the in-focus slice
+    # here, not at the top: waveorder imports torch (2 s)
+    from waveorder.focus import focus_from_transverse_band
+
     moving_channel_Z, moving_channel_Y, moving_channel_X = moving_channel_volume.shape[-3:]
     reference_channel_Z, reference_channel_Y, reference_channel_X = (
         reference_channel_volume.shape[-3:]

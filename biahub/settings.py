@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, NamedTuple
 
 import numpy as np
-import torch
 import yaml
 
 from iohub.core.sharding import parse_shard_size
@@ -1051,6 +1050,8 @@ class CharacterizeSettings(MyBaseModel):
     @field_validator("device")
     @classmethod
     def check_device(cls, v):
+        import torch  # here, not at the top: 1.5 s for every command that reads a config
+
         return "cuda" if torch.cuda.is_available() else "cpu"
 
 

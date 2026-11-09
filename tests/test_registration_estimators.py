@@ -365,8 +365,6 @@ def test_ants_refines_from_a_far_initial_transform_without_cropping():
 def test_ants_estimator_passes_its_masks_to_ants(monkeypatch):
     import ants
 
-    from biahub.registration.methods.intensity import ants as ants_method
-
     seen = {}
     real = ants.registration
 
@@ -374,7 +372,7 @@ def test_ants_estimator_passes_its_masks_to_ants(monkeypatch):
         seen.update(kwargs)
         return real(**kwargs)
 
-    monkeypatch.setattr(ants_method.ants, "registration", recording)
+    monkeypatch.setattr("ants.registration", recording)
     rng = np.random.default_rng(5)
     ref = _synthetic_blob_volume(rng, (24, 48, 48))
     ref_mask = np.zeros(ref.shape, dtype=bool)
@@ -848,7 +846,7 @@ def test_ants_estimate_passes_the_masks_to_ants(monkeypatch):
         seen.update(kwargs)
         return real(**kwargs)
 
-    monkeypatch.setattr(ants_method.ants, "registration", recording)
+    monkeypatch.setattr("ants.registration", recording)
     rng = np.random.default_rng(5)
     ref = _synthetic_blob_volume(rng, (24, 48, 48))
     ref_mask = np.zeros(ref.shape, dtype=bool)

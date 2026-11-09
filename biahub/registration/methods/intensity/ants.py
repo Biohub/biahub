@@ -18,7 +18,6 @@ from __future__ import annotations
 import os
 import tempfile
 
-import ants
 import click
 import numpy as np
 
@@ -85,6 +84,8 @@ def estimate(
     `ref_mask` / `mov_mask` (boolean, the shape of `ref` / `mov`) restrict the comparison
     to where they are True; points outside either volume never count.
     """
+    import ants  # here, not at the top: 1.4 s to import, and only this method needs it
+
     if ref.ndim not in (2, 3) or mov.ndim not in (2, 3):
         raise ValueError(
             f"Images must be 2D or 3D, got ref.ndim={ref.ndim}, mov.ndim={mov.ndim}"

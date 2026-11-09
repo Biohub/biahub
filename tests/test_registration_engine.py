@@ -531,7 +531,7 @@ def test_an_ants_failure_is_a_failed_estimate_not_a_crash(monkeypatch):
     def broken(**kwargs):
         raise RuntimeError("ITK ERROR: All samples map outside moving image buffer")
 
-    monkeypatch.setattr(ants_method.ants, "registration", broken)
+    monkeypatch.setattr("ants.registration", broken)
     vol = np.random.default_rng(0).random((8, 16, 16)).astype(np.float32)
     with pytest.raises(EstimationError, match="All samples map outside"):
         ants_method.estimate(vol, vol, IDENTITY)

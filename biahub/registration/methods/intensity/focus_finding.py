@@ -15,7 +15,6 @@ from typing import Literal
 import numpy as np
 
 from numpy.typing import ArrayLike
-from waveorder.focus import focus_from_transverse_band
 
 from biahub.core.transform import Transform
 from biahub.registration.estimators import EstimationError, EstimatorBase
@@ -40,6 +39,9 @@ def find_focus(
     An empty field of view (all zeros) has no focus; the legacy code wrote 0 and forward
     filled it from the neighbours -- in the engine that is the repair pass's job.
     """
+    # here, not at the top: waveorder imports torch (2 s)
+    from waveorder.focus import focus_from_transverse_band
+
     if not np.any(zyx):
         raise EstimationError("empty field of view, no focus to find")
     z = focus_from_transverse_band(
