@@ -1,6 +1,7 @@
 """core.nodes: graphs, costs and solvers, usable on their own (arrays in, pairs out)."""
 
 import numpy as np
+import pytest
 
 from scipy.spatial.distance import cdist
 
@@ -81,7 +82,7 @@ def test_filter_matches_skips_a_filter_whose_threshold_is_none_or_zero():
         )
 
 
-def _edge_cost_by_definition(moving, reference, attrs_of, default_cost):
+def _edge_cost_by_definition(moving, reference, attrs_of, default_cost, circular=False):
     """Each pair's cost, one edge pair at a time: the mean of the best assignment."""
     from scipy.optimize import linear_sum_assignment
 
@@ -93,7 +94,8 @@ def _edge_cost_by_definition(moving, reference, attrs_of, default_cost):
             for ii, ni in enumerate(i_nb):
                 for jj, nj in enumerate(j_nb):
                     if (i, ni) in mov_attrs and (j, nj) in ref_attrs:
-                        local[ii, jj] = abs(mov_attrs[(i, ni)] - ref_attrs[(j, nj)])
+                        d = abs(mov_attrs[(i, ni)] - ref_attrs[(j, nj)])
+                        local[ii, jj] = min(d, 2 * np.pi - d) if circular else d
             rows, cols = linear_sum_assignment(local)
             cost[i, j] = local[rows, cols].mean()
     return cost
@@ -118,7 +120,85 @@ def test_the_edge_cost_is_the_mean_of_each_pairs_best_edge_assignment():
         del reference.edge_distances[reference.edges[0]]
         if attr == "angle":
             del reference.edge_angles[reference.edges[1]]
-        expected = _edge_cost_by_definition(moving, reference, attrs_of, 7.0)
+        expected = _edge_cost_by_definition(moving, reference, attrs_of, 7.0, attr == "angle")
         actual = edge_consistency_cost(moving, reference, attr, 7.0)
         assert actual.dtype == np.float32
         np.testing.assert_array_equal(actual, expected)
+
+
+def test_an_edge_angle_is_its_direction_from_each_end():
+    # i -> j and j -> i were both given i -> j's angle (or j -> i's: whichever came last)
+    for edges in ([(0, 1)], [(0, 1), (1, 0)]):
+        angles = Graph(np.array([[0.0, 0.0], [0.0, 1.0]]), edges).edge_angles
+        np.testing.assert_allclose([angles[(0, 1)], angles[(1, 0)]], [np.pi / 2, -np.pi / 2])
+
+
+def _pair_of_edges(angle):
+    # a node and one neighbour at `angle`
+    return Graph(np.array([[0.0, 0.0], [np.cos(angle), np.sin(angle)]]), [(0, 1)])
+
+
+def test_angle_costs_and_descriptors_are_circular():
+    # just under +pi and just over -pi are 0.02 rad apart, not 2 pi - 0.02
+    from biahub.core.nodes.costs import edge_consistency_cost
+
+    cost = edge_consistency_cost(
+        _pair_of_edges(np.pi - 0.01), _pair_of_edges(-np.pi + 0.01), "angle", 9.0
+    )
+    assert cost[0, 0] == pytest.approx(0.02, abs=1e-5)
+    # a node whose two edges point just either side of pi points along pi, spread ~0.01
+    star = Graph(
+        np.array(
+            [
+                [0.0, 0.0],
+                [np.cos(np.pi - 0.01), np.sin(np.pi - 0.01)],
+                [np.cos(-np.pi + 0.01), np.sin(-np.pi + 0.01)],
+            ]
+        ),
+        [(0, 1), (0, 2)],
+    )
+    mean, spread = star.edge_descriptors[0, 2:]
+    assert abs(abs(mean) - np.pi) < 1e-5 and spread < 0.02
+
+
+# every cost term off; a test turns on the ones it checks
+_NO_WEIGHTS = {
+    "dist": 0.0,
+    "edge_length": 0.0,
+    "edge_angle": 0.0,
+    "pca_dir": 0.0,
+    "pca_aniso": 0.0,
+    "edge_descriptor": 0.0,
+}
+
+
+def test_a_node_without_neighbours_has_the_worst_shape_cost_not_nan():
+    # its PCA direction is undefined: NaN went into the cost and the Hungarian solver raised
+    ref = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [50.0, 50.0, 50.0]])
+    moving = Graph.from_nodes(ref + 0.1, mode="radius", radius=2.0)
+    reference = Graph.from_nodes(ref, mode="radius", radius=2.0)
+    for weights in (
+        {"dist": 0.0, "edge_length": 0.0, "pca_dir": 1.0},
+        {"dist": 0.0, "edge_length": 0.0, "pca_aniso": 1.0},
+    ):
+        cost = weighted_cost(moving, reference, weights={**_NO_WEIGHTS, **weights})
+        assert np.isfinite(cost).all()
+
+
+def test_linear_assignment_keeps_pairs_at_the_threshold():
+    # equal costs dropped every pair; cost_threshold=1.0 always dropped the costliest
+    assert len(linear_assignment(np.ones((3, 3)), cost_threshold=0.5)) == 3
+    costs = np.array([[0.1, 5.0], [5.0, 0.3]])
+    assert linear_assignment(costs, cost_threshold=1.0).tolist() == [[0, 0], [1, 1]]
+
+
+def test_normalized_edge_costs_scale_by_the_real_costs_not_the_placeholder():
+    # one node without neighbours carried a 1e6 placeholder: every real cost became ~0
+    ref = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0], [50.0, 50.0, 50.0]])
+    moving = Graph.from_nodes(ref * 1.1, mode="radius", radius=3.0)
+    reference = Graph.from_nodes(ref, mode="radius", radius=3.0)
+    cost = weighted_cost(
+        moving, reference, weights={**_NO_WEIGHTS, "edge_length": 1.0}, normalize=True
+    )
+    assert cost.max() == pytest.approx(1.0)
+    assert cost[:3, :3].max() > 0.05  # the real costs keep their scale (they were ~1e-7)

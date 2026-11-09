@@ -140,7 +140,8 @@ class Graph:
         for i, j in self._edges:
             vec = self.nodes[j] - self.nodes[i]
             angle = float(np.arctan2(vec[1], vec[0]))
-            angles[(i, j)] = angles[(j, i)] = angle
+            angles[(i, j)] = angle
+            angles[(j, i)] = float(np.angle(-np.exp(1j * angle)))  # the opposite direction
         return angles
 
     @cached_property
@@ -162,9 +163,11 @@ class Graph:
             desc[i, 1] = np.std(lengths)
 
             if self.dim == 2 and self.edge_angles:
-                angles = np.array([self.edge_angles[(i, j)] for j in neighbors])
-                desc[i, 2] = np.mean(angles)
-                desc[i, 3] = np.std(angles)
+                # circular mean and spread: angles either side of +-pi point the same way
+                unit = np.exp(1j * np.array([self.edge_angles[(i, j)] for j in neighbors]))
+                resultant = unit.mean()
+                desc[i, 2] = np.angle(resultant)
+                desc[i, 3] = np.sqrt(-2.0 * np.log(max(abs(resultant), 1e-12)))
 
         return desc
 
