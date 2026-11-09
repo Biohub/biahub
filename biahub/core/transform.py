@@ -310,8 +310,9 @@ class Transform:
             # 2D transform
             if ndim == 2:
                 return cls(params, transform_type=transform_type)
-            elif ndim == 3:
+            if ndim == 3:
                 return cls.from_yx(cls(params, transform_type=transform_type))
+            raise ValueError(f"a 2D skimage transform gives ndim 2 or 3, not {ndim}")
         elif params.shape == (4, 4):
             # 3D transform
             if ndim == 3:
@@ -582,9 +583,10 @@ class Transform:
 
         The same as warping a volume of ones, without the warp: each reference voxel maps back
         into the moving volume, and along a row (the last axis) an affine map is a line, so
-        the covered part of each row is one interval. The edge is the resampler's: ANTs (3D)
-        samples up to half a voxel beyond the outer centres, the upper edge excluded; scipy
-        (2D) up to the outer centres.
+        the covered part of each row is one interval. The edge is the default resampler's
+        (`apply` with its defaults): ANTs (3D) samples up to half a voxel beyond the outer
+        centres, the upper edge excluded; scipy (2D) up to the outer centres. A 3D `apply`
+        sent to scipy (another `order`, `mode` or `cval`) has scipy's edge instead.
         """
         inverse = np.linalg.inv(self._matrix)
         ndim = len(ref_shape)
@@ -650,6 +652,11 @@ class Transform:
         >>> aligned = t.apply(moving, reference=fixed)
         """
         moving = np.asarray(moving)
+        if interpolation not in self._ANTS_INTERPOLATION:
+            raise ValueError(
+                f"interpolation must be one of {sorted(self._ANTS_INTERPOLATION)}, got "
+                f"{interpolation!r}"
+            )
 
         # Validate dimensions
         if moving.ndim != self._ndim:
@@ -733,12 +740,7 @@ class Transform:
         # and does not invert for us.
         transform_ants = self.invert().to_ants()
 
-        # Apply
-        if interpolation not in self._ANTS_INTERPOLATION:
-            raise ValueError(
-                f"interpolation must be one of {sorted(self._ANTS_INTERPOLATION)}, got "
-                f"{interpolation!r}"
-            )
+        # Apply (`apply` has checked the interpolation)
         result_ants = transform_ants.apply_to_image(
             moving_ants,
             reference=reference_ants,
@@ -868,5 +870,5 @@ class Transform:
         )
 
     def __hash__(self) -> int:
-        # For use in sets/dicts - based on rounded matrix values
-        return hash((self._ndim, self._type, tuple(self._matrix.round(6).ravel())))
+        # what __eq__ compares exactly: equal (allclose) matrices would not round alike
+        return hash((self._ndim, self._type))

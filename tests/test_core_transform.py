@@ -258,3 +258,25 @@ def test_fit_refuses_a_transform_type_it_does_not_know():
     src = np.random.default_rng(3).uniform(0, 10, (6, 3))
     with pytest.raises(ValueError, match="transform_type must be one of"):
         Transform.fit(src, 2 * src, "translation")
+
+
+def test_from_skimage_refuses_a_dimension_it_cannot_produce():
+    # a 2D scikit-image transform with ndim neither 2 nor 3 returned None
+    from skimage.transform import SimilarityTransform
+
+    with pytest.raises(ValueError, match="2D skimage transform.*ndim 2 or 3"):
+        Transform.from_skimage(SimilarityTransform(scale=0.9), ndim=4)
+
+
+def test_apply_refuses_an_interpolation_it_does_not_know_on_every_backend():
+    # the scipy path (2D, or order != 1) ignored the name and interpolated linearly
+    with pytest.raises(ValueError, match="interpolation must be one of"):
+        Transform.identity(2).apply(np.zeros((4, 4)), interpolation="cubic")
+
+
+def test_equal_transforms_hash_alike():
+    # equality is allclose; the hash rounded to 6 decimals, so two equal transforms on
+    # either side of a rounding boundary hashed differently
+    a = Transform.from_translation([0.0, 0.0, 0.12345651])
+    b = Transform.from_translation([0.0, 0.0, 0.12345649])
+    assert a == b and hash(a) == hash(b)
