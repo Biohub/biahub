@@ -19,6 +19,11 @@ need to be proposed in a [pull request](https://github.com/czbiohub/biahub/pulls
 Follow [these instructions](https://docs.github.com/en/get-started/quickstart/fork-a-repo)
 to [fork](https://github.com/czbiohub/biahub/fork) the repository.
 
+## Registration methods and features
+
+Adding a method, a preprocessing block, a score metric or a setting to `estimate-transform`
+follows the [registration engine guide](https://github.com/czbiohub-sf/biahub/blob/main/biahub/registration/CONTRIBUTING.md).
+
 ## Setting up a development environment
 
 1. Install the package in development mode:

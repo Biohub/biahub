@@ -383,19 +383,6 @@ def test_a_stack_gets_time_for_each_block(beads_plate, tmp_path):
     assert minutes(two) == 2 * minutes(one)
 
 
-def test_every_method_has_a_family_and_says_what_it_estimates():
-    from typing import get_args
-
-    from biahub.settings import METHOD_FAMILIES, EstimationMethod
-
-    assert set(METHOD_FAMILIES) == set(get_args(EstimationMethod))
-    assert {family for family, _ in METHOD_FAMILIES.values()} == {
-        "landmark-based",
-        "intensity-based",
-        "manual",
-    }
-
-
 @pytest.mark.parametrize(
     "old, new",
     [
@@ -409,17 +396,6 @@ def test_an_old_method_name_says_its_new_one(old, new):
         _settings(old)
     with pytest.raises(ValidationError, match=f"is now '{new}'"):
         _settings([{old: {}}])
-
-
-def test_every_method_is_named_like_its_settings_section():
-    # YAML values and keys follow one style: a method's name is its settings section
-    from typing import get_args
-
-    from biahub.settings import METHOD_BLOCKS, EstimationMethod
-
-    assert {m: METHOD_BLOCKS[m] for m in get_args(EstimationMethod)} == {
-        m: m for m in get_args(EstimationMethod) if m in METHOD_BLOCKS
-    }
 
 
 def _stage(block, error=None, won=False):
@@ -462,21 +438,3 @@ def test_a_timepoint_whose_block_failed_is_unreliable_and_says_why():
     result.repaired_from[0] = "consensus_full"
     entries = transform_entries(result, [0, 1], [Transform.identity(3)] * 2, hard_fail=0.0)
     assert (entries[0].status, entries[0].note) == ("accepted", None)
-
-
-def test_every_method_lives_in_its_familys_folder_under_its_own_name():
-    # registration/methods/<family>/<method>.py: the family and the name a config uses
-    from pathlib import Path
-
-    import biahub.registration.methods as methods
-
-    from biahub.settings import METHOD_FAMILIES
-
-    folders = {
-        "landmark-based": "landmark",
-        "intensity-based": "intensity",
-        "manual": "manual",
-    }
-    root = Path(methods.__file__).parent
-    for method, (family, _) in METHOD_FAMILIES.items():
-        assert (root / folders[family] / f"{method}.py").is_file(), method

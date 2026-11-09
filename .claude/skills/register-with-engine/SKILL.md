@@ -39,6 +39,11 @@ method -- for ants, pick one FOV with good structure); several give one list eac
   submits its own SLURM jobs: quick single-position runs, and **manual** registration
   (interactive: napari plus a terminal, so it cannot run in Nextflow).
 
+**Changing the engine** (a new method, block, score metric or setting, or a fix to how
+results are computed) is not a run: follow `biahub/registration/CONTRIBUTING.md`. This
+skill changes with the engine -- a method gets a row in `references/methods.md` and a
+template here (`tests/test_registration_rules.py` checks both).
+
 ## 0. Load context
 
 - `references/methods.md`: which method for which job, the `preprocess` blocks, the
