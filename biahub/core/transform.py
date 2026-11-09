@@ -10,7 +10,7 @@ Coordinate convention: ZYX ordering for 3D, YX for 2D.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
 
 import numpy as np
 
@@ -346,6 +346,10 @@ class Transform:
         dst = np.asarray(dst, dtype=float)
         if solver not in ("least_squares", "skimage"):
             raise ValueError(f"solver must be 'least_squares' or 'skimage', got {solver!r}")
+        if transform_type not in get_args(TransformType):
+            raise ValueError(
+                f"transform_type must be one of {get_args(TransformType)}, got {transform_type!r}"
+            )
         if transform_type == "affine" and solver == "least_squares":
             ndim = src.shape[1]
             design = np.hstack([src, np.ones((len(src), 1))])
@@ -365,7 +369,9 @@ class Transform:
             model_class = {
                 "affine": AffineTransform,
                 "similarity": SimilarityTransform,
-            }.get(transform_type, EuclideanTransform)
+                "euclidean": EuclideanTransform,
+                "rigid": EuclideanTransform,
+            }[transform_type]
             model = model_class.from_estimate(src, dst)
             if not model:
                 raise ValueError(f"{transform_type} fit failed on {len(src)} pairs")

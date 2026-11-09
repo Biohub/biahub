@@ -251,3 +251,10 @@ def test_from_yx_applies_a_2d_transform_in_every_plane_and_shifts_z():
     np.testing.assert_allclose(moved[:, 0], points[:, 0] + 2.5)
     np.testing.assert_allclose(moved[:, 1:], points[:, 1:] @ yx[:2, :2].T + yx[:2, 2])
     assert lifted.transform_type == "similarity" and lifted.ndim == 3
+
+
+def test_fit_refuses_a_transform_type_it_does_not_know():
+    # 'translation' was fitted as a rigid transform and kept its name: a 2x scale lost
+    src = np.random.default_rng(3).uniform(0, 10, (6, 3))
+    with pytest.raises(ValueError, match="transform_type must be one of"):
+        Transform.fit(src, 2 * src, "translation")
