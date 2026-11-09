@@ -349,7 +349,9 @@ class Transform:
         if transform_type == "affine" and solver == "least_squares":
             ndim = src.shape[1]
             design = np.hstack([src, np.ones((len(src), 1))])
-            coeffs, *_ = np.linalg.lstsq(design, dst, rcond=None)
+            coeffs, _, rank, _ = np.linalg.lstsq(design, dst, rcond=None)
+            if rank < ndim + 1:  # too few, collinear or coplanar points constrain no affine
+                raise ValueError(f"affine fit failed on {len(src)} pairs")
             matrix = np.eye(ndim + 1)
             matrix[:ndim, :ndim] = coeffs[:ndim].T
             matrix[:ndim, ndim] = coeffs[ndim]
