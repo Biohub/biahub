@@ -21,15 +21,17 @@ from biahub.core.nodes.solvers import cross_checked, linear_assignment, spectral
 
 class GraphMatcher:
     """
-    Matches nodes between two geometric graphs for point registration.
+    Matches nodes between two geometric graphs.
 
-    Supports two matching algorithms:
-    - 'hungarian': Graph-based matching using cost matrix + Hungarian algorithm
-    - 'descriptor': Feature-based matching using skimage.feature.match_descriptors
+    Three matching algorithms:
+    - 'hungarian': a weighted cost matrix (`costs.weighted_cost`) + the Hungarian algorithm
+    - 'descriptor': skimage.feature.match_descriptors on the node positions
+    - 'spectral': Leordeanu-Hebert spectral matching on pairwise distances (invariant to
+      translation and rotation, for a poor start), `_match_spectral`
 
     Parameters
     ----------
-    algorithm : {'hungarian', 'descriptor'}, default='hungarian'
+    algorithm : {'hungarian', 'descriptor', 'spectral'}, default='hungarian'
         Matching algorithm to use
     weights : dict[str, float], optional
         Weights for cost components (hungarian only):
@@ -51,6 +53,9 @@ class GraphMatcher:
         Maximum ratio between best and second-best match (Lowe's ratio test)
     metric : str, default='euclidean'
         Distance metric for descriptor matching (descriptor algorithm only)
+    spectral_sigma, spectral_rel_cut, spectral_max_iter : float, float, int
+        Spectral matching only: the distance agreement's width (sigma), the relative
+        affinity below which a candidate is dropped, and the power iterations
     verbose : bool, default=False
         Print matching statistics
 
@@ -123,9 +128,9 @@ class GraphMatcher:
         Parameters
         ----------
         moving : Graph
-            Moving/source graph
+            Moving graph
         reference : Graph
-            Reference/target graph
+            Reference graph
         verbose : bool, optional
             Override instance verbose setting
 
@@ -158,7 +163,7 @@ class GraphMatcher:
             raise ValueError(f"Unknown algorithm: {self.algorithm}")
 
     # ============================================================
-    # HUNGARIAN MATCHING
+    # SPECTRAL MATCHING
     # ============================================================
 
     def _match_spectral(
@@ -272,13 +277,11 @@ class GraphMatcher:
         reference: Graph,
         verbose: bool,
     ) -> NDArray[np.integer]:
-        """
-        Feature-based matching using edge descriptors.
+        """Match the node positions with skimage.feature.match_descriptors.
 
-        Uses skimage.feature.match_descriptors with edge_descriptors
-        as the feature vectors.
+        The positions are the feature vectors: nearest neighbours in position, with
+        `cross_check` and `max_ratio`.
         """
-        # Get descriptors
         mov_desc = moving.nodes
         ref_desc = reference.nodes
 
@@ -368,7 +371,7 @@ class GraphMatcher:
             if verbose:
                 click.echo(f"Matches after distance filtering: {len(matches)}")
 
-        # Direction filtering (2D/3D) - NEW
+        # Direction filtering (2D/3D)
         if direction_threshold:  # 0 or None: no direction filter
             vectors = reference.nodes[matches[:, 1]] - moving.nodes[matches[:, 0]]
 

@@ -506,7 +506,8 @@ class Transform:
         from) and their two images compared, in output voxels scaled by `voxel_um` (the
         output's z, y, x). `max_um` is exact (the difference of two affine maps is largest
         at a corner); `mean_um` is the mean over a `samples`-per-axis grid. `max_z_um` and
-        `max_yx_um` split the largest gap into its z part and its yx part.
+        `max_yx_um` are the largest z and the largest yx gap, each over the corners (not
+        always at the same corner, so they are not the parts of `max_um`).
         """
         axes = [np.linspace(0, n - 1, samples) for n in shape_zyx]
         grid = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, len(shape_zyx))

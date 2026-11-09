@@ -16,23 +16,14 @@ from sklearn.neighbors import NearestNeighbors, radius_neighbors_graph
 
 class Graph:
     """
-    Geometric graph for 2D/3D point registration with local feature extraction.
+    Geometric graph of 2D/3D points, with local features of each node's edges.
 
     Parameters
     ----------
     nodes : NDArray[np.floating]
         (N, D) array of nodes (points)
     edges : list[tuple[int, int]]
-        List of edges (pairs of node indices)
-    mode : Literal["knn", "radius", "full"], default="knn"
-        Mode for building edges:
-        - "knn": k-nearest neighbors
-        - "radius": radius neighbors
-        - "full": all-to-all
-    k : int, default=5
-        Number of nearest neighbors for k-nearest neighbors mode
-    radius : float, default=30.0
-        Radius for radius neighbors mode
+        List of edges (pairs of node indices); `from_nodes` builds them
 
     Examples
     --------
@@ -67,7 +58,11 @@ class Graph:
         k: int = 5,
         radius: float = 30.0,
     ) -> "Graph":
-        """Build a graph from nodes with automatic edge construction."""
+        """Build a graph from nodes, its edges by `mode`.
+
+        "knn": each node to its `k` nearest neighbours; "radius": to every node within
+        `radius`; "full": all to all.
+        """
         edges = cls._build_edges(nodes, mode=mode, k=k, radius=radius)
         return cls(nodes, edges)
 

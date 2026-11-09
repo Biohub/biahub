@@ -669,8 +669,8 @@ class VoteIcpEstimator(EstimatorBase):
     def _register(self, mov_peaks, ref_peaks, initial_transform, initial_radius):
         s = self.settings
         return _vote_icp_register(
-            mov_peaks=mov_peaks,
-            ref_peaks=ref_peaks,
+            mov_points=mov_peaks,
+            ref_points=ref_peaks,
             initial_transform=initial_transform,
             initial_capture_radius=initial_radius,
             min_capture_radius=s.min_capture_radius,
