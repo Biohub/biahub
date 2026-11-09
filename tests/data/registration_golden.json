@@ -1,0 +1,537 @@
+{
+ "file": {
+  "entries": {
+   "A/1/0/None": {
+    "filled_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": "file+refined",
+    "status": "accepted"
+   },
+   "A/1/1/None": {
+    "filled_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      -3.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0,
+      3.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": "file",
+    "status": "accepted"
+   },
+   "A/1/2/None": {
+    "filled_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      0.0,
+      -6.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0,
+      3.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": "file+refined",
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "positions/A/1/0/estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0
+    }
+   },
+   "positions/A/1/1/estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0
+    }
+   },
+   "positions/A/1/2/estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0
+    }
+   }
+  }
+ },
+ "matrix": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "matrix": [
+     [
+      0.999970344,
+      0.005068464,
+      -0.005798361,
+      -2.03626863
+     ],
+     [
+      -0.004999678,
+      0.99991768,
+      0.01181675,
+      2.356669974
+     ],
+     [
+      0.005857776,
+      -0.011787409,
+      0.999913368,
+      -3.726049884
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "matrix": [
+     [
+      0.999970344,
+      0.005068464,
+      -0.005798361,
+      -2.03626863
+     ],
+     [
+      -0.004999678,
+      0.99991768,
+      0.01181675,
+      2.356669974
+     ],
+     [
+      0.005857776,
+      -0.011787409,
+      0.999913368,
+      -3.726049884
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.3076923076923077,
+     "1": 1.3076923076923077
+    }
+   }
+  }
+ },
+ "propagate": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      -0.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      0.0
+     ],
+     [
+      -0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "accepted"
+   },
+   "None/2": {
+    "filled_from": null,
+    "matrix": [
+     [
+      0.999992676,
+      -0.00097708,
+      -0.003700387,
+      -3.823698277
+     ],
+     [
+      0.000973016,
+      0.999998922,
+      -0.001099869,
+      6.023448804
+     ],
+     [
+      0.003701458,
+      0.001096261,
+      0.999992549,
+      -8.009541885
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0,
+     "1": 1.0,
+     "2": 1.0
+    }
+   }
+  }
+ },
+ "repair": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "accepted"
+   },
+   "None/2": {
+    "filled_from": "initial",
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "unreliable"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {
+     "2": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
+    },
+    "filled_from": {
+     "2": "initial"
+    },
+    "flagged": [
+     2
+    ],
+    "repaired_from": {},
+    "repairs": {
+     "2": {
+      "accepted": false,
+      "candidate_failures": {
+       "consensus_full": "CandidateUnavailableError: Consensus initial transform: only 2 timepoints score >= 0.75; need at least 5.",
+       "initial": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)",
+       "t-1": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
+      },
+      "candidate_scores": {},
+      "polish_rounds": 0,
+      "repair_transform_score": null,
+      "repaired_from": "unchanged",
+      "score": null
+     }
+    },
+    "scores": {
+     "0": 1.0,
+     "1": 1.0,
+     "2": null
+    }
+   }
+  }
+ },
+ "shapes": {
+  "entries": {
+   "None/0": {
+    "filled_from": "initial",
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      -0.0
+     ],
+     [
+      0.0,
+      -1.0,
+      0.0,
+      59.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "unreliable"
+   },
+   "None/1": {
+    "filled_from": "initial",
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      -0.0
+     ],
+     [
+      0.0,
+      -1.0,
+      0.0,
+      59.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "started_from": null,
+    "status": "unreliable"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {
+     "0": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)",
+     "1": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)"
+    },
+    "filled_from": {
+     "0": "initial",
+     "1": "initial"
+    },
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": null,
+     "1": null
+    }
+   }
+  }
+ }
+}

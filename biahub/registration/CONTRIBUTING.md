@@ -71,7 +71,10 @@ images) or `manual` (a person or the setup decides).
 - **Same results**: a refactor or a speed-up shows identical outputs before and after,
   on the test suite and on runs of real data (records, transforms, evaluation). If the
   numbers change only by round-off, say so in the commit, with the size; do not keep a
-  roundabout to avoid it.
+  roundabout to avoid it. `tests/test_registration_golden.py` holds five synthetic runs'
+  results (an initial matrix, shapes, propagation, repair, a file start); a change meant
+  to move results rewrites them (`BIAHUB_UPDATE_GOLDEN=1 pytest
+  tests/test_registration_golden.py`) and the file's diff is reviewed with the change.
 - **Measure first**: an efficiency change starts from a profile on a realistic volume
   and ends with the same profile; a change that does not pay is dropped, and the
   measurement says why.
