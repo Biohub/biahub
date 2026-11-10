@@ -991,6 +991,10 @@ class AntsRegistrationSettings(MyBaseModel):
         message = f"ants {old} are no longer settings: remove them"
         if blocks:
             message += "; under preprocess:, write " + ", ".join(blocks)
+        if data.get("sobel_filter"):
+            # the old score compared edges too: the same run needs a sobel score block
+            message += "; and under score:, preprocess: [{sobel: {}}]"
+        message += " (`biahub convert-settings` writes all of it)"
         raise ValueError(". ".join([message, *notes]))
 
 

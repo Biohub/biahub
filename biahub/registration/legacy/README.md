@@ -64,7 +64,8 @@ biahub convert-settings -c "xyz_stabilization_settings/*.yml" -o transforms.yml 
 - Phase-cross-correlation's `t_reference` becomes `reference.frame`.
 - ANTs preparation fields become `preprocess` blocks: `sobel_filter` -> `sobel` (and a
   `sobel` score block, as the old score compared edges), `ref_mask_radius` ->
-  `mask_circle` on the reference, `clip` -> `clip_percentiles` (its fixed mantis limits
+  `mask_circle` on the reference when `crop` was on (the old mask applied only when
+  cropping; otherwise it is dropped with a note), `clip` -> `clip_percentiles` (its fixed mantis limits
   are replaced, with a note); `crop` is dropped with a note (ANTs no longer warps the
   moving volume first, so there is no empty border to crop).
 

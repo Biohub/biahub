@@ -150,3 +150,12 @@ def test_propagation_loads_for_phase_correlation_without_its_section():
     assert _settings(method="phase_cross_corr", transform=propagate).transform.propagates
     stack = [{"phase_cross_corr": {}}, {"ants": {}}]
     assert _settings(method=stack, transform=propagate).transform.propagates
+
+
+def test_an_old_ants_sobel_filter_names_both_blocks_and_the_converter():
+    # fixing it by hand from the message changed the score: the old score compared edges
+    with pytest.raises(ValidationError) as error:
+        _settings(method="ants", ants={"sobel_filter": True})
+    message = str(error.value)
+    assert "- sobel: {}" in message and "score:, preprocess: [{sobel: {}}]" in message
+    assert "biahub convert-settings" in message
