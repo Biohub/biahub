@@ -294,9 +294,7 @@ class NodeGraphEstimator(EstimatorBase):
             if initial_transform is not None
             else mov
         )
-        if initial_transform is not None and getattr(
-            self.mov_detector, "missing_as_nan", False
-        ):
+        if initial_transform is not None and self.mov_detector.missing_as_nan:
             # the warp's padding is no data, not dark: for a detector that leaves NaN out
             mov_for_detection = np.asarray(mov_for_detection, dtype=np.float32).copy()
             mov_for_detection[~initial_transform.coverage(mov.shape, ref.shape)] = np.nan

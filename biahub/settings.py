@@ -495,6 +495,15 @@ class BeadsMatchSettings(MyBaseModel):
     filter_matches_settings: FilterMatchesSettings = FilterMatchesSettings()
     qc_settings: QCBeadsRegistrationSettings = QCBeadsRegistrationSettings()
 
+    @model_validator(mode="after")
+    def check_spectral_has_a_second_candidate(self) -> "BeadsMatchSettings":
+        if self.spectral != "off" and self.algorithm == "spectral":
+            raise ValueError(
+                "bead_matching.spectral adds a spectral-then-refine candidate, but the "
+                "algorithm is already spectral: set spectral: off, or another algorithm"
+            )
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def refuse_legacy_keys(cls, data):

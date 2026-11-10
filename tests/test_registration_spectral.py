@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from pydantic import ValidationError
 from scipy.ndimage import shift as ndi_shift
 from scipy.spatial.transform import Rotation
 
@@ -291,3 +292,23 @@ def test_the_spectral_candidate_is_configured_by_spectral():
 
     assert BeadsMatchSettings(spectral="on_low_score").spectral == "on_low_score"
     assert BeadsMatchSettings().spectral == "off"
+
+
+def test_the_spectral_competition_names_what_ran_and_needs_a_second_candidate():
+    # names came from the settings: a vote-ICP first candidate was called 'hungarian'
+    vote = BeadsMatchSettings(spectral="always", estimation_mode="vote_icp")
+    assert set(
+        build_beads_estimator(vote, "euclidean", score_fn=lambda t, m, r: 0.0).candidates
+    ) == {
+        "vote_icp",
+        "spectral+hungarian",
+    }
+    descriptor = BeadsMatchSettings(spectral="always", algorithm="match_descriptor")
+    assert (
+        "spectral+match_descriptor"
+        in build_beads_estimator(
+            descriptor, "euclidean", score_fn=lambda t, m, r: 0.0
+        ).candidates
+    )
+    with pytest.raises(ValidationError, match="already spectral"):
+        BeadsMatchSettings(spectral="always", algorithm="spectral")

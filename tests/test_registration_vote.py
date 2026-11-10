@@ -304,6 +304,8 @@ def test_vote_icp_fits_moving_onto_reference_directly():
 class _Points:
     """A detector that returns the same points whatever it is given."""
 
+    missing_as_nan = False
+
     def __init__(self, points):
         self.points = np.asarray(points, dtype=float)
 

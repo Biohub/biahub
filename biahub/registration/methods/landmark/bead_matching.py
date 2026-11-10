@@ -283,7 +283,9 @@ def warped_bead_peaks(
 
 
 class BeadNodeDetector:
-    """Detects bead centroids as local-maxima peaks -- today's only node source."""
+    """Detects bead centroids as local-maxima peaks."""
+
+    missing_as_nan = False  # the padding stays zeros: no peak is found there
 
     def __init__(self, settings: DetectPeaksSettings):
         self.settings = settings
@@ -591,8 +593,14 @@ def build_beads_estimator(
     cascade = ChainedEstimator(
         [node_graph(spectral_settings), node_graph(beads_match_settings)], score_fn=score_fn
     )
+    # named for what each candidate is, so a record says what won
+    first = (
+        "vote_icp"
+        if beads_match_settings.estimation_mode == "vote_icp"
+        else beads_match_settings.algorithm
+    )
     return CompetingEstimator(
-        {beads_match_settings.algorithm: configured, "spectral+hungarian": cascade},
+        {first: configured, f"spectral+{beads_match_settings.algorithm}": cascade},
         score_fn=score_fn,
         escalate_below=(
             beads_match_settings.qc_settings.score_threshold

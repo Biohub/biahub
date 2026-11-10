@@ -39,6 +39,8 @@ class _FixedNodeDetector:
     """Returns a canned point set regardless of the array -- isolates matching +
     transform fitting from real peak detection for tests."""
 
+    missing_as_nan = False
+
     def __init__(self, points: np.ndarray):
         self.points = points
 

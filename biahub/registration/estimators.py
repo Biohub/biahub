@@ -78,7 +78,13 @@ class EstimatorBase:
 
 @runtime_checkable
 class NodeDetector(Protocol):
-    """Extracts point coordinates (nodes) from an array."""
+    """Extracts point coordinates (nodes) from an array.
+
+    `missing_as_nan`: the detector reads NaN as no data, so the estimator marks a warp's
+    padding NaN for it (nuclei); False keeps the padding as zeros (beads).
+    """
+
+    missing_as_nan: bool
 
     def detect(self, array: ArrayLike) -> ArrayLike: ...
 
