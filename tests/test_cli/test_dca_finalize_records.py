@@ -40,15 +40,35 @@ def config(tmp_path) -> Path:
     return write_config(tmp_path)
 
 
+AIRTABLE_BLOCK = (
+    "airtable:\n"
+    "  base_id: appPRIVATEBASE0001\n"
+    "  table: tblPRIVATETABLE001\n"
+    "  dataset: {dataset}\n"
+    "  values:\n"
+    "    organelle: mitochondria\n"
+)
+
+
 class SheetClient:
-    """AirTable client serving each sample-sheet row as a well-level record."""
+    """AirTable client serving each sample-sheet row as a well-level record.
+
+    Columns with no AirTable field (``organelle``) are left out, as in the lab table.
+    """
 
     def __init__(self, rows: list[dict[str, str]]):
         self._rows = rows
 
     def records(self, dataset: str) -> list[dict[str, Any]]:
         return [
-            {"id": f"rec{i}", "fields": {AIRTABLE_FIELDS[k]: v for k, v in row.items()}}
+            {
+                "id": f"rec{i}",
+                "fields": {
+                    AIRTABLE_FIELDS[k]: v
+                    for k, v in row.items()
+                    if AIRTABLE_FIELDS[k] is not None
+                },
+            }
             for i, row in enumerate(self._rows)
             if row["dataset"] == dataset
         ]
@@ -57,8 +77,7 @@ class SheetClient:
 def test_provenance_has_no_local_paths_or_airtable_ids(plate, config, tmp_path):
     sheet_path(plate).unlink()
     config.write_text(
-        "base_config: dca_base.toml\n"
-        "airtable:\n  base_id: appPRIVATEBASE0001\n  table: tblPRIVATETABLE001\n"
+        "base_config: dca_base.toml\n" + AIRTABLE_BLOCK.format(dataset=plate.stem)
     )
     client = SheetClient([table_row(well) for well in WELLS])
     dca_finalize([plate / well / "0" for well in WELLS], config, airtable_client=client)
@@ -107,7 +126,8 @@ def test_airtable_client_error_does_not_abort_other_plates(
     write_table(sheet_path(other), [table_row("A/1", dataset=other.stem)])
     config.write_text(
         "base_config: dca_base.toml\n"
-        "airtable:\n  base_id: b\n  table: t\n  token_env: BIAHUB_TEST_AIRTABLE_TOKEN\n"
+        "airtable:\n  base_id: b\n  table: t\n  dataset: ds\n"
+        "  token_env: BIAHUB_TEST_AIRTABLE_TOKEN\n"
     )
     result = run(plate, config, other)
     assert isinstance(result.exception, SystemExit), result.exception
@@ -117,3 +137,21 @@ def test_airtable_client_error_does_not_abort_other_plates(
         for line in lines
     )
     assert f"{other / 'B' / '1' / '0'}: no metadata row for well B/1" in lines
+
+
+def test_airtable_dataset_and_na_perturbation_finalize(plate, config):
+    sheet_path(plate).unlink()
+    dataset = plate.stem.removesuffix("_plate")
+    config.write_text("base_config: dca_base.toml\n" + AIRTABLE_BLOCK.format(dataset=dataset))
+    client = SheetClient(
+        [
+            table_row(WELLS[0], dataset=dataset, perturbation="N/A", moi=""),
+            table_row(WELLS[1], dataset=dataset),
+        ]
+    )
+    dca_finalize([plate / well / "0" for well in WELLS], config, airtable_client=client)
+    uninfected = attributes(plate, WELLS[0])["dca"]["perturbation"]
+    infected = attributes(plate, WELLS[1])["dca"]["perturbation"]
+    assert uninfected["control_class"] == "negcon"
+    assert uninfected["definition"]["perturbation_id"] == "uninfected"
+    assert infected["control_class"] == "treatment"
