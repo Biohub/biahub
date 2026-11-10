@@ -1,8 +1,140 @@
 {
+ "blank": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/2": {
+    "filled_from": "initial",
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "unreliable"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {
+     "2": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
+    },
+    "filled_from": {
+     "2": "initial"
+    },
+    "flagged": [
+     2
+    ],
+    "repaired_from": {},
+    "repairs": {
+     "2": {
+      "accepted": false,
+      "candidate_failures": {
+       "consensus": "CandidateUnavailableError: Consensus initial transform: only 2 timepoints are unflagged and score >= 0.75; need at least 5.",
+       "initial": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)",
+       "t-1": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
+      },
+      "candidate_scores": {},
+      "polish_rounds": 0,
+      "repair_transform_score": null,
+      "repaired_from": "unchanged",
+      "score": null
+     }
+    },
+    "scores": {
+     "0": 1.0,
+     "1": 1.0,
+     "2": null
+    }
+   }
+  }
+ },
  "file": {
   "entries": {
    "A/1/0/None": {
     "filled_from": null,
+    "initialized_from": "file+refined",
     "matrix": [
      [
       1.0,
@@ -29,11 +161,11 @@
       1.0
      ]
     ],
-    "started_from": "file+refined",
     "status": "accepted"
    },
    "A/1/1/None": {
     "filled_from": null,
+    "initialized_from": "file",
     "matrix": [
      [
       1.0,
@@ -60,11 +192,11 @@
       1.0
      ]
     ],
-    "started_from": "file",
     "status": "accepted"
    },
    "A/1/2/None": {
     "filled_from": null,
+    "initialized_from": "file+refined",
     "matrix": [
      [
       1.0,
@@ -91,7 +223,6 @@
       1.0
      ]
     ],
-    "started_from": "file+refined",
     "status": "accepted"
    }
   },
@@ -132,6 +263,7 @@
   "entries": {
    "None/0": {
     "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       0.999970344,
@@ -158,11 +290,11 @@
       1.0
      ]
     ],
-    "started_from": null,
     "status": "accepted"
    },
    "None/1": {
     "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       0.999970344,
@@ -189,7 +321,6 @@
       1.0
      ]
     ],
-    "started_from": null,
     "status": "accepted"
    }
   },
@@ -211,6 +342,7 @@
   "entries": {
    "None/0": {
     "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       1.0,
@@ -237,11 +369,11 @@
       1.0
      ]
     ],
-    "started_from": null,
     "status": "accepted"
    },
    "None/1": {
     "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       1.0,
@@ -268,11 +400,11 @@
       1.0
      ]
     ],
-    "started_from": null,
     "status": "accepted"
    },
    "None/2": {
     "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       0.999992676,
@@ -299,7 +431,6 @@
       1.0
      ]
     ],
-    "started_from": null,
     "status": "accepted"
    }
   },
@@ -322,6 +453,7 @@
   "entries": {
    "None/0": {
     "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       1.0,
@@ -348,11 +480,11 @@
       1.0
      ]
     ],
-    "started_from": null,
     "status": "accepted"
    },
    "None/1": {
     "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       1.0,
@@ -379,29 +511,29 @@
       1.0
      ]
     ],
-    "started_from": null,
     "status": "accepted"
    },
    "None/2": {
-    "filled_from": "initial",
+    "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
-      1.0,
-      0.0,
-      0.0,
-      0.0
+      0.999997467,
+      -0.000503589,
+      -0.002193703,
+      -1.897610017
      ],
      [
-      0.0,
-      1.0,
-      0.0,
-      0.0
+      0.000516236,
+      0.999983229,
+      0.005768523,
+      2.754657637
      ],
      [
-      0.0,
-      0.0,
-      1.0,
-      0.0
+      0.002190761,
+      -0.005769641,
+      0.999980956,
+      -10.610642856
      ],
      [
       0.0,
@@ -410,41 +542,39 @@
       1.0
      ]
     ],
-    "started_from": null,
-    "status": "unreliable"
+    "status": "accepted"
    }
   },
   "reports": {
    "estimate_transform_report.json": {
-    "errors": {
-     "2": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
-    },
-    "filled_from": {
-     "2": "initial"
-    },
+    "errors": {},
+    "filled_from": {},
     "flagged": [
      2
     ],
-    "repaired_from": {},
+    "repaired_from": {
+     "2": "t-1"
+    },
     "repairs": {
      "2": {
-      "accepted": false,
+      "accepted": true,
       "candidate_failures": {
        "consensus": "CandidateUnavailableError: Consensus initial transform: only 2 timepoints are unflagged and score >= 0.75; need at least 5.",
-       "initial": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)",
-       "t-1": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
+       "initial": "EstimationError: too few matches to fit a transform: 2 from 14 x 17 nodes (need >= 3)"
       },
-      "candidate_scores": {},
+      "candidate_scores": {
+       "t-1": 1.2307692307692308
+      },
       "polish_rounds": 0,
-      "repair_transform_score": null,
-      "repaired_from": "unchanged",
-      "score": null
+      "repair_transform_score": 1.2307692307692308,
+      "repaired_from": "t-1",
+      "score": 1.2307692307692308
      }
     },
     "scores": {
      "0": 1.0,
      "1": 1.0,
-     "2": null
+     "2": 1.2307692307692308
     }
    }
   }
@@ -452,25 +582,26 @@
  "shapes": {
   "entries": {
    "None/0": {
-    "filled_from": "initial",
+    "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       1.0,
       0.0,
-      0.0,
-      0.0
+      -0.0,
+      -2.0
      ],
      [
-      0.0,
+      -0.0,
       0.0,
       1.0,
-      -0.0
+      3.0
      ],
      [
-      0.0,
+      -0.0,
       -1.0,
-      0.0,
-      59.0
+      -0.0,
+      55.0
      ],
      [
       0.0,
@@ -479,29 +610,29 @@
       1.0
      ]
     ],
-    "started_from": null,
-    "status": "unreliable"
+    "status": "accepted"
    },
    "None/1": {
-    "filled_from": "initial",
+    "filled_from": null,
+    "initialized_from": null,
     "matrix": [
      [
       1.0,
       0.0,
-      0.0,
-      0.0
+      -0.0,
+      -2.0
      ],
      [
-      0.0,
+      -0.0,
       0.0,
       1.0,
-      -0.0
+      3.0
      ],
      [
-      0.0,
+      -0.0,
       -1.0,
-      0.0,
-      59.0
+      -0.0,
+      55.0
      ],
      [
       0.0,
@@ -510,54 +641,19 @@
       1.0
      ]
     ],
-    "started_from": null,
-    "status": "unreliable"
+    "status": "accepted"
    }
   },
   "reports": {
    "estimate_transform_report.json": {
-    "errors": {
-     "0": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)",
-     "1": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)"
-    },
-    "filled_from": {
-     "0": "initial",
-     "1": "initial"
-    },
-    "flagged": [
-     0,
-     1
-    ],
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
     "repaired_from": {},
-    "repairs": {
-     "0": {
-      "accepted": false,
-      "candidate_failures": {
-       "consensus": "CandidateUnavailableError: Consensus initial transform: only 0 timepoints are unflagged and score >= 0.75; need at least 5.",
-       "initial": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)"
-      },
-      "candidate_scores": {},
-      "polish_rounds": 0,
-      "repair_transform_score": null,
-      "repaired_from": "unchanged",
-      "score": null
-     },
-     "1": {
-      "accepted": false,
-      "candidate_failures": {
-       "consensus": "CandidateUnavailableError: Consensus initial transform: only 0 timepoints are unflagged and score >= 0.75; need at least 5.",
-       "initial": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)"
-      },
-      "candidate_scores": {},
-      "polish_rounds": 0,
-      "repair_transform_score": null,
-      "repaired_from": "unchanged",
-      "score": null
-     }
-    },
+    "repairs": {},
     "scores": {
-     "0": null,
-     "1": null
+     "0": 1.0,
+     "1": 1.0
     }
    }
   }

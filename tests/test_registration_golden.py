@@ -6,9 +6,10 @@ results rewrites it, `BIAHUB_UPDATE_GOLDEN=1 pytest tests/test_registration_gold
 and the diff of the file is part of the change's review.
 
   matrix     : an initial matrix near the truth
-  shapes     : the initial transform from the stores' grids (method shapes)
+  shapes     : the initial transform from the stores' grids, on a turned moving volume
   propagate  : each timepoint from the previous one, on a drifting plate
-  repair     : a blank timepoint, repaired from its neighbours
+  repair     : a timepoint too far off for the run's start, repaired from t-1
+  blank      : a blank timepoint: nothing to repair it from, a stand-in
   file       : an earlier result as the start of three positions, residual score
 """
 
@@ -78,7 +79,7 @@ def _run(tmp_path: Path, name: str, positions: list[Path], config: dict) -> dict
             "matrix": np.round(np.asarray(entry.matrix, float), 9).tolist(),
             "status": entry.status,
             "filled_from": entry.filled_from,
-            "started_from": entry.initialized_from,
+            "initialized_from": entry.initialized_from,
         }
         for key, items in lists.items()
         for entry in items
@@ -98,6 +99,9 @@ def _results(tmp_path: Path) -> dict:
     ref = _synthetic_bead_volume(rng, SHAPE)
     mov = ndi_shift(ref, shift=APPLIED_SHIFT_ZYX, order=1, mode="constant", cval=0.0)
     beads = _write_plate(tmp_path / "beads.zarr", [(ref, mov), (ref, mov)])
+    # the moving camera turned a quarter: shapes' rotate90 -1 turns it back
+    turned = np.ascontiguousarray(np.rot90(mov, k=1, axes=(1, 2)))
+    turned_plate = _write_plate(tmp_path / "turned.zarr", [(ref, turned), (ref, turned)])
     near = Transform.from_translation(np.add(APPLIED_SHIFT_ZYX, (0.5, 0.5, -0.5))).to_list()
     euclidean = {"type": "euclidean"}
     results = {
@@ -115,7 +119,7 @@ def _results(tmp_path: Path) -> dict:
         "shapes": _run(
             tmp_path,
             "shapes",
-            [beads],
+            [turned_plate],
             _config(
                 transform={
                     **euclidean,
@@ -151,7 +155,14 @@ def _results(tmp_path: Path) -> dict:
     )
     blank = rng.normal(0, 5.0, size=SHAPE).astype(np.float32)
     broken = _write_plate(tmp_path / "blank.zarr", [(ref, mov), (ref, mov), (ref, blank)])
-    results["repair"] = _run(tmp_path, "repair", [broken], _config())
+    results["blank"] = _run(tmp_path, "blank", [broken], _config())
+    # t=2 moved 7 voxels further in x: from the run's start too few beads match, from
+    # t-1's result they do
+    far = ndi_shift(ref, shift=(2.0, -3.0, 11.0), order=1, mode="constant", cval=0.0)
+    jumped = _write_plate(tmp_path / "jump.zarr", [(ref, mov), (ref, mov), (ref, far)])
+    results["repair"] = _run(
+        tmp_path, "repair", [jumped], _config(transform={"type": "euclidean"})
+    )
 
     three = tmp_path / "three.zarr"
     with open_ome_zarr(three, layout="hcs", mode="w", channel_names=["Phase3D", "GFP"]) as p:
