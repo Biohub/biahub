@@ -522,7 +522,10 @@ def test_estimate_transform_previous_timepoint_runs_one_sequential_job(tmp_path)
     assert {"stand_in", "filled_from"} <= set(record)
 
 
-def test_repair_is_skipped_for_a_method_that_ignores_initial_transforms(tmp_path, capsys):
+def test_repair_re_estimates_whole_volume_phase_correlation_from_other_starts(
+    tmp_path, capsys
+):
+    # it was skipped (phase correlation ignored its start); it now measures after each one
     rng = np.random.default_rng(11)
     ref = _synthetic_bead_volume(rng, SHAPE)
     blank = rng.normal(0, 5.0, size=SHAPE).astype(np.float32)
@@ -542,9 +545,9 @@ def test_repair_is_skipped_for_a_method_that_ignores_initial_transforms(tmp_path
     report = json.loads(
         (output.with_suffix("") / "estimate_transform_report.json").read_text()
     )
-    assert report["flagged"]  # the noise frame is still flagged ...
-    assert report["repairs"] == {}  # ... but PCC is not re-run from other initial transforms
-    assert "repair skipped" in capsys.readouterr().out
+    assert report["flagged"] == [2]  # the noise frame
+    assert "2" in report["repairs"]  # re-estimated from its neighbours' transforms
+    assert "repair skipped" not in capsys.readouterr().out
 
 
 def test_estimate_transform_manual_runs_in_process_on_one_timepoint(
@@ -1343,6 +1346,7 @@ def test_a_job_reads_each_frame_once_and_computes_the_neighbour_median_once(
         method="phase_cross_corr",
         phase_cross_corr=PhaseCrossCorrSettings(center_crop_xy=[SHAPE[1], SHAPE[2]]),
         score={"report": ["correlation"]},
+        fallback={},  # the estimate jobs only: a repair job reads its frames again
     )
     _run(plate, config, tmp_path / "out" / "transforms.yml")
     assert medians == Counter({t: 1 for t in range(5)})  # one median per job

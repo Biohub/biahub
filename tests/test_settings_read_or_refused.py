@@ -31,13 +31,29 @@ def test_the_neighbour_window_is_given_with_neighbours_and_only_there():
     assert _settings(reference={"frame": "neighbours", "window": 4}).reference.window == 4
 
 
-def test_propagation_is_refused_for_a_method_that_ignores_where_it_starts():
-    # each timepoint would start from the previous result, which these methods do not read
-    propagate = {"initial": {"propagate": True}}
-    with pytest.raises(ValidationError, match="focus_finding ignores where it starts"):
-        _settings(method="focus_finding", reference={"frame": "first"}, transform=propagate)
-    _settings(method="ants", transform=propagate)  # ANTs refines from its start
-    _settings(method="phase_cross_corr", phase_cross_corr={"local": {}}, transform=propagate)
+SHAPES = {"rotate90": 0, "fliplr": False}
+
+
+def test_propagation_and_repair_are_refused_only_when_shapes_starts_the_run():
+    # every method applies its start; shapes computes one, so a start passed to it is lost
+    propagate = {"type": "affine", "initial": {"propagate": True}}
+    with pytest.raises(ValidationError, match="shapes ignores where it starts"):
+        _settings(method="shapes", shapes=SHAPES, transform=propagate)
+    with pytest.raises(ValidationError, match="fallback.repair re-estimates"):
+        _settings(
+            method="shapes",
+            shapes=SHAPES,
+            transform={"type": "affine"},
+            fallback={"repair": {}},
+        )
+    # the image methods start from it now (they were refused)
+    _settings(
+        method="focus_finding",
+        reference={"frame": "first"},
+        transform={"initial": {"propagate": True}},
+    )
+    _settings(method="phase_cross_corr", fallback={"repair": {}})
+    _settings(method="ants", transform={"initial": {"propagate": True}})
 
 
 @pytest.mark.parametrize(

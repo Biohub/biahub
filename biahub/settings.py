@@ -1620,7 +1620,7 @@ def trial_name(overrides: dict[str, Any]) -> str:
 
 class FallbackSettings(MyBaseModel):
     flag: FlagSettings = FlagSettings()
-    # off unless the config asks for it: a method that ignores where it starts gains nothing
+    # off unless the config asks for it
     repair: RepairSettings | None = None
     sweep: SweepSettings | None = None
 
@@ -1988,6 +1988,15 @@ class EstimateTransformSettings(MyBaseModel):
         return self
 
     @model_validator(mode="after")
+    def check_repair_has_a_start_to_change(self) -> "EstimateTransformSettings":
+        if self.fallback.repair is not None and self.ignores_initial_transform:
+            raise ValueError(
+                "fallback.repair re-estimates a flagged timepoint from other starts, but "
+                "shapes computes its own: the same transform every time"
+            )
+        return self
+
+    @model_validator(mode="after")
     def check_propagation_has_a_start_to_pass(self) -> "EstimateTransformSettings":
         if self.transform.propagates and self.ignores_initial_transform:
             raise ValueError(
@@ -2198,6 +2207,11 @@ class EstimateTransformSettings(MyBaseModel):
             )
         if self.fallback.sweep is not None:
             raise ValueError("fallback.sweep cannot say which block of a stack it varies yet")
+        if "shapes" in self.method_names[1:]:
+            raise ValueError(
+                "shapes computes a start from the stores' grids, so it comes first in a "
+                "stack: a block after it would be replaced, not refined"
+            )
         self.stack_settings()  # every block is checked as its own config
         return self
 
@@ -2238,6 +2252,8 @@ class EstimateTransformSettings(MyBaseModel):
                 ]
                 if data["score"]["metric"] not in (None, *INTENSITY_METRICS):
                     data["score"]["metric"] = None
+            if k > 1:  # a later block starts from the block before, not the run's start
+                data["transform"]["initial"] = None
             data["method"] = block.method
             data["preprocess"] = [b.model_dump() for b in block.preprocess]
             data[METHOD_BLOCKS[block.method]] = block.settings
@@ -2267,15 +2283,14 @@ class EstimateTransformSettings(MyBaseModel):
 
     @property
     def ignores_initial_transform(self) -> bool:
-        """Whether the method ignores where it starts (a stack: its first block).
+        """Whether the run's first block ignores where it starts: only `shapes`.
 
-        Correlation-based methods find their answer from the images alone. The same as
-        the estimators' `uses_initial_transform` (a test keeps the two in step).
+        Every other method applies its start (image methods measure after it, landmark
+        methods move their points by it, ANTs and local phase correlation warp with it);
+        `shapes` computes a start from the stores' grids. The same as the estimators'
+        `uses_initial_transform` (a test keeps the two in step).
         """
-        first = self.stack_settings()[0]
-        if first.method == "phase_cross_corr":
-            return first.phase_cross_corr.local is None  # local refines from its start
-        return first.method in ("focus_finding", "manual", "shapes")
+        return self.method_names[0] == "shapes"
 
     @property
     def effective_score_metric(self) -> str:

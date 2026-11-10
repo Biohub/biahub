@@ -48,7 +48,8 @@ def test_each_block_becomes_an_ordinary_single_method_config():
     assert [b.kind for b in ants.preprocess] == ["sobel"]
     # a block's transform type, else the run's; the rest of the run is shared
     assert (pcc.transform.type, ants.transform.type) == ("euclidean", "similarity")
-    assert pcc.transform.initial == ants.transform.initial == settings.transform.initial
+    # the first block starts where the run does; a later one from the block before
+    assert pcc.transform.initial == settings.transform.initial and ants.transform.initial is None
     assert not pcc.is_stack
 
 
@@ -159,15 +160,32 @@ def test_a_stack_runs_its_blocks_in_order_each_from_the_one_before(monkeypatch):
     assert seen[0] is initial_transform and seen[1] is first
 
 
-def test_the_stack_uses_the_initial_transform_when_its_first_block_does():
+SHAPES_BLOCK = {"shapes": {"rotate90": 0, "fliplr": False, "transform": {"type": "affine"}}}
+
+
+def test_the_stack_uses_the_initial_transform_unless_shapes_starts_it():
     from biahub.registration.engine import build_estimator
 
-    assert not build_estimator(_settings(PCC_THEN_ANTS), (16, 64, 64))[
-        0
-    ].uses_initial_transform
-    assert build_estimator(_settings([{"ants": {}}, BEADS_BLOCK]), (16, 64, 64))[
-        0
-    ].uses_initial_transform
+    assert build_estimator(_settings(PCC_THEN_ANTS), (16, 64, 64))[0].uses_initial_transform
+    assert not build_estimator(
+        _settings([SHAPES_BLOCK, {"ants": {}}]), (16, 64, 64), (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+    )[0].uses_initial_transform
+
+
+def test_shapes_comes_first_in_a_stack():
+    # it computes a start from the grids: after another block it would replace that block
+    with pytest.raises(ValidationError, match="shapes computes a start"):
+        _settings([{"ants": {}}, SHAPES_BLOCK])
+
+
+def test_propagation_reaches_the_first_block_only():
+    # each block was checked as a run of its own, so a later block that ignored its start
+    # refused propagation it never receives; later blocks start from the block before
+    settings = _settings(
+        [{"ants": {}}, {"phase_cross_corr": {}}], transform={"initial": {"propagate": True}}
+    )
+    first, second = settings.stack_settings()
+    assert first.transform.propagates and second.transform.initial is None
 
 
 def test_a_stack_estimates_end_to_end_and_names_its_blocks(beads_plate, tmp_path):

@@ -562,7 +562,6 @@ def init_run(
         "frame_shape": [Z, Y, X],
         "voxel_um": list(mov_voxel_size),
         "propagated": propagated,
-        "uses_initial_transform": estimator.uses_initial_transform,
         "interactive": "manual" in settings.method_names,
         "resources": {
             "estimate": resources(estimate_minutes),
@@ -622,13 +621,6 @@ def flag_run(
         if repair_settings is not None
         else []
     )
-    if repair_ts and not plan["uses_initial_transform"]:
-        click.echo(
-            f"repair skipped: method {settings.method_label!r} ignores the initial "
-            "transform, so starting from another would return the same transforms "
-            f"({len(repair_ts)} flagged timepoint(s) stay flagged)"
-        )
-        repair_ts = []
     sweep_ts = (
         cap_worst(flagged, base_scores, sweep_settings.max_timepoints)
         if sweep_settings is not None
