@@ -542,3 +542,28 @@ def test_a_propagated_stack_stays_within_the_partitions_limit():
 
     assert estimate_minutes(n_blocks=2, n_timepoints=400, propagated=True) == MAX_MINUTES
     assert estimate_minutes(n_blocks=2, n_timepoints=1, propagated=False) == 60
+
+
+def test_sweep_jobs_are_sized_for_the_heaviest_trial(beads_plate, tmp_path, monkeypatch):
+    # a trial may set what sizes a job (upsampling holds more volumes): the sweep was
+    # sized from the base config
+    from biahub.registration.engine import core as engine
+
+    # the test's volumes are below the memory floor: make the upsampling trial heavy
+    ram_volumes = engine._ram_volumes
+    monkeypatch.setattr(
+        engine,
+        "_ram_volumes",
+        lambda block: (
+            100_000 if block.phase_cross_corr.upsample_factor == 10 else ram_volumes(block)
+        ),
+    )
+
+    settings = _settings(
+        "phase_cross_corr",
+        fallback={"sweep": {"grid": [{"phase_cross_corr.upsample_factor": [10]}]}},
+    )
+    plan = engine.init_run(beads_plate, beads_plate, settings, tmp_path / "a")
+    resources = plan["resources"]
+    assert resources["sweep"]["mem_gb"] > resources["estimate"]["mem_gb"]
+    assert resources["repair"]["mem_gb"] == resources["estimate"]["mem_gb"]

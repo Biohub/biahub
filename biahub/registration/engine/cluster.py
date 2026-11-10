@@ -835,8 +835,16 @@ def estimate_transform_series(
         t for t in flags["sweep"] if not (resume and _finished(sweeps_dir / f"{t}.json"))
     ]
     executor.update_parameters(slurm_job_name="estimate_transform_sweep")
-    if not user_set_time:
-        executor.update_parameters(slurm_time=plan["resources"]["sweep"]["time_minutes"])
+    sweep = plan["resources"]["sweep"]  # sized for its heaviest trial
+    user_set = sbatch_to_submitit(sbatch_filepath) if sbatch_filepath else {}
+    sweep_args = {
+        "slurm_time": sweep["time_minutes"],
+        "slurm_mem_per_cpu": f"{sweep['gb_ram_per_cpu']}G",
+        "slurm_cpus_per_task": sweep["cpus"],
+    }
+    executor.update_parameters(
+        **{key: value for key, value in sweep_args.items() if key not in user_set}
+    )
     sweep_records, _sweep_failures = _run_jobs(
         executor,
         resolved_cluster,

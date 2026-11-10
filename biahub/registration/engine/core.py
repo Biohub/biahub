@@ -586,22 +586,36 @@ def init_run(
     # each volume sized as the larger grid: the warped moving volume, the reference and
     # the scores' arrays live on the reference grid
     volume_zyx = max((Z, Y, X), tuple(ref_shape), key=np.prod)
-    # a stack's jobs run every block: plan for the heaviest
-    num_cpus, gb_ram_per_cpu = max(
-        (
-            _estimate_job_resources(
-                block.method,
-                volume_zyx,
-                _ram_volumes(block) + reference_volumes,
-                at_least=LEFTOVER_MOTION_VOLUMES if settings.reference.leftover_motion else 0,
-            )
-            for block in settings.stack_settings()
-        ),
-        key=lambda r: r[0] * r[1],
-    )
-    n_trials = len(settings.sweep_trials()) if settings.fallback.sweep is not None else 0
 
-    def resources(minutes: int) -> dict:
+    def job_size(blocks) -> tuple[int, int]:
+        """(CPUs, GB per CPU) of a job running every one of `blocks`: the heaviest's."""
+        return max(
+            (
+                _estimate_job_resources(
+                    block.method,
+                    volume_zyx,
+                    _ram_volumes(block) + reference_volumes,
+                    at_least=LEFTOVER_MOTION_VOLUMES
+                    if settings.reference.leftover_motion
+                    else 0,
+                )
+                for block in blocks
+            ),
+            key=lambda r: r[0] * r[1],
+        )
+
+    trials = settings.sweep_trials() if settings.fallback.sweep is not None else {}
+    run_size = job_size(settings.stack_settings())
+    # a sweep job runs every trial, which may change what sizes a job (e.g. upsampling)
+    sweep_size = job_size(
+        [
+            *settings.stack_settings(),
+            *(block for trial in trials.values() for block in trial.stack_settings()),
+        ]
+    )
+
+    def resources(minutes: int, size: tuple[int, int] = run_size) -> dict:
+        num_cpus, gb_ram_per_cpu = size
         return {
             "cpus": num_cpus,
             "mem_gb": num_cpus * gb_ram_per_cpu,
@@ -620,7 +634,7 @@ def init_run(
                 estimate_minutes(len(settings.method_names), len(time_indices), propagated)
             ),
             "repair": resources(REPAIR_MINUTES),
-            "sweep": resources(_sweep_minutes(n_trials)),
+            "sweep": resources(_sweep_minutes(len(trials)), sweep_size),
         },
     }
     _write_json(output_dir / RUN_PLAN_FILENAME, plan, indent=2)
