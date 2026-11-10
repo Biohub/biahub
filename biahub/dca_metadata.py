@@ -23,17 +23,49 @@ TABLE_COLUMNS: tuple[str, ...] = (
 
 AIRTABLE_FOV_FIELD = "fov"
 
-AIRTABLE_FIELDS: dict[str, str] = {
+AIRTABLE_FIELDS: dict[str, str | None] = {
     "dataset": "dataset",
     "well": "well_id",
-    "cell_line": "cell_line",
+    "cell_line": "cell_type",
     "marker": "marker",
-    "organelle": "organelle",
+    "organelle": None,
     "perturbation": "perturbation",
     "moi": "moi",
     "time_interval_min": "time_interval_min",
     "hours_post_perturbation": "hours_post_perturbation",
 }
+
+
+AIRTABLE_KEY_COLUMNS: tuple[str, ...] = ("dataset", "well")
+AIRTABLE_PERTURBATION_ALIASES: dict[str, str] = {"N/A": "uninfected"}
+
+
+def airtable_fields(settings: AirtableSettings) -> dict[str, str | None]:
+    """Return the AirTable field each sample-sheet column reads, after the settings' overrides.
+
+    A column with no field (``None``) takes its value from ``settings.values``.
+    """
+    configured = set(settings.fields) | set(settings.values)
+    unknown = sorted(configured - set(TABLE_COLUMNS))
+    if unknown:
+        raise ValueError(f"airtable settings name unknown column(s): {', '.join(unknown)}")
+    fields = AIRTABLE_FIELDS | settings.fields
+    keys = [column for column in AIRTABLE_KEY_COLUMNS if fields[column] is None]
+    if keys:
+        raise ValueError(f"airtable column(s) {', '.join(keys)} must read an AirTable field")
+    both = sorted(column for column in settings.values if fields[column] is not None)
+    if both:
+        raise ValueError(
+            f"airtable.values sets {', '.join(both)}, which also read an AirTable field; "
+            "map the field to null in airtable.fields to use the value"
+        )
+    unset = [c for c, field in fields.items() if field is None and c not in settings.values]
+    if unset:
+        names = ", ".join(f"airtable.values.{column}" for column in unset)
+        raise ValueError(
+            f"the AirTable table has no field for {', '.join(unset)}; set {names}"
+        )
+    return fields
 
 
 class AirtableClient(Protocol):
@@ -60,7 +92,7 @@ class PyairtableClient:
             )
         self._table = Api(token).table(settings.base_id, settings.table)
         self._match = match
-        self._dataset_field = AIRTABLE_FIELDS["dataset"]
+        self._dataset_field = airtable_fields(settings)["dataset"]
 
     def records(self, dataset: str) -> list[dict[str, Any]]:
         return self._table.all(formula=self._match({self._dataset_field: dataset}))
@@ -112,15 +144,18 @@ def _field_to_str(value: Any) -> str:
     return str(value)
 
 
-def _record_to_row(record: dict[str, Any]) -> dict[str, str]:
-    fields = record.get("fields", {})
+def _record_to_row(
+    record: dict[str, Any], fields: dict[str, str | None], values: dict[str, str]
+) -> dict[str, str]:
+    cells = record.get("fields", {})
     row = blank_row()
-    for column, field in AIRTABLE_FIELDS.items():
-        row[column] = _field_to_str(fields.get(field))
+    for column, field in fields.items():
+        row[column] = values[column] if field is None else _field_to_str(cells.get(field))
     if not row["well"]:
-        raise ValueError(
-            f"AirTable record {record.get('id')} has no {AIRTABLE_FIELDS['well']}"
-        )
+        raise ValueError(f"AirTable record {record.get('id')} has no {fields['well']}")
+    row["perturbation"] = AIRTABLE_PERTURBATION_ALIASES.get(
+        row["perturbation"], row["perturbation"]
+    )
     return row
 
 
@@ -134,16 +169,27 @@ def _collapse_fov_rows(well: str, rows: list[dict[str, str]]) -> dict[str, str]:
     return rows[0]
 
 
-def airtable_rows(client: AirtableClient, dataset: str) -> dict[str, dict[str, str]]:
-    """Map AirTable records for ``dataset`` to rows keyed by well.
+def airtable_rows(
+    client: AirtableClient, settings: AirtableSettings
+) -> dict[str, dict[str, str]]:
+    """Map the AirTable records of ``settings.dataset`` to rows keyed by well.
 
     A well-level record (blank or absent ``fov``) is the template and wins. A well with
     only FOV-level records is collapsed when all table columns agree, else ValueError.
+    A ``perturbation`` of ``N/A`` (the lab table's uninfected wells) reads as ``uninfected``.
     """
+    fields = airtable_fields(settings)
+    dataset = settings.dataset
+    records = client.records(dataset)
+    if not records:
+        raise ValueError(
+            f"AirTable has no records with {fields['dataset']} = {dataset!r}; "
+            "check airtable.dataset in the settings"
+        )
     templates: dict[str, list[dict[str, str]]] = {}
     per_fov: dict[str, list[dict[str, str]]] = {}
-    for record in client.records(dataset):
-        row = _record_to_row(record)
+    for record in records:
+        row = _record_to_row(record, fields, settings.values)
         fov = _field_to_str(record.get("fields", {}).get(AIRTABLE_FOV_FIELD)).strip()
         target = per_fov if fov else templates
         target.setdefault(row["well"], []).append(row)
@@ -164,8 +210,9 @@ def metadata_rows(
 ) -> dict[str, dict[str, str]]:
     """Return one metadata row per well, from a sample sheet if present, else AirTable.
 
-    Both sources keep only rows for the plate's dataset stem (``<ds>`` for a projected
-    ``<ds>_proj`` plate); a sheet row with a blank ``dataset`` matches any plate.
+    A sheet keeps only rows for the plate's dataset stem (``<ds>`` for a projected
+    ``<ds>_proj`` plate), and a sheet row with a blank ``dataset`` matches any plate.
+    AirTable keeps the records of ``settings.airtable.dataset``.
 
     ``client`` overrides the default pyairtable client, which is built only when
     no sample sheet exists and ``settings.airtable`` is set.
@@ -177,7 +224,7 @@ def metadata_rows(
         return read_metadata_table(table, dataset=stem)
     if settings.airtable is not None:
         client = client or PyairtableClient(settings.airtable)
-        return airtable_rows(client, stem)
+        return airtable_rows(client, settings.airtable)
     expected = plate.parent / f"{stem}.dca-metadata.csv"
     raise FileNotFoundError(
         f"No metadata source: expected {expected} (or .tsv), or set airtable in the settings"

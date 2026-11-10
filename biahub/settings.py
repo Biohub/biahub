@@ -1746,9 +1746,30 @@ def load_transform_settings(path) -> TransformSettings:
 
 
 class AirtableSettings(MyBaseModel):
+    """AirTable source for the `dca-finalize` sample sheet.
+
+    Parameters
+    ----------
+    base_id, table
+        The AirTable base and table holding one record per well or FOV.
+    dataset
+        The value of the table's dataset field for this run's records. It is set per run
+        because AirTable names the dataset without the plate name's ``_<n>`` index.
+    token_env
+        Environment variable holding the personal access token.
+    fields
+        Per-column overrides of the AirTable field each sample-sheet column reads. Null
+        means the table has no such field.
+    values
+        Per-run values for the columns with no AirTable field. Every such column needs one.
+    """
+
     base_id: str
     table: str
+    dataset: str
     token_env: str = "AIRTABLE_API_KEY"
+    fields: dict[str, str | None] = {}
+    values: dict[str, str] = {}
 
 
 PROJECTED_PLATE_SUFFIX = "_proj"

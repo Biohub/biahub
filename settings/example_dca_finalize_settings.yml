@@ -10,10 +10,14 @@ confirmed_config: null
 # One row per well; see example_dca_metadata.csv for the columns.
 metadata_table: null
 
-# Optional AirTable source, e.g.
+# Optional AirTable source, used when no sample sheet is found, e.g.
 #   base_id: appXXXXXXXXXXXXXX
 #   table: samples
+#   dataset: 2026_01_02_example_plate  # the table's dataset field, set per run
 #   token_env: AIRTABLE_API_KEY
+#   fields: {}                         # sheet column -> AirTable field overrides; null = no field
+#   values:                            # required for every column with no field
+#     organelle: endoplasmic_reticulum
 airtable: null
 
 # Reads <plate>/tables/qc/stage{qc_stage}_position.parquet. Null takes the stage from the

@@ -56,8 +56,14 @@ def test_unknown_key_rejected():
 
 
 def test_airtable_token_env_default():
-    airtable = AirtableSettings(base_id="appXXXXXXXXXXXXXX", table="samples")
+    airtable = AirtableSettings(base_id="appXXXXXXXXXXXXXX", table="samples", dataset="ds")
     assert airtable.token_env == "AIRTABLE_API_KEY"
+    assert (airtable.fields, airtable.values) == ({}, {})
+
+
+def test_airtable_dataset_is_required():
+    with pytest.raises(ValidationError, match="dataset"):
+        AirtableSettings(base_id="appXXXXXXXXXXXXXX", table="samples")
 
 
 def test_from_yaml_resolves_relative_paths_against_yaml_dir(tmp_path):
