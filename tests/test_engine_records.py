@@ -293,3 +293,54 @@ def test_a_fresh_run_clears_the_previous_runs_flags(tmp_path):
     (tmp_path / FLAGS_FILENAME).write_text('{"flagged": [3], "repair": [3], "sweep": []}')
     _start_run(tmp_path, settings, tmp_path / "mov", None, resume=False)
     assert not (tmp_path / FLAGS_FILENAME).exists()
+
+
+def test_each_record_keeps_the_change_its_estimate_made_after_its_start():
+    # the record kept only the final matrix: how far the method moved from where it
+    # started (a file, a propagated result) could not be read back
+    from biahub.registration.engine.policies import CrossChannel, FixedInitialTransform
+    from biahub.registration.engine.series import (
+        estimate_propagated,
+        estimate_series,
+        from_start,
+    )
+
+    frames = np.ones((3, 2, 4, 4), np.float32)
+    start = Transform.from_translation([0.0, 2.0, 0.0])
+    step = Transform.from_translation([0.0, 0.0, 1.0])  # what _Traced adds
+    result = estimate_series(
+        frames, CrossChannel(frames), _Traced(), FixedInitialTransform(start), _x_score, [0, 1]
+    )
+    assert result.starts == {0: start, 1: start}
+    assert from_start(result, 0) == step
+    # propagated: each timepoint starts from the previous one's result
+    result = estimate_propagated(
+        frames, CrossChannel(frames), _Traced(), start, _x_score, [0, 1, 2]
+    )
+    assert result.starts[2] == result.transforms[1]
+    assert from_start(result, 2) == step
+    assert from_start(result, 5) is None  # nothing estimated there
+
+
+def test_a_job_writes_the_change_from_its_start_into_the_record(tmp_path):
+    import json
+
+    from scipy.ndimage import shift as ndi_shift
+
+    from tests.test_estimate_transform import (
+        APPLIED_SHIFT_ZYX,
+        SHAPE,
+        _run,
+        _synthetic_bead_volume,
+        _write_config,
+        _write_plate,
+    )
+
+    ref = _synthetic_bead_volume(np.random.default_rng(11), SHAPE)
+    mov = ndi_shift(ref, shift=APPLIED_SHIFT_ZYX, order=1, mode="constant", cval=0.0)
+    plate = _write_plate(tmp_path / "beads.zarr", [(ref, mov)])
+    output = tmp_path / "out" / "transforms.yml"
+    _run(plate, _write_config(tmp_path, transform_type="euclidean"), output)
+    record = json.loads((output.with_suffix("") / "timepoints" / "0.json").read_text())
+    # identity start (the default): the change is the whole transform
+    np.testing.assert_allclose(record["from_start"], record["matrix"])

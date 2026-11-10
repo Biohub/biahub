@@ -65,6 +65,7 @@ from biahub.registration.engine.series import (
     TimepointRecord,
     estimate_propagated,
     estimate_series,
+    from_start,
 )
 from biahub.registration.estimators import (
     ScoreFn,
@@ -257,6 +258,12 @@ def _job_inputs(
     )
 
 
+def _from_start_list(result: SeriesResult, t: int) -> list | None:
+    """Return t's change after its start, as the record holds it."""
+    change = from_start(result, t)
+    return None if change is None else change.to_list()
+
+
 def _estimate_timepoint_job(
     moving_position_dirpath: Path,
     reference_position_dirpath: Path,
@@ -291,6 +298,7 @@ def _estimate_timepoint_job(
         error=result.errors.get(t),
         initialized_from=result.initialized_from.get(t),
         best_candidate=result.best_candidate.get(t),
+        from_start=_from_start_list(result, t),
         # a stack: what each block did (its transform, score, error) and which won
         blocks=result.blocks.get(t),
         metrics=_bead_metrics(settings, result, t, mov, ref, job.reference_policy),
@@ -362,6 +370,7 @@ def _estimate_propagated_job(
             stand_in=stand_in[0].to_list() if stand_in else None,
             filled_from=stand_in[1] if stand_in else None,
             best_candidate=result.best_candidate.get(t),
+            from_start=_from_start_list(result, t),
             blocks=result.blocks.get(t),
             metrics=_bead_metrics(settings, result, t, mov, ref, job.reference_policy),
             report=_report_metrics(

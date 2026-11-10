@@ -61,6 +61,9 @@ class SeriesResult:
     best_candidate: dict[int, str] = field(default_factory=dict)
     # From a file: "file" (its transform kept as it is) or "file+refined".
     initialized_from: dict[int, str] = field(default_factory=dict)
+    # Where each estimated t started (the initial transform, or under propagation the
+    # start that won): `from_start` reads the change the estimate made after it.
+    starts: dict[int, Transform] = field(default_factory=dict)
     # With reference.anchor: each timepoint's centroid from its record (None: none found),
     # and the anchor `finalize_run` added (centroid, smoothed, translation).
     centroids: dict[int, list[float] | None] = field(default_factory=dict)
@@ -90,6 +93,7 @@ class TimepointRecord:
     filled_from: str | None = None
     initialized_from: str | None = None  # "file" or "file+refined" (from: file)
     best_candidate: str | None = None  # competing candidates: the one kept
+    from_start: list | None = None  # the change the estimate made after its start
     blocks: list[dict] | None = None  # a stack: what each block did
     metrics: dict | None = None  # bead alignment metrics
     report: dict | None = None  # score.report metrics of the accepted estimate
@@ -170,6 +174,7 @@ def estimate_series(
                 on_timepoint(t, result)
             continue
         initial_transform = initial_policy.initial_for(t)
+        result.starts[t] = initial_transform or Transform.identity(mov_t.ndim)
         estimate, error = None, None
         try:
             transform = estimator.estimate(mov_t, ref_t, initial_transform=initial_transform)
@@ -209,6 +214,13 @@ def _keep_initial(estimate, initial_transform, score_fn, mov, ref) -> tuple[tupl
     return kept, "file"
 
 
+def from_start(result: SeriesResult, t: int) -> Transform | None:
+    """Return the change t's estimate made after its start (`matrix @ start^-1`), or None."""
+    if t not in result.transforms or t not in result.starts:
+        return None
+    return result.transforms[t] @ result.starts[t].invert()
+
+
 def _keep_trace(result: SeriesResult, t: int, trace: dict | None) -> None:
     """Keep what the estimator did at t (its `trace()`) for t's record."""
     if trace is None:
@@ -240,18 +252,17 @@ def _estimate_competing(
 
     An estimator that takes a competitor refines both on its first pass (the legacy
     rule); any other estimator is run from both initial transforms and the better score
-    is kept. Returns the transform and the estimator's trace of the start that produced
-    it.
+    is kept. Returns the transform, the estimator's trace and the start that produced it
+    (an estimator refining both at once: `initial_transform`).
     """
     if competitor is None:
-        return estimator.estimate(
-            mov, ref, initial_transform=initial_transform
-        ), estimator.trace()
+        transform = estimator.estimate(mov, ref, initial_transform=initial_transform)
+        return transform, estimator.trace(), initial_transform
     if estimator.accepts_competitor:
         transform = estimator.estimate(
             mov, ref, initial_transform=initial_transform, competitor=competitor
         )
-        return transform, estimator.trace()
+        return transform, estimator.trace(), initial_transform
     traces: dict[str, dict] = {}
 
     def from_start(name: str, start: Transform):
@@ -273,7 +284,8 @@ def _estimate_competing(
             "failed from both the previous result and the run's initial transform: "
             + "; ".join(chosen.failures.values())
         )
-    return chosen.transform, traces[chosen.name]
+    starts = {"previous": initial_transform, "initial": competitor}
+    return chosen.transform, traces[chosen.name], starts[chosen.name]
 
 
 def estimate_propagated(
@@ -327,7 +339,7 @@ def estimate_propagated(
                 start = previous if previous is not None else initial_transform
                 competitor = initial_transform if previous is not None else None
                 try:
-                    transform, trace = _estimate_competing(
+                    transform, trace, result.starts[t] = _estimate_competing(
                         estimator, mov_t, ref_t, start, competitor, score_fn
                     )
                 except EstimationError as e:
