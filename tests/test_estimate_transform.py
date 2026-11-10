@@ -340,7 +340,8 @@ def test_estimate_transform_flags_and_tries_to_repair_a_failed_timepoint(
     assert report["flagged"] == [2]
     repair = report["repairs"]["2"]
     assert repair["accepted"] is False
-    # No beads in the frame: every candidate fails the same way, and each failure is named.
+    # No beads in the frame: every candidate fails the same way, and each failure is named
+    # (re-estimated only: a failed estimate takes no candidate as it is).
     assert set(repair["candidate_failures"]) == {"t-1", "consensus_full", "initial"}
     failures = repair["candidate_failures"]
     assert "EstimationError" in failures["t-1"] and "EstimationError" in failures["initial"]

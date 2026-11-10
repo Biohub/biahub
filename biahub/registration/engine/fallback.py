@@ -302,26 +302,24 @@ def repair(
     current_score: float,
     candidates: dict[str, InitialTransformPolicy],
     score_fn: Callable[[Transform], float],
+    as_is: bool = True,
 ) -> PassResult:
-    """Re-estimate timepoint `t` from each candidate initial transform; keep the best score.
+    """Try each candidate for timepoint `t` two ways; keep the best score.
 
-    A candidate whose `initial_for()` raises -- e.g. `ConsensusInitialTransform` when
-    too few timepoints score well enough yet -- is skipped like one whose `estimate()`
-    raises.
+    Re-estimated from the candidate (`name`), and, with `as_is`, the candidate itself
+    (`name (as is)`: when the method estimates the timepoint poorly, a neighbour's
+    transform is often the answer). A tie keeps the re-estimate. A candidate whose `initial_for()` raises --
+    e.g. `ConsensusInitialTransform` when too few timepoints score well enough yet -- is
+    skipped like one whose `estimate()` raises.
     """
-    return _best_of(
-        {
-            name: (
-                lambda policy=policy: estimator.estimate(
-                    mov, ref, initial_transform=policy.initial_for(t)
-                )
-            )
-            for name, policy in candidates.items()
-        },
-        current_transform,
-        current_score,
-        score_fn,
-    )
+    attempts = {}
+    for name, policy in candidates.items():
+        attempts[name] = lambda policy=policy: estimator.estimate(
+            mov, ref, initial_transform=policy.initial_for(t)
+        )
+        if as_is:
+            attempts[f"{name} (as is)"] = lambda policy=policy: policy.initial_for(t)
+    return _best_of(attempts, current_transform, current_score, score_fn)
 
 
 def sweep(
@@ -439,6 +437,9 @@ def repair_timepoint(
         current_score=result.scores[t] if current is not None else -np.inf,
         candidates=candidates(t, result.transforms, result.scores, set(result.flagged)),
         score_fn=lambda transform, m=mov_t, r=ref_t: score_fn(transform, m, r),
+        # a failed estimate measured nothing: any finite score would pass a candidate as
+        # it is (noise included), so it keeps its stand-in, reported unreliable
+        as_is=current is not None,
     )
     if outcome.accepted and polish_rounds:
         outcome.repair_transform_score = outcome.score

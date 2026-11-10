@@ -106,7 +106,8 @@ def test_repair_skips_a_candidate_that_raises_without_failing_the_whole_pass():
     assert result.accepted is True
     assert result.repaired_from == "good"
     assert result.failures == {"broken": "EstimationError: simulated candidate failure"}
-    assert set(result.scores) == {"good"}
+    # a candidate whose re-estimate fails is still scored as it is
+    assert set(result.scores) == {"good", "good (as is)", "broken (as is)"}
 
 
 def test_repair_names_each_failed_candidate():
@@ -130,9 +131,8 @@ def test_repair_names_each_failed_candidate():
     )
 
     assert result.accepted is False
-    assert result.failures == {
-        "consensus": "CandidateUnavailableError: not enough good timepoints yet"
-    }
+    unavailable = "CandidateUnavailableError: not enough good timepoints yet"
+    assert result.failures == {"consensus": unavailable, "consensus (as is)": unavailable}
 
 
 def test_repair_skips_a_candidate_whose_initial_for_raises_without_failing_the_pass():
@@ -208,3 +208,49 @@ def test_a_sweep_outcome_scoring_nan_is_not_folded_over_a_finite_estimate():
     )
     _fold_sweep(result, 0, nan_outcome)
     assert result.transforms[0] is kept and result.scores[0] == 0.8
+
+
+class _WrongEstimator(EstimatorBase):
+    """Test double: whatever it starts from, it ends far off (a method that fails here)."""
+
+    def estimate(self, mov, ref, initial_transform=None):
+        return Transform.from_translation([50.0, 50.0, 50.0])
+
+
+def test_repair_can_keep_a_candidate_as_it_is():
+    # repair only re-estimated from each candidate; when the method fails on the
+    # timepoint, a neighbour's transform itself is often the right answer
+    target = np.array([10.0, 10.0, 10.0])
+    candidates = {"t-1": FixedInitialTransform(Transform.from_translation([9.5, 9.5, 9.5]))}
+    current = Transform.from_translation([0.0, 0.0, 0.0])
+    result = repair(
+        t=3,
+        mov=None,
+        ref=None,
+        estimator=_WrongEstimator(),
+        current_transform=current,
+        current_score=_score_by_closeness(current, target),
+        candidates=candidates,
+        score_fn=lambda t: _score_by_closeness(t, target),
+    )
+    assert result.accepted and result.repaired_from == "t-1 (as is)"
+    np.testing.assert_allclose(result.transform.matrix[:3, 3], [9.5, 9.5, 9.5])
+
+
+def test_a_failed_estimate_is_not_repaired_by_a_candidate_as_it_is():
+    # nothing measured the timepoint, so a neighbour's transform scored on it (e.g. noise)
+    # would be accepted for any finite score; it stays a stand-in, reported as unreliable
+    target = np.array([10.0, 10.0, 10.0])
+    candidates = {"t-1": FixedInitialTransform(Transform.from_translation([9.5, 9.5, 9.5]))}
+    result = repair(
+        t=3,
+        mov=None,
+        ref=None,
+        estimator=_WrongEstimator(),
+        current_transform=Transform.identity(3),
+        current_score=-np.inf,
+        candidates=candidates,
+        score_fn=lambda t: _score_by_closeness(t, target),
+        as_is=False,
+    )
+    assert set(result.scores) == {"t-1"} and result.repaired_from == "t-1"  # re-estimated only
