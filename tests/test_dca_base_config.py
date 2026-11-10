@@ -2,6 +2,7 @@ import subprocess
 import tomllib
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
@@ -289,7 +290,8 @@ def test_cellosaurus_citations_quote_whole_lines_of_the_text_record():
     cited = {
         path: citation
         for path, citation in agent_citations().items()
-        if "cellosaurus.org" in citation.get("source_url", "")
+        if urlparse(citation.get("source_url", "")).hostname
+        == urlparse(CELLOSAURUS_TXT).hostname
     }
     assert len(cited) == 7
     lines = CELLOSAURUS_RECORD.read_text().splitlines()
