@@ -1201,3 +1201,23 @@ def test_local_phase_correlation_reads_the_crop_normalization_and_upsampling(mon
         slice(5, 35),
         slice(15, 35),
     )  # center_crop_xy is x, y
+
+
+def test_a_competition_reads_its_members_from_its_candidates():
+    # it kept EstimatorBase's defaults, whatever its candidates did
+    from biahub.registration.estimators import CompetingEstimator
+
+    class _Ignores(EstimatorBase):
+        uses_initial_transform = False
+        holds_xy_across_gaps = True
+
+    class _Uses(EstimatorBase):
+        holds_xy_across_gaps = True
+
+    score = lambda t, m, r: 0.5  # noqa: E731
+    neither = CompetingEstimator({"a": _Ignores(), "b": _Ignores()}, score)
+    either = CompetingEstimator({"a": _Ignores(), "b": _Uses()}, score)
+    mixed = CompetingEstimator({"a": _Uses(), "b": EstimatorBase()}, score)
+    assert not neither.uses_initial_transform and either.uses_initial_transform
+    assert either.holds_xy_across_gaps and not mixed.holds_xy_across_gaps
+    assert not either.accepts_competitor  # its estimate takes no competitor

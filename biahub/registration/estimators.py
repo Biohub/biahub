@@ -202,7 +202,11 @@ class ChainedEstimator(EstimatorBase):
     that makes things worse is dropped); without one, the last stage's output.
 
     With `names` (the blocks of a stack), `trace()["blocks"]` holds what every stage of
-    the last estimate did: its transform, score, error and whether it won.
+    the last estimate did: its transform, score, error, kept candidate and whether it
+    won. A stage that raises `EstimationError` ends the chain: the best result so far is
+    returned (later stages are "not run"), or, when no stage has a result yet, the error
+    propagates. A stage whose transform scores non-finite keeps its transform, with that
+    as its error, and cannot win.
     """
 
     def __init__(
@@ -301,10 +305,12 @@ class ChainedEstimator(EstimatorBase):
 class CompetingEstimator(EstimatorBase):
     """Run several estimators on the same input and keep the best-scoring result.
 
-    A candidate that raises `EstimationError` is skipped; only when every candidate fails
-    does the whole estimate fail, with each one's reason. With `escalate_below`,
-    candidates after the first run only while the best score so far is below it.
-    `trace()["best_candidate"]` names the one whose result the last estimate returned.
+    A candidate that raises `EstimationError`, or whose transform scores non-finite, is
+    skipped; only when every candidate fails does the whole estimate fail, with each
+    one's reason. With `escalate_below`, candidates after the first run only while the
+    best score so far is below it. `trace()["best_candidate"]` names the one whose result
+    the last estimate returned. It starts from its initial transform when any candidate
+    does, holds yx across gaps when every candidate does, and takes no competitor.
     """
 
     def __init__(
@@ -319,6 +325,14 @@ class CompetingEstimator(EstimatorBase):
         self.score_fn = score_fn
         self.escalate_below = escalate_below
         self._best_candidate: str | None = None
+
+    @property
+    def uses_initial_transform(self) -> bool:
+        return any(c.uses_initial_transform for c in self.candidates.values())
+
+    @property
+    def holds_xy_across_gaps(self) -> bool:
+        return all(c.holds_xy_across_gaps for c in self.candidates.values())
 
     def trace(self) -> dict:
         return {"best_candidate": self._best_candidate, "blocks": None}
