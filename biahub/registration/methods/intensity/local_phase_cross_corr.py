@@ -28,7 +28,8 @@ class LocalPCCEstimator(EstimatorBase):
     transform. Max projections hold no depth, so z stays the initial transform's.
 
     Each of `rounds` measures the tiles with the current transform and corrects it, so a
-    shift larger than a tile's reach in the first round is taken out by the next.
+    shift larger than a tile's reach in the first round is taken out by the next. Too few
+    tiles fails the first round; a later round short of tiles keeps the correction so far.
     """
 
     def __init__(
@@ -67,7 +68,7 @@ class LocalPCCEstimator(EstimatorBase):
         s = self.settings
         current = initial_transform if initial_transform is not None else Transform.identity(3)
         region = pcc_crop(self.crop, np.shape(ref)) if self.crop is not None else None
-        for _ in range(s.rounds):
+        for round_ in range(s.rounds):
             tiles = tile_residuals(
                 current,
                 mov,
@@ -82,6 +83,8 @@ class LocalPCCEstimator(EstimatorBase):
                 region=region,
             )
             if tiles["n_tiles"] < s.min_tiles:
+                if round_ > 0:
+                    break
                 raise EstimationError(
                     f"local phase_cross_corr: {tiles['n_tiles']} tiles correlated (need "
                     f"{s.min_tiles}): too little shared structure, or the initial "
@@ -97,6 +100,4 @@ class LocalPCCEstimator(EstimatorBase):
         yx = fit_pairs(mapped, reference, self.transform_type)  # the yx fit, in µm
         # fitted in µm; the reference grid's voxel k sits at ref_um * k µm
         correction = Transform.from_yx(yx).on_grid(self.ref_um)
-        return Transform(
-            correction.matrix @ current.matrix, transform_type=self.transform_type
-        )
+        return correction @ current

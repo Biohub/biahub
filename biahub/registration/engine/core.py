@@ -286,7 +286,6 @@ def build_estimator(
     elif settings.method == "shapes":
         estimator = ShapesEstimator.from_settings(
             settings.shapes,
-            settings.transform.type,
             mov_voxel_size or (1.0, 1.0, 1.0),
             ref_voxel_size or (1.0, 1.0, 1.0),
         )
@@ -548,9 +547,7 @@ def init_run(
     init = settings.transform.initial
     if init is not None and init.from_ == "shapes":
         # the run's settings hold the matrix it computed, so every job reads the same one
-        method = ShapesEstimator(
-            mov_voxel_size, ref_voxel_size, init.rotate90, init.fliplr, settings.transform.type
-        )
+        method = ShapesEstimator(mov_voxel_size, ref_voxel_size, init.rotate90, init.fliplr)
         shapes = method.transform_for((Z, Y, X), tuple(ref_shape))
         settings.transform.initial = InitialTransformSettings(
             from_="matrix",

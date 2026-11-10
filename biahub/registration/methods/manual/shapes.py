@@ -34,25 +34,20 @@ class ShapesEstimator(EstimatorBase):
         ref_voxel_size: tuple,
         rotate90: int,
         fliplr: bool,
-        transform_type: str = "affine",
     ):
         self.mov_voxel_size = tuple(mov_voxel_size)
         self.ref_voxel_size = tuple(ref_voxel_size)
         self.rotate90 = rotate90
         self.fliplr = fliplr
-        self.transform_type = transform_type
 
     @classmethod
     def from_settings(
         cls,
         settings: ShapesSettings,
-        transform_type: str,
         mov_voxel_size: tuple,
         ref_voxel_size: tuple,
     ) -> ShapesEstimator:
-        return cls(
-            mov_voxel_size, ref_voxel_size, settings.rotate90, settings.fliplr, transform_type
-        )
+        return cls(mov_voxel_size, ref_voxel_size, settings.rotate90, settings.fliplr)
 
     def transform_for(self, mov_shape: tuple, ref_shape: tuple) -> Transform:
         """Return the forward (moving -> reference) transform for two shapes."""
@@ -64,7 +59,7 @@ class ShapesEstimator(EstimatorBase):
         ) @ Transform.from_rotation_yx(90 * self.rotate90, mov_shape, ref_shape)
         if self.fliplr:  # the flip happens first
             forward = forward @ Transform.from_flip_x(mov_shape)
-        return Transform(forward.matrix, transform_type=self.transform_type)
+        return forward
 
     def estimate(
         self, mov: ArrayLike, ref: ArrayLike, initial_transform: Transform | None = None

@@ -77,6 +77,25 @@ def test_too_few_tiles_fail_and_say_why():
         _estimator().estimate(mov, ref, initial_transform=Transform.identity(3))
 
 
+def test_a_later_round_short_of_tiles_keeps_the_earlier_correction(monkeypatch):
+    # round 1 corrects; round 2 correlates too few tiles: round 1's correction stands
+    from biahub.registration.methods.intensity import local_phase_cross_corr
+
+    mov, ref = _pair(_yx_similarity())
+    one_round = _estimator(rounds=1).estimate(
+        mov, ref, initial_transform=Transform.identity(3)
+    )
+    measured = iter([None, {"n_tiles": 0, "residuals": None}])
+    real = local_phase_cross_corr.tile_residuals
+
+    def tiles(*args, **kwargs):
+        return next(measured) or real(*args, **kwargs)
+
+    monkeypatch.setattr(local_phase_cross_corr, "tile_residuals", tiles)
+    found = _estimator(rounds=2).estimate(mov, ref, initial_transform=Transform.identity(3))
+    np.testing.assert_allclose(found.matrix, one_round.matrix)
+
+
 def test_local_is_an_option_of_phase_cross_corr():
     from biahub.settings import EstimateTransformSettings
 
