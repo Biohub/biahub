@@ -71,8 +71,19 @@ If the lab keeps the per-well metadata in AirTable, drop `metadata_table` and se
 airtable:
   base_id: <base id>
   table: <table>
+  dataset: <dataset>
   token_env: AIRTABLE_API_KEY
+  values:
+    organelle: <organelle>
 ```
+
+`dataset` is the value of the table's dataset field for this run. It can differ from
+the plate name (the table may drop the plate's `_<n>` index), so read it from the
+table rather than deriving it. The table has no organelle field, so
+`values.organelle` is required: ask the user, as for the confirmed TOML. Other
+columns read the table's fields (`cell_line` reads `cell_type`); `fields:` remaps a
+column if the table changes. Uninfected wells are `N/A` in the table and are read
+as `uninfected`.
 
 A sample sheet, when one is configured or sits next to the plate, wins over
 AirTable. pyairtable reads a personal access token from the variable named by
