@@ -112,9 +112,16 @@ def residual_score(
     return float(metrics.overlap * max(0.0, 1.0 - metrics.median_residual / radius))
 
 
+def _without_nan(volume: ArrayLike) -> np.ndarray:
+    """Return `volume` in float32 with NaN as 0 (copied only when it has NaN)."""
+    volume = np.asarray(volume, dtype=np.float32)
+    return np.nan_to_num(volume) if np.isnan(volume).any() else volume
+
+
 def _overlap_pair(transform: Transform, mov: ArrayLike, ref: ArrayLike):
-    ref = np.asarray(ref, dtype=np.float32)
-    warped = transform.apply(np.asarray(mov, dtype=np.float32), reference=ref)
+    # NaN is no data, as zero is (NaN != 0 would put it in the overlap)
+    ref, mov = _without_nan(ref), _without_nan(mov)
+    warped = transform.apply(mov, reference=ref)
     mask = (warped != 0) & (ref != 0)
     return warped, ref, mask
 
@@ -251,7 +258,7 @@ def intensity_centroid(
     """
     from scipy import ndimage
 
-    v = np.asarray(volume, dtype=np.float32)
+    v = _without_nan(volume)  # NaN is no data
     factors = [downsample if n >= downsample else 1 for n in v.shape]
     v = v[tuple(slice(0, n // f * f) for n, f in zip(v.shape, factors, strict=True))]
     shape = [x for n, f in zip(v.shape, factors, strict=True) for x in (n // f, f)]
@@ -299,9 +306,8 @@ def raw_shift(previous: ArrayLike, frame: ArrayLike) -> np.ndarray | None:
     Phase cross-correlation on the raw volumes, no transform: what leftover motion is
     derived from (`leftover_motion`). None when either frame has no data.
     """
-    previous = np.asarray(previous, dtype=np.float32)
-    frame = np.asarray(frame, dtype=np.float32)
-    if not np.any(np.nan_to_num(previous)) or not np.any(np.nan_to_num(frame)):
+    previous, frame = _without_nan(previous), _without_nan(frame)  # NaN is no data
+    if not np.any(previous) or not np.any(frame):
         return None
     shift, _ = phase_cross_corr(previous, frame, upsample_factor=LEFTOVER_MOTION_UPSAMPLE)
     return np.asarray(shift, dtype=float)
@@ -427,6 +433,11 @@ def metric_fn(
     "gradient_correlation" are intensity metrics, run after `prepare` (the score's
     preprocessing) when given.
     """
+    if name in ("overlap", "residual"):
+        if bead_settings is None:
+            raise ValueError(f"score metric {name!r} needs the beads method's settings")
+        if prepare is not None:
+            raise ValueError(f"score blocks are for intensity metrics, not {name!r}")
     if name == "overlap":
         return lambda transform, mov, ref: score_transform(transform, mov, ref, bead_settings)
     if name == "residual":

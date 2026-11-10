@@ -257,3 +257,30 @@ def test_mutual_information_counts_its_joint_histogram_in_chunks(monkeypatch):
     whole = normalized_mutual_information(transform, mov, ref)
     monkeypatch.setattr(metrics, "HISTOGRAM_CHUNK", 1000)  # many chunks, a partial last one
     assert normalized_mutual_information(transform, mov, ref) == whole
+
+
+def test_metrics_read_nan_as_no_data():
+    # NaN != 0, so NaN voxels joined the overlap: mutual information raised (crashing the
+    # estimate) and raw_shift fed NaN to the FFT
+    from biahub.registration.metrics import raw_shift
+
+    rng = np.random.default_rng(12)
+    ref = rng.random((8, 32, 32)).astype(np.float32) + 1.0
+    holed = ref.copy()
+    holed[:, :4] = np.nan
+    identity = Transform.identity(3)
+    assert np.isfinite(normalized_mutual_information(identity, holed, ref))
+    assert np.isfinite(correlation_score(identity, holed, ref))
+    assert np.all(np.isfinite(raw_shift(ref, holed)))
+
+
+def test_a_bead_metric_needs_bead_settings_and_takes_no_score_blocks():
+    # it failed at the first score (an AttributeError on None), and dropped the blocks
+    from biahub.registration.metrics import metric_fn
+
+    with pytest.raises(ValueError, match="needs the beads method's settings"):
+        metric_fn("overlap")
+    with pytest.raises(ValueError, match="score blocks are for intensity metrics"):
+        metric_fn("residual", BeadsMatchSettings(), prepare=lambda w, r, o: (w, r))
+    with pytest.raises(ValueError, match="unknown score metric"):
+        metric_fn("sharpness")
