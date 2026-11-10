@@ -191,8 +191,8 @@ class Remembered:
 
     A result is reused only while the very arrays it was computed on are alive (they are
     held by weak reference), so a new array at a freed one's address is not mistaken for
-    it. Arrays changed in place are not noticed: keep a result only for arrays a job
-    reads, never writes.
+    it, and it is released when any of them is freed. Arrays changed in place are not
+    noticed: keep a result only for arrays a job reads, never writes.
     """
 
     def __init__(self, kept: int):
@@ -201,11 +201,17 @@ class Remembered:
 
     def __call__(self, arrays: tuple, extra: tuple, compute):
         """Return `compute()` for `arrays` and `extra` (hashable), computed once."""
+        key = (tuple(id(a) for a in arrays), extra)
+
+        def forget(ref):  # an array was freed: release its entry (not a newer one's)
+            entry = self._results.get(key)
+            if entry is not None and ref in entry[0]:
+                del self._results[key]
+
         try:
-            refs = tuple(weakref.ref(a) for a in arrays)
+            refs = tuple(weakref.ref(a, forget) for a in arrays)
         except TypeError:  # an array without weak references (e.g. a list): not remembered
             return compute()
-        key = (tuple(id(a) for a in arrays), extra)
         hit = self._results.get(key)
         if hit is not None and all(r() is a for r, a in zip(hit[0], arrays, strict=True)):
             self._results.move_to_end(key)

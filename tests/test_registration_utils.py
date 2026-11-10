@@ -50,3 +50,19 @@ def test_a_result_recomputed_over_a_freed_arrays_entry_is_the_newest():
     memo((z,), (), compute("z"))  # evicts the oldest: y, not the x just computed
     assert memo((x,), (), compute("x")) == "x"
     assert calls == ["x", "y", "x", "z"]
+
+
+def test_a_remembered_result_is_released_with_its_arrays():
+    # entries left only by count, so a full-size Sobel outlived the evaluation that made it
+    import gc
+    import weakref
+
+    from biahub.registration.utils import Remembered
+
+    memo = Remembered(4)
+    volume = np.zeros(8)
+    result = memo((volume,), (), lambda: np.ones(8))
+    alive = weakref.ref(result)
+    del result, volume
+    gc.collect()
+    assert alive() is None and len(memo._results) == 0
