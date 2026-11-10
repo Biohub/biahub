@@ -44,6 +44,7 @@ from biahub.registration.estimators import (
     NodeDetector,
     ScoreFn,
     TransformEstimator,
+    fit_pairs,
 )
 from biahub.registration.methods.landmark.node_graph import (
     NodeGraphEstimator,
@@ -419,10 +420,12 @@ class VoteInitialTransformCorrection(EstimatorBase):
     Warps `mov` by the initial transform, detects beads densely and votes for the
     residual drift; "vote_translation" composes the densest cluster's mean displacement
     into the initial transform, "vote_fit" also fits the run's transform type on the
-    cluster's pairs. Every candidate competes against the unchanged initial transform on the
+    cluster's pairs (a translation with 4-5 pairs; a degenerate fit is rejected). Every
+    candidate competes against the unchanged initial transform on the
     median nearest-neighbour distance of the pipeline's own detection, so a bad vote
     leaves the initial transform unchanged. Returns the (possibly unchanged) initial
-    transform; without an initial transform, the identity.
+    transform; without an initial transform, the identity. `trace()["best_candidate"]`
+    names the pick: "keep", "+drift", "-drift" or "fit".
     """
 
     def __init__(
@@ -438,6 +441,10 @@ class VoteInitialTransformCorrection(EstimatorBase):
         self.transform_type = transform_type  # what vote_fit fits
         self.dense_detector = BeadNodeDetector(settings.vote_peaks_settings)
         self.last_note: str = ""
+        self._pick: str | None = None
+
+    def trace(self) -> dict:
+        return {"best_candidate": self._pick, "blocks": None}
 
     @classmethod
     def from_beads_settings(
@@ -488,14 +495,13 @@ class VoteInitialTransformCorrection(EstimatorBase):
                 "unchanged"
             )
             return initial_transform
-        # The vote measured a residual drift d in the reference frame: the correction is a
-        # translation after the initial transform. "minus" undoes +d (sampling at
-        # q - d, so T(+d) after it), "plus" the opposite sign; both compete with the
-        # unchanged initial transform.
+        # The vote measured a residual drift d (reference minus warped moving peak): a
+        # translation by +d after the initial transform takes it out; -d, the other sign,
+        # and the unchanged initial transform compete with it.
         candidates = {
             "keep": initial_transform,
-            "minus": Transform.from_translation(drift) @ initial_transform,
-            "plus": Transform.from_translation(-drift) @ initial_transform,
+            "+drift": Transform.from_translation(drift) @ initial_transform,
+            "-drift": Transform.from_translation(-drift) @ initial_transform,
         }
         nn = {name: nn_median(t) for name, t in candidates.items()}
         best = min(nn, key=nn.get)
@@ -507,19 +513,24 @@ class VoteInitialTransformCorrection(EstimatorBase):
             # after the initial transform maps p onto q.
             p = np.asarray([a for a, _ in pairs], dtype=float)
             q = np.asarray([b for _, b in pairs], dtype=float)
-            correction = (
-                Transform.fit(p, q, self.transform_type)
-                if len(pairs) >= 6
-                else Transform.from_translation((q - p).mean(axis=0))
-            )
-            fitted = correction @ initial_transform
-            nn_fitted = nn_median(fitted)
-            if np.isfinite(nn_fitted) and nn_fitted < nn[best]:
-                corrected = fitted
-                note += f"; fit accepted n={len(pairs)} nn {nn[best]:.1f}->{nn_fitted:.1f}"
+            try:
+                correction = (
+                    fit_pairs(p, q, self.transform_type)
+                    if len(pairs) >= 6
+                    else Transform.from_translation((q - p).mean(axis=0))
+                )
+            except EstimationError as error:  # a degenerate cluster: the vote's pick stands
+                note += f"; fit rejected n={len(pairs)} ({error})"
             else:
-                note += f"; fit rejected n={len(pairs)} nn {nn[best]:.1f}->{nn_fitted:.1f}"
+                fitted = correction @ initial_transform
+                nn_fitted = nn_median(fitted)
+                if np.isfinite(nn_fitted) and nn_fitted < nn[best]:
+                    note += f"; fit accepted n={len(pairs)} nn {nn[best]:.1f}->{nn_fitted:.1f}"
+                    corrected, best = fitted, "fit"
+                else:
+                    note += f"; fit rejected n={len(pairs)} nn {nn[best]:.1f}->{nn_fitted:.1f}"
         self.last_note = note
+        self._pick = best
         return corrected
 
 

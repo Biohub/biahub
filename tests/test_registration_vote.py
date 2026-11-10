@@ -299,3 +299,35 @@ def test_vote_icp_fits_moving_onto_reference_directly():
     np.testing.assert_allclose(
         found.matrix, Transform.fit(mov, ref, "affine").matrix, atol=1e-9
     )
+
+
+class _Points:
+    """A detector that returns the same points whatever it is given."""
+
+    def __init__(self, points):
+        self.points = np.asarray(points, dtype=float)
+
+    def detect(self, volume):
+        return self.points
+
+
+def test_a_degenerate_vote_leaves_the_start_unchanged_instead_of_crashing(monkeypatch):
+    # six pairs at one point: the fit raised out of the job (ValueError / LinAlgError)
+    from biahub.registration.methods.landmark import bead_matching
+
+    ref_peaks = np.random.default_rng(14).uniform(0, 30, (20, 3))
+    pairs = [(np.array([5.0, 5.0, 5.0]), np.array([6.0, 5.0, 5.0]))] * 6
+    monkeypatch.setattr(
+        bead_matching, "vote_drift", lambda *a: (np.array([1.0, 0.0, 0.0]), pairs, 6)
+    )
+    correction = VoteInitialTransformCorrection(
+        InitialTransformCorrectionSettings(mode="vote_fit", vote_peaks_settings=PEAKS),
+        mov_detector=_Points(ref_peaks + 0.5),
+        ref_detector=_Points(ref_peaks),
+    )
+    correction.dense_detector = _Points(ref_peaks)
+    vol = np.zeros((8, 8, 8), np.float32)
+    corrected = correction.estimate(vol, vol, initial_transform=Transform.identity(3))
+    assert isinstance(corrected, Transform)
+    assert "fit rejected" in correction.last_note
+    assert correction.trace()["best_candidate"] in ("keep", "+drift", "-drift")
