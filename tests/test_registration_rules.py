@@ -111,3 +111,20 @@ def test_the_two_volumes_are_moving_and_reference():
                 if token.type == tokenize.NAME and OTHER_ROLE_WORDS.search(token.string):
                     found.append(f"{path.relative_to(ROOT)}:{token.start[0]} {token.string}")
     assert not found, "say moving / reference for the two volumes:\n" + "\n".join(found)
+
+
+def test_every_method_but_shapes_starts_from_its_initial_transform():
+    # repair, propagation and a stack's later blocks hand each method a start; a method
+    # that ignored it would make them return the same answer
+    from biahub.registration.engine import build_estimator
+
+    for method in METHODS:
+        settings = EstimateTransformSettings(
+            moving={"channel": "GFP"},
+            reference={"frame": "cross", "channel": "Phase3D"},
+            method=method,
+            transform={"type": METHOD_TRANSFORM_TYPES.get(method, ("affine",))[0]},
+            **NEEDED.get(method, {}),
+        )
+        estimator, _ = build_estimator(settings, (8, 32, 32), (1.0, 1.0, 1.0), (1.0, 1.0, 1.0))
+        assert estimator.uses_initial_transform == (method != "shapes"), method

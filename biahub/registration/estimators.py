@@ -56,9 +56,9 @@ class TransformEstimator(Protocol):
 class EstimatorBase:
     """The members the engine reads from an estimator, with the defaults most keep.
 
-    - `uses_initial_transform`: the estimate starts from `initial_transform`.
-      Correlation methods (PCC, stackreg) ignore it and set False, so the engine skips
-      restarting passes (repair, polish).
+    - `uses_initial_transform`: the estimate starts from `initial_transform`. Every
+      method does (`measure_from_start` for the image methods) but `shapes`, which
+      computes a start; the settings refuse propagation and repair for a run it starts.
     - `holds_xy_across_gaps`: across empty frames, z is measured and yx held (focus
       finding's legacy rule).
     - `accepts_competitor`: `estimate` also takes `competitor`, a second initial

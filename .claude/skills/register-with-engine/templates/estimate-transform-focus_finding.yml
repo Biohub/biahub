@@ -16,5 +16,5 @@ time_indices: all
 fallback:
   flag:
     k_mad: 2.0
-  repair: null  # the method ignores where it starts: repair would return the same answer
+  repair: null  # off; {} re-estimates a flagged timepoint from its neighbours' transforms, or keeps one as it is
 verbose: true

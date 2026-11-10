@@ -46,6 +46,10 @@ Every decision -- accept or flag, repair, the competitions -- uses one score per
   score -- not even inside the method: the bead estimators' own choices (which candidate, which
   pass) score the raw volumes too -- so scores from configs with different blocks stay
   comparable.
+- A method that scores its own choices -- `bead_matching` (its passes, its competing start
+  and spectral candidate), `nuclei_matching` (its passes) -- does so with the
+  `tuning_metric` of its block; unset, with the run's score (a stack's blocks too). Nuclei
+  detect no beads: with a bead score they tune with `correlation`.
 - `score.report`: more metrics computed for every transform on the raw warped pair (no
   score blocks) and written next to its score in `transforms.yml` (`report: {...}`): a fixed
   yardstick across runs, never used for decisions.
@@ -53,7 +57,13 @@ Every decision -- accept or flag, repair, the competitions -- uses one score per
 ## Where each timepoint starts: `transform.initial`
 
 `transform.type` is what is fitted; `transform.initial` is where each estimate starts (left
-out: identity):
+out: identity). Every method starts from it: the image methods (`phase_cross_corr`,
+`focus_finding`) measure on the moving volume warped by it onto the reference grid, so
+the grids may differ; landmark methods move their points by it; `ants` and local phase
+correlation warp with it themselves; `manual` shows the moving volume pre-aligned by it.
+`shapes` is the exception: it computes a start, so it comes first in a stack, and a run
+that starts with it refuses `propagate` and `fallback.repair`. Each timepoint's record
+(`timepoints/<t>.json`) keeps `from_start`, the change the estimate made after its start.
 
 - `{from: matrix, matrix: [...], direction: inverse}`: one transform for every timepoint
   (e.g. the previous run's `approx_transform`, inverse direction as on disk).
@@ -92,7 +102,13 @@ Beads matching is deterministic but depends on where it starts: on a drifting se
   nothing accumulates. Slow drift moves the median with it, so it stays; add
   `reference.anchor` to remove it. Each timepoint reads 2 x window frames: plan memory
   for the median. `phase_cross_corr.upsample_factor` (e.g. 4) measures fractions of a
-  pixel.
+  pixel (unset: 1 for the whole volume, 10 for `local` tiles).
+  `phase_cross_corr.normalization`: unset (plain cross-correlation, the default) keeps the
+  image's amplitude, which carries a label-free phase signal, but is sensitive to edges
+  and padding; `magnitude` (phase only) is robust to them but discards the amplitude.
+  With `local`, the block's `center_crop_xy` / slices place the tiles, and
+  `normalization` / `upsample_factor` are each tile's; `maximum_shift` and
+  `function_type: custom_padding` are whole-volume options, refused with `local`.
 - `reference.anchor` (with `neighbours` only): each timepoint's intensity centroid is
   recorded, smoothed over time, and (frame centre - smoothed centroid) is added to every
   transform, so the sample is moved to the centre and held there. All values are given;
@@ -178,11 +194,13 @@ thread counts.
 ## Flagging, repair and thresholds
 
 After estimating, timepoints below the run's `median - 2*MAD` (and below `floor`), or below
-`hard_fail`, are flagged. With a `fallback.repair` block they are re-estimated from other
-starts (`candidates`: `t-1`, `t+1`, `consensus`, `initial`); without one (the default)
-they are written as they are, `unreliable` while still below the threshold. Repair is
-skipped for methods that ignore where they start (`phase_cross_corr`, `focus_finding`,
-`manual`, `shapes`): their templates set `repair: null`. A sweep
+`hard_fail`, are flagged. With a `fallback.repair` block each candidate (`t-1`, `t+1`,
+`consensus`, `initial`) is tried two ways: re-estimated from it, and as it is (a
+neighbour's transform scored on the flagged timepoint: `repaired_from: "t-1 (as is)"`);
+the best score wins. A timepoint whose estimate failed is only re-estimated: nothing
+measured it, so it keeps its stand-in, `unreliable`. Without a repair block (the default)
+flagged timepoints are written as they are, `unreliable` while still below the threshold.
+A run that starts with `shapes` refuses repair (the same transform every time). A sweep
 (`fallback.sweep.max_timepoints`) and repair (`fallback.repair.max_timepoints`) both take
 every flagged timepoint unless capped.
 

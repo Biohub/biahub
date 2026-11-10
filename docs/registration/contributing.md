@@ -27,10 +27,16 @@ A method is an `EstimatorBase` in `methods/<family>/<method>.py`, the family bei
 images) or `manual` (a person or the setup decides).
 *(test: `test_every_method_lives_in_its_familys_folder_under_its_own_name`)*
 
-1. **Estimator.** Subclass `EstimatorBase`; declare `uses_initial_transform`,
-   `holds_xy_across_gaps` and `accepts_competitor` instead of the engine guessing. Raise
-   `EstimationError` for a failed estimate (the run records it and moves on); anything
-   else is a bug. Return the forward transform.
+1. **Estimator.** Subclass `EstimatorBase`. `estimate(mov, ref, initial_transform)`
+   applies its start and returns the full forward transform: a method that measures from
+   the two images alone does it through `measure_from_start` (an identity start warps
+   nothing); a landmark method moves its points by the start; a method that warps by
+   itself (ANTs) passes it on. Only `shapes` computes a start instead (and comes first).
+   Declare `holds_xy_across_gaps` and `accepts_competitor` when they apply. A method that
+   scores its own choices (passes, candidates) gets a `tuning_metric` in its settings
+   block (unset: the run's score). Raise `EstimationError` for a failed estimate (the run
+   records it and moves on); anything else is a bug.
+   *(test: `test_every_method_but_shapes_starts_from_its_initial_transform`)*
 2. **Settings** (`biahub/settings.py`): a `<Method>Settings` block and its field on
    `EstimateTransformSettings`, the name in `EstimationMethod`, `METHOD_BLOCKS`,
    `METHOD_FAMILIES` (family, what it estimates) and `DEFAULT_SCORE_METRIC`; in
