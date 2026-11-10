@@ -512,3 +512,33 @@ def test_a_stacks_record_says_what_every_block_did():
         blocks[0]["best_candidate"] == "spectral"
         and chain.trace()["best_candidate"] == "spectral"
     )
+
+
+def test_the_driver_submits_the_stacks_planned_time(beads_plate, tmp_path, monkeypatch):
+    # the plan gave a stack time for each block, the driver submitted one block's
+    import submitit
+
+    from biahub.registration.engine import cluster
+    from biahub.registration.engine.core import ESTIMATE_MINUTES
+    from tests.test_estimate_transform import _run
+
+    times = []
+
+    class RecordingExecutor(submitit.AutoExecutor):
+        def update_parameters(self, **kwargs):
+            if "slurm_time" in kwargs:
+                times.append(kwargs["slurm_time"])
+            return super().update_parameters(**kwargs)
+
+    monkeypatch.setattr(cluster.submitit, "AutoExecutor", RecordingExecutor)
+    config = tmp_path / "stack.yml"
+    model_to_yaml(_settings([{"phase_cross_corr": {}}, BEADS_BLOCK]), config)
+    _run(beads_plate, config, tmp_path / "out" / "transforms.yml")
+    assert times[0] == 2 * ESTIMATE_MINUTES
+
+
+def test_a_propagated_stack_stays_within_the_partitions_limit():
+    from biahub.registration.engine.core import MAX_MINUTES, estimate_minutes
+
+    assert estimate_minutes(n_blocks=2, n_timepoints=400, propagated=True) == MAX_MINUTES
+    assert estimate_minutes(n_blocks=2, n_timepoints=1, propagated=False) == 60

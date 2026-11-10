@@ -396,13 +396,21 @@ class _Run:
             self.reference_for = dict(zip(self.keys, self.movings, strict=True))
 
     def start(self) -> None:
-        """Record the run's positions and config (what later steps check against)."""
+        """Start the run on its positions; `record` writes what later steps check against.
+
+        An earlier run's record is removed first: a start refused part-way (after some
+        positions were planned again) leaves no record a step could run on.
+        """
         if self.settings.pool is not None and len(self.keys) < 2:
             raise click.UsageError(
                 f"pool needs estimates on two or more positions; got {len(self.keys)}"
             )
-        self.folder.start(self.keys, self.config)
+        self.folder.forget()
         self.run_positions = list(self.keys)
+
+    def record(self) -> None:
+        """Record the run's positions and config, once every position is planned."""
+        self.folder.start(self.keys, self.config)
 
     def load(self) -> None:
         """Read what `--init` recorded; refuse positions or a config it did not start."""
@@ -490,6 +498,7 @@ def estimate_transform(
         moving_position_dirpaths, config_filepath, output_filepath, reference_position_dirpaths
     )
     run.start()
+    run.record()
 
     def estimate_position(key: str) -> list[TransformEntry]:
         return run.entries(
@@ -575,6 +584,7 @@ def estimate_transform_init(
         )
         for key in run.keys
     }
+    run.record()
     first = plans[run.keys[0]]
     plan = {
         "positions": run.keys,

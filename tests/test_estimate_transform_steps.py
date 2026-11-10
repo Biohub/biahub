@@ -390,3 +390,23 @@ def test_the_engine_refuses_with_a_library_error_not_a_command_line_one(tmp_path
             read(tmp_path)
     with pytest.raises(RunError, match="run --step flag first"):
         _flags(tmp_path)
+
+
+def test_a_refused_init_leaves_the_earlier_run_as_it_was(
+    beads_plate_with_a_blank_timepoint, tmp_path
+):
+    # a refused --init wrote run.json first, so a --step with the refused config ran the
+    # earlier run's settings; now no step runs until an --init succeeds
+    plate = beads_plate_with_a_blank_timepoint
+    output = tmp_path / "out" / "transforms.yml"
+    common = ["-m", plate, "-r", plate, "-o", output]
+    config = _write_config(tmp_path)
+    _ok("--init", "-c", config, *common)
+    refused = tmp_path / "refused.yml"
+    refused.write_text(_write_config(tmp_path, time_indices=[5]).read_text())  # past T
+    config = _write_config(tmp_path)
+    result = _cli("--init", "-c", refused, *common)
+    assert result.exit_code != 0 and "out of range" in result.output
+    for used in (refused, config):
+        result = _cli("--step", "estimate", "-c", used, *common)
+        assert result.exit_code != 0 and "run with --init first" in result.output

@@ -336,6 +336,15 @@ def _propagation_minutes(n_timepoints: int) -> int:
     return min(MAX_MINUTES, time_minutes)
 
 
+def estimate_minutes(n_blocks: int, n_timepoints: int, propagated: bool) -> int:
+    """Return an estimate job's time: each block's, one after another, within the partition.
+
+    A propagated run is one job over `n_timepoints`; otherwise each job is one timepoint.
+    """
+    per_block = _propagation_minutes(n_timepoints) if propagated else ESTIMATE_MINUTES
+    return min(MAX_MINUTES, n_blocks * per_block)
+
+
 def _one_transform_per_timepoint(
     result: SeriesResult,
     time_indices: list[int],
@@ -594,10 +603,6 @@ def init_run(
         key=lambda r: r[0] * r[1],
     )
     n_trials = len(settings.sweep_trials()) if settings.fallback.sweep is not None else 0
-    # a stack's blocks run one after another in each job
-    estimate_minutes = len(settings.method_names) * (
-        _propagation_minutes(len(time_indices)) if propagated else ESTIMATE_MINUTES
-    )
 
     def resources(minutes: int) -> dict:
         return {
@@ -614,7 +619,9 @@ def init_run(
         "propagated": propagated,
         "interactive": "manual" in settings.method_names,
         "resources": {
-            "estimate": resources(estimate_minutes),
+            "estimate": resources(
+                estimate_minutes(len(settings.method_names), len(time_indices), propagated)
+            ),
             "repair": resources(REPAIR_MINUTES),
             "sweep": resources(_sweep_minutes(n_trials)),
         },

@@ -83,9 +83,10 @@ def _run_fingerprint(
 
 
 class RunFolder:
-    """A run's folder (`<output>/transforms/` for one estimate-transform call): its layout.
+    """A run's folder (`<output stem>/`, e.g. `reg/foo.yml` -> `reg/foo/`): its layout.
 
-    `run.json` records the run's positions and config fingerprint (written by `--init`).
+    `run.json` records the run's positions and config fingerprint (written by `--init`
+    once every position is planned).
     With one position its work files (settings, plan, records) sit in the folder itself;
     with several, each position's under `positions/<row>/<col>/<fov>/`.
     """
@@ -96,6 +97,10 @@ class RunFolder:
     @property
     def run_file(self) -> Path:
         return self.path / RUN_FILENAME
+
+    def forget(self) -> None:
+        """Remove `run.json`: a new start replaces the run it records."""
+        self.run_file.unlink(missing_ok=True)
 
     def start(self, positions: list[str], config: dict) -> None:
         """Record the run's positions and config fingerprint."""

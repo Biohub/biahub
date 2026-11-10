@@ -22,16 +22,15 @@ from biahub.cli.monitor import monitor_jobs
 from biahub.cli.parsing import sbatch_to_submitit
 from biahub.core.transform import Transform
 from biahub.registration.engine.core import (
-    ESTIMATE_MINUTES,
     _final,
     _finite_or_none,
     _initial_policy,
     _metric_fn,
-    _propagation_minutes,
     _reference_policy,
     _score_fn,
     _static_initial,
     build_estimator,
+    estimate_minutes,
     finalize_run,
     flag_run,
     init_run,
@@ -556,18 +555,15 @@ def _run_jobs(
 
 
 def _run_propagated(
-    executor, resolved_cluster, monitor_flag, job_args, to_estimate, records_dir, user_set_time
+    executor, resolved_cluster, monitor_flag, job_args, to_estimate, records_dir
 ) -> tuple[dict[int, dict], dict[int, str]]:
     """Run the sequential estimate as one job; return ({t: record}, {t: error}).
 
-    If the job dies part-way, the records it already wrote (this run's -- the record dirs
-    were cleared at the start) are kept; only the timepoints it never reached fail.
+    If the job dies part-way, the records it already wrote (this run's, or ones --resume
+    checked against the manifest) are kept; only the timepoints it never reached fail.
     """
     if not to_estimate:
         return {}, {}
-    if not user_set_time:
-        minutes = _propagation_minutes(len(to_estimate))
-        executor.update_parameters(slurm_time=minutes)
     executor.update_parameters(slurm_job_name="estimate_transform_propagated")
     by_job, failures = _run_jobs(
         executor,
@@ -747,7 +743,7 @@ def estimate_transform_series(
         "slurm_mem_per_cpu": f"{estimate['gb_ram_per_cpu']}G",
         "slurm_cpus_per_task": estimate["cpus"],
         "slurm_array_parallelism": 100,  # process up to N timepoints at a time
-        "slurm_time": ESTIMATE_MINUTES,
+        "slurm_time": estimate["time_minutes"],
         "slurm_partition": "preempted",
         "slurm_use_srun": False,
     }
@@ -772,6 +768,10 @@ def estimate_transform_series(
     user_set_time = bool(
         sbatch_filepath and "slurm_time" in sbatch_to_submitit(sbatch_filepath)
     )
+    if plan["propagated"] and not user_set_time:  # the job runs the timepoints left
+        executor.update_parameters(
+            slurm_time=estimate_minutes(len(settings.method_names), len(to_estimate), True)
+        )
     if plan["propagated"]:
         estimate_records, job_failures = _run_propagated(
             executor,
@@ -780,7 +780,6 @@ def estimate_transform_series(
             (moving, reference, settings_path, time_indices, timepoints_dir, resume),
             to_estimate,
             timepoints_dir,
-            user_set_time=user_set_time,
         )
     else:
         estimate_records, job_failures = _run_jobs(
