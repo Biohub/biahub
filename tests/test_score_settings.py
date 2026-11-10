@@ -275,3 +275,46 @@ def test_the_run_scores_each_transform_of_a_pair_once(monkeypatch):
     assert warps == [] and again == first
     score(near, mov.copy(), ref)  # another moving volume is scored
     assert len(warps) == 1
+
+
+def test_a_method_tunes_with_the_runs_score_unless_its_own_metric_is_set(monkeypatch):
+    # bead and nuclei matching choose between their own passes and candidates: with the
+    # run's score by default (in a stack, too: a block took its method's default), or
+    # with the tuning_metric their block sets
+    from biahub.registration.engine import core
+
+    asked = []
+    real = core._metric_fn
+    monkeypatch.setattr(
+        core,
+        "_metric_fn",
+        lambda s, metric, prepare=None: asked.append(metric) or real(s, metric, prepare),
+    )
+    shape, um = (8, 32, 32), (1.0, 1.0, 1.0)
+    core.build_estimator(
+        _settings("bead_matching", score={"metric": "correlation"}), shape, um, um
+    )
+    assert asked == ["correlation"]  # one score, the run's, for both
+    asked.clear()
+    tuned = _settings(
+        "bead_matching",
+        score={"metric": "correlation"},
+        bead_matching={"tuning_metric": "overlap"},
+    )
+    core.build_estimator(tuned, shape, um, um)
+    assert sorted(asked) == ["correlation", "overlap"]
+    with pytest.raises(ValidationError):
+        _settings("bead_matching", bead_matching={"tuning_metric": "sharpness"})
+    with pytest.raises(ValidationError):  # nuclei detect no beads
+        _settings("nuclei_matching", nuclei_matching={"tuning_metric": "overlap"})
+
+
+def test_a_stack_block_does_not_inherit_the_runs_score():
+    # [bead_matching, ants] with a Sobel score block was refused at block 1 (a bead
+    # block's default score is overlap, which takes no image blocks) unless the run's
+    # metric was written out
+    settings = _settings(
+        [{"bead_matching": {}}, {"ants": {}}], score={"preprocess": [{"sobel": {}}]}
+    )
+    assert settings.effective_score_metric == "correlation"
+    assert all(block.score.preprocess == [] for block in settings.stack_settings())

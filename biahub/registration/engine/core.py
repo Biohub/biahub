@@ -96,6 +96,8 @@ from biahub.registration.utils import (
     transform_key,
 )
 from biahub.settings import (
+    DEFAULT_SCORE_METRIC,
+    INTENSITY_METRICS,
     AnchorSettings,
     EstimateTransformSettings,
     InitialTransformSettings,
@@ -185,6 +187,29 @@ def _scored_once(score_fn: ScoreFn) -> ScoreFn:
     return score
 
 
+def _tuning_score(
+    settings: EstimateTransformSettings,
+    run: EstimateTransformSettings,
+    run_score: ScoreFn,
+    metric: str | None,
+) -> ScoreFn:
+    """Return what a method's own choices are scored with, on the raw volumes.
+
+    Its `tuning_metric` when set (no score blocks); otherwise the run's score
+    (`run_score`) -- except a bead metric for a method that detects no beads, which tunes
+    with its default. Raw: the method's blocks change what it estimates from, not what it
+    is judged on.
+    """
+    if metric is None and (
+        settings.method == "bead_matching" or run.effective_score_metric in INTENSITY_METRICS
+    ):
+        tuning = run_score
+    else:
+        default = DEFAULT_SCORE_METRIC[settings.method]
+        tuning = _scored_once(_metric_fn(settings, metric or default))
+    return RawVolumeScore(tuning) if settings.preprocess else tuning
+
+
 def _final(settings: EstimateTransformSettings) -> EstimateTransformSettings:
     """Return the config of the method with the last word (a stack's final block)."""
     return settings.stack_settings()[-1] if settings.is_stack else settings
@@ -200,16 +225,19 @@ def build_estimator(
     shape_zyx: tuple[int, int, int] | None = None,
     mov_voxel_size: tuple[float, float, float] | None = None,
     ref_voxel_size: tuple[float, float, float] | None = None,
+    run: EstimateTransformSettings | None = None,
 ) -> tuple[TransformEstimator, ScoreFn]:
     """Return the estimator and score function for the settings' method.
 
-    Where it starts is the initial-transform policy's (`_initial_policy`).
+    Where it starts is the initial-transform policy's (`_initial_policy`). `run`: the
+    run's settings when `settings` is one block of its stack (a method that tunes
+    without a `tuning_metric` of its own tunes with the run's score).
     """
     if settings.is_stack:
         # each block is the estimator its own config builds (its preprocess, transform
         # type, settings), started from the block before; the run's score keeps the best
         blocks = [
-            build_estimator(block, shape_zyx, mov_voxel_size, ref_voxel_size)[0]
+            build_estimator(block, shape_zyx, mov_voxel_size, ref_voxel_size, run=settings)[0]
             for block in settings.stack_settings()
         ]
         score_fn = _score_fn(settings)
@@ -217,9 +245,13 @@ def build_estimator(
         chain = ChainedEstimator(blocks, score_fn=score_fn, names=names)
         return chain, score_fn
     score_fn = _score_fn(settings)
-    # the bead estimators' own choices score the raw volumes, not the prepared ones
-    method_score = RawVolumeScore(score_fn) if settings.preprocess else score_fn
+    run_score = score_fn if run is None else _score_fn(run)  # one object: its memo is shared
+    run = run or settings
+    method_score = None  # a method that scores its own choices: its tuning_metric
     if settings.method == "bead_matching":
+        method_score = _tuning_score(
+            settings, run, run_score, settings.bead_matching.tuning_metric
+        )
         estimator: TransformEstimator = build_beads_estimator(
             settings.bead_matching, settings.transform.type, score_fn=method_score
         )
@@ -240,6 +272,9 @@ def build_estimator(
             settings.focus_finding, pixel_size=(mov_voxel_size or (1.0, 1.0, 1.0))[-1]
         )
     elif settings.method == "nuclei_matching":
+        method_score = _tuning_score(
+            settings, run, run_score, settings.nuclei_matching.tuning_metric
+        )
         estimator = nuclei_estimator(
             settings.nuclei_matching,
             settings.transform.type,

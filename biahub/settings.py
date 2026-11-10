@@ -3,7 +3,7 @@ import warnings
 
 from itertools import product
 from pathlib import Path
-from typing import Annotated, Any, Literal, NamedTuple
+from typing import Annotated, Any, Literal, NamedTuple, get_args
 
 import numpy as np
 import yaml
@@ -451,6 +451,12 @@ class QCBeadsRegistrationSettings(MyBaseModel):
     score_centroid_mask_radius: int = 6
 
 
+# The metrics a score (and a method's tuning) can name.
+ScoreMetric = Literal[
+    "overlap", "residual", "mutual_information", "correlation", "gradient_correlation"
+]
+IntensityMetric = Literal["mutual_information", "correlation", "gradient_correlation"]
+
 # The legacy pipeline's names for the two detections; its configs are converted, a new
 # config with them is refused.
 LEGACY_BEAD_KEYS = {
@@ -461,6 +467,9 @@ LEGACY_BEAD_KEYS = {
 
 class BeadsMatchSettings(MyBaseModel):
     algorithm: Literal["hungarian", "match_descriptor", "spectral"] = "hungarian"
+    # what the method's own choices (its passes, its competing start and spectral
+    # candidate) are scored with; None: the run's score (its metric and blocks)
+    tuning_metric: ScoreMetric | None = None
     moving_peaks_settings: DetectPeaksSettings | None = Field(
         default_factory=DetectPeaksSettings
     )
@@ -1645,6 +1654,9 @@ class NucleiSettings(MyBaseModel):
     match_descriptor_settings: MatchDescriptorSettings = MatchDescriptorSettings()
     filter_matches_settings: FilterMatchesSettings = FilterMatchesSettings()
     iterations: PositiveInt = 2
+    # what the passes are scored with; None: the run's score when it is an intensity
+    # metric, else correlation (nuclei detect no beads)
+    tuning_metric: IntensityMetric | None = None
 
 
 EstimationMethod = Literal[
@@ -1765,12 +1777,9 @@ METHOD_FAMILIES: dict[str, tuple[str, str]] = {
 }
 
 
-ScoreMetric = Literal[
-    "overlap", "residual", "mutual_information", "correlation", "gradient_correlation"
-]
 # Metrics that compare intensities after the candidate warp; the bead metrics detect beads
 # on the raw volumes instead.
-INTENSITY_METRICS = {"mutual_information", "correlation", "gradient_correlation"}
+INTENSITY_METRICS = set(get_args(IntensityMetric))
 
 
 class ScoreSettings(MyBaseModel):
@@ -2245,13 +2254,8 @@ class EstimateTransformSettings(MyBaseModel):
         configs = []
         for k, block in enumerate(self.method, start=1):
             data = copy.deepcopy(run)
-            if k < len(self.method):
-                # the report and a bead score are the run's, from its final block
-                data["score"]["report"] = [
-                    m for m in run["score"]["report"] if m in INTENSITY_METRICS
-                ]
-                if data["score"]["metric"] not in (None, *INTENSITY_METRICS):
-                    data["score"]["metric"] = None
+            # the run's score evaluates every block; a block tunes with its own metric
+            data["score"] = {}
             if k > 1:  # a later block starts from the block before, not the run's start
                 data["transform"]["initial"] = None
             data["method"] = block.method
