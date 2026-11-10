@@ -1221,3 +1221,22 @@ def test_a_competition_reads_its_members_from_its_candidates():
     assert not neither.uses_initial_transform and either.uses_initial_transform
     assert either.holds_xy_across_gaps and not mixed.holds_xy_across_gaps
     assert not either.accepts_competitor  # its estimate takes no competitor
+
+
+def test_the_clicked_points_fit_needs_three_pairs_and_says_what_it_fitted():
+    # one pair gave a NaN transform; unequal counts a raw ValueError; a similarity fit was
+    # labelled affine; and z came from the first clicked pair alone
+    from biahub.registration.methods.manual.manual import fit_clicked_points
+
+    with pytest.raises(EstimationError, match="at least 3 pairs"):
+        fit_clicked_points(np.zeros((1, 3)), np.zeros((1, 3)), similarity=True)
+    with pytest.raises(EstimationError, match="at least 3 pairs"):
+        fit_clicked_points(np.zeros((4, 3)), np.zeros((3, 3)), similarity=False)
+    rng = np.random.default_rng(13)
+    mov = rng.uniform(0, 100, (6, 3))
+    ref = mov + [2.0, -3.0, 4.0]
+    assert fit_clicked_points(mov, ref, similarity=True).transform_type == "similarity"
+    ref[0, 0] += 10.0  # a badly clicked first pair, in z
+    euclidean = fit_clicked_points(mov, ref, similarity=False)
+    np.testing.assert_allclose(euclidean.translation[0], 2.0, atol=1e-9)
+    assert euclidean.transform_type == "euclidean"

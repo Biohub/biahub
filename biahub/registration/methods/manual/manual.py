@@ -7,25 +7,26 @@ import napari
 import numpy as np
 
 from numpy.typing import ArrayLike
-from skimage.transform import EuclideanTransform, SimilarityTransform
 
 from biahub.core.transform import Transform
-from biahub.registration.estimators import EstimatorBase
+from biahub.registration.estimators import EstimationError, EstimatorBase, fit_pairs
 from biahub.registration.methods.manual.shapes import ShapesEstimator
+from biahub.registration.utils import center_window_yx
 
-NA_DETECTION_SOURCE = 1.35
-
-
-NA_DETECTION_TARGET = 1.35
+NA_DETECTION_MOVING = 1.35
 
 
-WAVELENGTH_EMISSION_SOURCE_CHANNEL = 0.45  # in um
+NA_DETECTION_REFERENCE = 1.35
 
 
-WAVELENGTH_EMISSION_TARGET_CHANNEL = 0.6  # in um
+WAVELENGTH_EMISSION_MOVING = 0.45  # in um
 
 
-FOCUS_SLICE_ROI_WIDTH = 150  # size of central ROI used to find focal slice
+WAVELENGTH_EMISSION_REFERENCE = 0.6  # in um
+
+
+# the central window (x, y pixels, clipped to the image) the focus is found in
+FOCUS_ROI = (300, 300)
 
 
 COLOR_CYCLE = [
@@ -40,6 +41,26 @@ COLOR_CYCLE = [
 ]
 
 
+def fit_clicked_points(moving_points, reference_points, similarity: bool) -> Transform:
+    """Return the forward transform fitted to clicked pairs (row k of each, one pair).
+
+    A similarity in zyx, or a euclidean in yx with the median z difference of the pairs
+    (a cell layer constrains no z rotation). At least 3 pairs, as many of each, else
+    EstimationError.
+    """
+    mov = np.asarray(moving_points, dtype=float).reshape(-1, 3)
+    ref = np.asarray(reference_points, dtype=float).reshape(-1, 3)
+    if len(mov) != len(ref) or len(mov) < 3:
+        raise EstimationError(
+            f"manual needs at least 3 pairs of clicked points, one in each channel; got "
+            f"{len(mov)} moving and {len(ref)} reference"
+        )
+    if similarity:
+        return fit_pairs(mov, ref, "similarity", solver="skimage")
+    yx = fit_pairs(mov[:, 1:], ref[:, 1:], "euclidean", solver="skimage")
+    return Transform.from_yx(yx, float(np.median(ref[:, 0] - mov[:, 0])))
+
+
 def user_assisted_registration(
     moving_channel_volume: ArrayLike,
     moving_channel_name: str,
@@ -51,7 +72,7 @@ def user_assisted_registration(
     pre_affine_90degree_rotation: int = 0,
     pre_affine_fliplr: bool = False,
     pre_alignment: Transform | None = None,
-) -> list[ArrayLike]:
+) -> Transform:
     """
     Perform user-assisted registration of two volumetric image channels.
 
@@ -110,27 +131,22 @@ def user_assisted_registration(
 
     moving_channel_focus_idx = focus_from_transverse_band(
         moving_channel_volume[
-            :,
-            moving_channel_Y // 2 - FOCUS_SLICE_ROI_WIDTH : moving_channel_Y // 2
-            + FOCUS_SLICE_ROI_WIDTH,
-            moving_channel_X // 2 - FOCUS_SLICE_ROI_WIDTH : moving_channel_X // 2
-            + FOCUS_SLICE_ROI_WIDTH,
+            (slice(None), *center_window_yx((moving_channel_Y, moving_channel_X), FOCUS_ROI))
         ],
-        NA_det=NA_DETECTION_SOURCE,
-        lambda_ill=WAVELENGTH_EMISSION_SOURCE_CHANNEL,
+        NA_det=NA_DETECTION_MOVING,
+        lambda_ill=WAVELENGTH_EMISSION_MOVING,
         pixel_size=moving_channel_voxel_size[-1],
     )
 
     reference_channel_focus_idx = focus_from_transverse_band(
         reference_channel_volume[
-            :,
-            reference_channel_Y // 2 - FOCUS_SLICE_ROI_WIDTH : reference_channel_Y // 2
-            + FOCUS_SLICE_ROI_WIDTH,
-            reference_channel_X // 2 - FOCUS_SLICE_ROI_WIDTH : reference_channel_X // 2
-            + FOCUS_SLICE_ROI_WIDTH,
+            (
+                slice(None),
+                *center_window_yx((reference_channel_Y, reference_channel_X), FOCUS_ROI),
+            )
         ],
-        NA_det=NA_DETECTION_TARGET,
-        lambda_ill=WAVELENGTH_EMISSION_TARGET_CHANNEL,
+        NA_det=NA_DETECTION_REFERENCE,
+        lambda_ill=WAVELENGTH_EMISSION_REFERENCE,
         pixel_size=reference_channel_voxel_size[-1],
     )
 
@@ -241,7 +257,6 @@ def user_assisted_registration(
                         0,
                     )
                 else:
-                    # TODO: this +1 is not clear to me?
                     prev_step_moving_channel = (next_layer.data[-1][0], 0, 0)
                 cursor_position_data_coords = layer.world_to_data(viewer.cursor.position)
                 layer.add(cursor_position_data_coords)
@@ -279,22 +294,9 @@ def user_assisted_registration(
     )
 
     # Get the data from the layers
-    pts_moving_channel_data = points_moving_channel.data
-    pts_reference_channel_data = points_reference_channel.data
-
-    # Estimate the affine transform between the points xy to make sure registration is good
-    if similarity:
-        # Similarity transform (rotation, translation, scaling)
-        transform = SimilarityTransform()
-        transform.estimate(pts_moving_channel_data, pts_reference_channel_data)
-        fitted = Transform(transform.params)
-
-    else:
-        # Euclidean transform (rotation, translation) limiting this dataset's scale and just z-translation
-        transform = EuclideanTransform()
-        transform.estimate(pts_moving_channel_data[:, 1:], pts_reference_channel_data[:, 1:])
-        z_translation = pts_reference_channel_data[0, 0] - pts_moving_channel_data[0, 0]
-        fitted = Transform.from_yx(Transform.from_skimage(transform, ndim=2), z_translation)
+    fitted = fit_clicked_points(
+        points_moving_channel.data, points_reference_channel.data, similarity
+    )
 
     # the clicked points are on the pre-aligned moving volume: the fit comes after the pre-alignment
     clicked = fitted @ pre_alignment  # moving -> reference
