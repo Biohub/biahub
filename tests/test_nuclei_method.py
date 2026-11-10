@@ -66,7 +66,7 @@ PROBE = np.array([[12, 60, 60], [12, 60, 450], [12, 450, 60], [12, 450, 450], [1
 
 def test_nuclei_is_a_landmark_based_graph_matching_estimator():
     # The same parts as beads: a detector per channel, a graph matcher, a fit.
-    from biahub.registration.methods.landmark.bead_matching import NodeGraphEstimator
+    from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
     from biahub.registration.methods.landmark.nuclei_matching import NucleiNodeDetector
 
     estimator = _estimator()

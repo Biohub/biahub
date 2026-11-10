@@ -18,8 +18,11 @@ from biahub.registration.methods.intensity.phase_cross_corr import PCCEstimator
 from biahub.registration.methods.intensity.stackreg import StackregEstimator
 from biahub.registration.methods.landmark.bead_matching import (
     BeadNodeDetector,
+    bead_node_graph,
+)
+from biahub.registration.methods.landmark.node_graph import (
     NodeGraphEstimator,
-    matches_from_beads,
+    match_nodes,
     transform_from_matches,
 )
 from biahub.registration.methods.manual.manual import ManualEstimator
@@ -51,7 +54,7 @@ def _make_matched_clouds(rng, n=30, translation=(5.0, -3.0, 2.0)):
 
 def test_node_graph_estimator_satisfies_protocols():
     assert isinstance(BeadNodeDetector(DetectPeaksSettings()), NodeDetector)
-    estimator = NodeGraphEstimator.from_beads_settings(BeadsMatchSettings(), "euclidean")
+    estimator = bead_node_graph(BeadsMatchSettings(), "euclidean")
     assert isinstance(estimator, TransformEstimator)
 
 
@@ -72,7 +75,7 @@ def test_node_graph_estimator_matches_direct_call():
     ref_volume = np.zeros((10, 10, 10))
     transform = estimator.estimate(mov_volume, ref_volume)
 
-    matches = matches_from_beads(mov_nodes, ref_nodes, beads_match_settings)
+    matches = match_nodes(mov_nodes, ref_nodes, beads_match_settings)
     expected_transform, _ = transform_from_matches(
         matches, mov_nodes, ref_nodes, transform_type
     )
@@ -1050,10 +1053,10 @@ def test_every_estimator_declares_the_members_the_engine_reads():
         TransformEstimator,
     )
     from biahub.registration.methods.landmark.bead_matching import (
-        NodeGraphEstimator,
         VoteIcpEstimator,
         VoteInitialTransformCorrection,
     )
+    from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
     from biahub.registration.methods.manual.manual import ManualEstimator
 
     classes = [
@@ -1193,4 +1196,8 @@ def test_local_phase_correlation_reads_the_crop_normalization_and_upsampling(mon
     with pytest.raises(EstimationError):  # no tiles: the stub has none
         estimator.estimate(np.zeros((8, 40, 50)), np.zeros((8, 40, 50)))
     assert (seen["normalization"], seen["upsample_factor"]) == ("magnitude", 4)
-    assert seen["region"] == (slice(1, 5), slice(5, 35), slice(15, 35))  # center_crop_xy is x, y
+    assert seen["region"] == (
+        slice(1, 5),
+        slice(5, 35),
+        slice(15, 35),
+    )  # center_crop_xy is x, y

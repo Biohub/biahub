@@ -13,11 +13,11 @@ from biahub.registration.estimators import (
 )
 from biahub.registration.methods.landmark.bead_matching import (
     BeadNodeDetector,
-    NodeGraphEstimator,
     VoteIcpEstimator,
     VoteInitialTransformCorrection,
     build_beads_estimator,
 )
+from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
 from biahub.registration.metrics import score_transform
 from biahub.settings import (
     BeadsMatchSettings,

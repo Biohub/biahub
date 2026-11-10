@@ -8,12 +8,10 @@ algorithms, and estimating affine transformations.
 Pipeline overview
 -----------------
 1. **Peak detection** (`peaks_from_beads`): Detect bead positions in both channels.
-2. **Matching** (`matches_from_beads`): Find bead correspondences via graph matching
-   (Hungarian or descriptor-based) with geometric consistency filtering.
-3. **Transform estimation** (`transform_from_matches`): Fit an affine/euclidean/similarity
-   transform from matched bead pairs.
-4. **Iterative refinement** (`NodeGraphEstimator.estimate`): Compose the initial
-   transform with bead-based corrections, re-detect peaks, and score until convergence.
+2. **Matching, fit and refinement** (`node_graph`, shared with nuclei: `match_nodes`,
+   `transform_from_matches`, `NodeGraphEstimator`), built on bead peaks by
+   `bead_node_graph`: graph matching (Hungarian, spectral or descriptor) with geometric
+   consistency filtering, a fit, and passes that re-detect on the warped moving volume.
 
 Key conventions
 ---------------
@@ -36,9 +34,6 @@ from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from biahub.characterize_psf import detect_peaks
-from biahub.core.nodes.costs import MatchingTooLargeError
-from biahub.core.nodes.graph import Graph
-from biahub.core.nodes.matching import GraphMatcher
 from biahub.core.nodes.point_set import vote_drift, vote_icp_register
 from biahub.core.transform import Transform
 from biahub.registration.estimators import (
@@ -47,10 +42,11 @@ from biahub.registration.estimators import (
     EstimationError,
     EstimatorBase,
     NodeDetector,
-    NodeMatcher,
     ScoreFn,
     TransformEstimator,
-    fit_pairs,
+)
+from biahub.registration.methods.landmark.node_graph import (
+    NodeGraphEstimator,
 )
 from biahub.registration.utils import Remembered, transform_key
 from biahub.settings import (
@@ -203,136 +199,6 @@ def peaks_from_beads(
     return mov_peaks, ref_peaks
 
 
-def matches_from_beads(
-    mov_peaks: ArrayLike,
-    ref_peaks: ArrayLike,
-    beads_match_settings: BeadsMatchSettings,
-    verbose: bool = False,
-) -> ArrayLike:
-    """
-    Find bead correspondences between moving and reference peak sets.
-
-    Supports two matching algorithms:
-    - "hungarian": Builds k-NN graphs for both peak sets, computes a cost matrix
-      based on position distance and edge consistency, then solves the assignment
-      problem with the Hungarian algorithm.
-    - "match_descriptor": Uses scikit-image's descriptor matching on peak positions.
-
-    After matching, applies geometric consistency filters (distance quantiles,
-    direction threshold, angle threshold) to remove outliers.
-
-    Parameters
-    ----------
-    mov_peaks : ArrayLike
-        (N, D) array of moving peak coordinates (D = 2 or 3).
-    ref_peaks : ArrayLike
-        (M, D) array of reference peak coordinates.
-    beads_match_settings : BeadsMatchSettings
-        Settings controlling the matching algorithm, graph construction,
-        cost matrix weights, and post-match filtering.
-    verbose : bool
-        If True, prints matching settings and match count.
-
-    Returns
-    -------
-    ArrayLike
-        (K, 2) array of matched index pairs [mov_idx, ref_idx].
-    """
-    if verbose:
-        click.echo(f"Getting matches from beads with settings: {beads_match_settings}")
-
-    if beads_match_settings.algorithm == "match_descriptor":
-        mov_graph = Graph.from_nodes(mov_peaks)
-        ref_graph = Graph.from_nodes(ref_peaks)
-
-        match_descriptor_settings = beads_match_settings.match_descriptor_settings
-        matcher = GraphMatcher(
-            algorithm="descriptor",
-            cross_check=match_descriptor_settings.cross_check,
-            max_ratio=match_descriptor_settings.max_ratio,
-            metric=match_descriptor_settings.distance_metric,
-            verbose=verbose,
-        )
-
-        matches = matcher.match(mov_graph, ref_graph)
-
-    elif beads_match_settings.algorithm == "hungarian":
-        hungarian_match_settings = beads_match_settings.hungarian_match_settings
-        mov_graph = Graph.from_nodes(
-            mov_peaks, mode="knn", k=hungarian_match_settings.edge_graph_settings.k
-        )
-        ref_graph = Graph.from_nodes(
-            ref_peaks, mode="knn", k=hungarian_match_settings.edge_graph_settings.k
-        )
-
-        matcher = GraphMatcher(
-            algorithm="hungarian",
-            weights=hungarian_match_settings.cost_matrix_settings.weights,
-            cost_threshold=hungarian_match_settings.cost_threshold,
-            cross_check=hungarian_match_settings.cross_check,
-            max_ratio=hungarian_match_settings.max_ratio,
-            verbose=verbose,
-        )
-
-        matches = matcher.match(mov_graph, ref_graph)
-
-    # Filter as part of the pipeline
-    elif beads_match_settings.algorithm == "spectral":
-        spectral_match_settings = beads_match_settings.spectral_match_settings
-        # Spectral matching works from pairwise distances of the raw coordinates; the
-        # graph is only a node container here.
-        mov_graph = Graph.from_nodes(mov_peaks)
-        ref_graph = Graph.from_nodes(ref_peaks)
-        matcher = GraphMatcher(
-            algorithm="spectral",
-            spectral_sigma=spectral_match_settings.sigma,
-            spectral_rel_cut=spectral_match_settings.rel_cut,
-            spectral_max_iter=spectral_match_settings.max_iter,
-            verbose=verbose,
-        )
-        matches = matcher.match(mov_graph, ref_graph)
-    else:
-        raise ValueError(f"Unknown matching algorithm: {beads_match_settings.algorithm}")
-
-    matches = matcher.filter_matches(
-        matches,
-        mov_graph,
-        ref_graph,
-        angle_threshold=beads_match_settings.filter_matches_settings.angle_threshold,
-        min_distance_quantile=beads_match_settings.filter_matches_settings.min_distance_quantile,
-        max_distance_quantile=beads_match_settings.filter_matches_settings.max_distance_quantile,
-        direction_threshold=beads_match_settings.filter_matches_settings.direction_threshold,
-    )
-
-    if verbose:
-        click.echo(f"Total of matches: {len(matches)}")
-
-    return matches
-
-
-def transform_from_matches(
-    matches: ArrayLike,
-    mov_peaks: ArrayLike,
-    ref_peaks: ArrayLike,
-    transform_type: str,
-    verbose: bool = False,
-) -> tuple[Transform, Transform]:
-    """Return the (forward, inverse) transform fitted to matched peaks (`Transform.fit`, skimage).
-
-    `matches` are (moving, reference) index pairs into the (N, D) peaks; the transform
-    type is `transform_type`. Raises ValueError when the fit fails.
-    """
-    if verbose:
-        click.echo(f"Estimating a {transform_type} transform from {len(matches)} matches")
-    fwd_transform = Transform.fit(
-        np.asarray(mov_peaks)[matches[:, 0]],
-        np.asarray(ref_peaks)[matches[:, 1]],
-        transform_type,
-        solver="skimage",
-    )
-    return fwd_transform, fwd_transform.invert()
-
-
 # How the evaluation pairs this method's landmarks: (radius in µm, axes it is measured on).
 # Beads are points: a partner within 1 µm in 3D.
 POINT_MATCHING = (1.0, "zyx")
@@ -425,202 +291,28 @@ class BeadNodeDetector:
         return bead_peaks(np.asarray(array), self.settings)
 
 
-class NodeGraphEstimator(EstimatorBase):
-    """TransformEstimator over matched point correspondences.
+def bead_node_graph(
+    beads_match_settings: BeadsMatchSettings,
+    transform_type: str,
+    iterations: int | None = None,
+    score_fn: ScoreFn | None = None,
+) -> NodeGraphEstimator:
+    """Return the node-graph estimator on bead peaks, with the settings' matcher.
 
-    Composes a `NodeDetector` per channel (beads, nuclei; segmentation centroids later)
-    with graph matching and a fit: the landmark-based methods.
-
-    One pass warps `mov` by the current guess (`Transform.apply`), detects nodes in the
-    warped frame, matches, fits the residual correction and composes it back
-    (`correction @ initial_transform`: the initial transform first, then the
-    correction). Nodes are detected in the warped frame, so each pass sees a
-    better-aligned image than the last; `iterations > 1` with a `score_fn` repeats the
-    pass from the previous result and returns the best-scoring transform (never a later,
-    worse one). Without a `score_fn` the last pass is returned.
-
-    As in the legacy pipeline, a pass keeps its input when the refinement scores lower
-    (ties go to the refinement), and a score of exactly 1.0 ends the passes early.
+    `iterations` defaults to `beads_match_settings.qc_settings.iterations`. This is the
+    single matcher; `build_beads_estimator` composes the vote-ICP mode, initial
+    transform correction and the spectral candidate around it.
     """
-
-    accepts_competitor = True
-
-    def __init__(
-        self,
-        mov_detector: NodeDetector,
-        ref_detector: NodeDetector,
-        beads_match_settings: BeadsMatchSettings,
-        transform_type: str,
-        iterations: int = 1,
-        score_fn: ScoreFn | None = None,
-        matcher: NodeMatcher | None = None,
-        fit=None,
-    ):
-        if iterations < 1:
-            raise ValueError(f"iterations must be >= 1, got {iterations}")
-        self.mov_detector = mov_detector
-        self.ref_detector = ref_detector
-        self.beads_match_settings = beads_match_settings
-        self.transform_type = transform_type
-        self.iterations = iterations
-        self.score_fn = score_fn
-        # (matches, mov_nodes, ref_nodes) -> the correction; default: the transform type's
-        # full fit (transform_from_matches), as beads use
-        self.fit = fit
-        self.matcher = matcher or (
-            lambda mov_nodes, ref_nodes: matches_from_beads(
-                mov_nodes, ref_nodes, beads_match_settings
-            )
-        )
-
-    @classmethod
-    def from_beads_settings(
-        cls,
-        beads_match_settings: BeadsMatchSettings,
-        transform_type: str,
-        iterations: int | None = None,
-        score_fn: ScoreFn | None = None,
-    ) -> NodeGraphEstimator:
-        """Bead-peak detection on both sides with the settings' matcher.
-
-        `iterations` defaults to `beads_match_settings.qc_settings.iterations`. This is
-        the single matcher; `build_beads_estimator` composes the vote-ICP mode, initial
-        transform correction and the spectral candidate around it.
-        """
-        return cls(
-            mov_detector=BeadNodeDetector(beads_match_settings.moving_peaks_settings),
-            ref_detector=BeadNodeDetector(beads_match_settings.reference_peaks_settings),
-            beads_match_settings=beads_match_settings,
-            transform_type=transform_type,
-            iterations=(
-                beads_match_settings.qc_settings.iterations
-                if iterations is None
-                else iterations
-            ),
-            score_fn=score_fn,
-        )
-
-    def estimate(
-        self,
-        mov: ArrayLike,
-        ref: ArrayLike,
-        initial_transform: Transform | None = None,
-        competitor: Transform | None = None,
-    ) -> Transform:
-        """Refine `initial_transform` over the configured passes; return the best-scoring one.
-
-        `competitor`, when given, is refined too on the first pass and replaces the
-        initial transform's result only if it scores strictly higher; later passes
-        continue from the winner. This is the legacy `user_transform` competition, used
-        by propagation to let the run's initial transform compete with the previous
-        timepoint's result.
-        """
-        mov = np.asarray(mov)
-        ref = np.asarray(ref)
-        if self.score_fn is None:
-            if competitor is not None:
-                raise ValueError("a competitor initial transform needs a score_fn to compete")
-            current = initial_transform
-            for _ in range(self.iterations):
-                current = self._single_pass(mov, ref, current)
-            return current
-        current, current_score = initial_transform, None
-        best: Transform | None = None
-        best_score = -np.inf
-        for i in range(self.iterations):
-            candidates, error = [], None
-            try:
-                candidates.append(self._pass_keeping_input(mov, ref, current, current_score))
-            except EstimationError as e:
-                error = e
-            if i == 0 and competitor is not None:
-                try:
-                    candidates.append(self._pass_keeping_input(mov, ref, competitor, None))
-                except EstimationError:
-                    pass
-            if not candidates:
-                # A later pass that cannot match (e.g. the previous pass drifted) must not
-                # throw away an earlier usable result.
-                if best is not None:
-                    break
-                raise error
-            current, current_score = candidates[0]
-            for transform, score in candidates[1:]:
-                if score > current_score:  # ties: the initial transform's result
-                    current, current_score = transform, score
-            if current_score > best_score:
-                best, best_score = current, current_score
-            if current_score == 1.0:  # legacy stops on exactly 1 (overlap can exceed 1)
-                break
-        if best is None or not np.isfinite(best_score):
-            raise EstimationError(
-                f"no finite score in {self.iterations} iteration(s): nodes not detectable "
-                "after warping"
-            )
-        return best
-
-    def _pass_keeping_input(
-        self, mov, ref, start: Transform | None, start_score: float | None
-    ) -> tuple[Transform, float]:
-        """One pass from `start`; keep `start` when the refinement scores lower (ties: refinement)."""
-        refined = self._single_pass(mov, ref, start)
-        refined_score = self._finite(self.score_fn(refined, mov, ref))
-        if start is None:
-            start = Transform.identity(mov.ndim)
-        if start_score is None:
-            start_score = self._finite(self.score_fn(start, mov, ref))
-        if refined_score >= start_score:
-            return refined, refined_score
-        return start, start_score
-
-    @staticmethod
-    def _finite(score: float | None) -> float:
-        return float(score) if score is not None and np.isfinite(score) else -np.inf
-
-    def _single_pass(
-        self, mov: np.ndarray, ref: np.ndarray, initial_transform: Transform | None
-    ) -> Transform:
-        mov_for_detection = (
-            initial_transform.apply(mov, reference=ref)
-            if initial_transform is not None
-            else mov
-        )
-        if initial_transform is not None and getattr(
-            self.mov_detector, "missing_as_nan", False
-        ):
-            # the warp's padding is no data, not dark: for a detector that leaves NaN out
-            mov_for_detection = np.asarray(mov_for_detection, dtype=np.float32).copy()
-            mov_for_detection[~initial_transform.coverage(mov.shape, ref.shape)] = np.nan
-        mov_nodes = np.asarray(self.mov_detector.detect(mov_for_detection))
-        ref_nodes = np.asarray(self.ref_detector.detect(ref))
-        if len(mov_nodes) < 3 or len(ref_nodes) < 3:
-            raise EstimationError(
-                f"too few nodes to fit a transform: {len(mov_nodes)} moving, "
-                f"{len(ref_nodes)} reference (need >= 3 each)"
-            )
-        try:
-            matches = np.asarray(self.matcher(mov_nodes, ref_nodes))
-        except MatchingTooLargeError as e:  # this matcher can't run here; others may
-            raise EstimationError(str(e)) from e
-        if len(matches) < 3:
-            raise EstimationError(
-                f"too few matches to fit a transform: {len(matches)} from "
-                f"{len(mov_nodes)} x {len(ref_nodes)} nodes (need >= 3)"
-            )
-        if self.fit is not None:
-            correction = self.fit(matches, mov_nodes, ref_nodes)
-        else:
-            correction = fit_pairs(
-                mov_nodes[matches[:, 0]],
-                ref_nodes[matches[:, 1]],
-                self.transform_type,
-                solver="skimage",  # the beads method's fit (see Transform.fit)
-            )
-        if not np.all(np.isfinite(correction.matrix)):
-            raise EstimationError(
-                f"degenerate fit from {len(matches)} matches (non-finite matrix)"
-            )
-        return correction @ initial_transform if initial_transform is not None else correction
+    return NodeGraphEstimator(
+        mov_detector=BeadNodeDetector(beads_match_settings.moving_peaks_settings),
+        ref_detector=BeadNodeDetector(beads_match_settings.reference_peaks_settings),
+        beads_match_settings=beads_match_settings,
+        transform_type=transform_type,
+        iterations=(
+            beads_match_settings.qc_settings.iterations if iterations is None else iterations
+        ),
+        score_fn=score_fn,
+    )
 
 
 class VoteIcpEstimator(EstimatorBase):
@@ -859,7 +551,7 @@ def build_beads_estimator(
     score_fn = score_fn or metric_fn("overlap", beads_match_settings)
 
     def node_graph(settings: BeadsMatchSettings) -> NodeGraphEstimator:
-        return NodeGraphEstimator.from_beads_settings(
+        return bead_node_graph(
             settings, transform_type, iterations=iterations, score_fn=score_fn
         )
 

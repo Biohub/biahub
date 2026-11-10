@@ -19,7 +19,7 @@ from numpy.typing import ArrayLike
 
 from biahub.core.transform import Transform
 from biahub.registration.estimators import ScoreFn, fit_pairs
-from biahub.registration.methods.landmark.bead_matching import NodeGraphEstimator
+from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
 from biahub.settings import BeadsMatchSettings, NucleiSettings
 
 # How the evaluation pairs this method's landmarks: (radius in µm, axes it is measured on).

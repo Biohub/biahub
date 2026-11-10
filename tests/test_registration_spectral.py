@@ -17,9 +17,9 @@ from biahub.registration.estimators import (
 )
 from biahub.registration.methods.landmark.bead_matching import (
     BeadNodeDetector,
-    NodeGraphEstimator,
     build_beads_estimator,
 )
+from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
 from biahub.settings import (
     BeadsMatchSettings,
     DetectPeaksSettings,

@@ -23,11 +23,8 @@ from biahub.core.transform import Transform
 import napari
 # the retired estimate-registration schema this script reads its config with
 from biahub.registration.legacy.convert_settings import EstimateRegistrationSettings
-from biahub.registration.methods.landmark.bead_matching import (
-    transform_from_matches,
-    matches_from_beads,
-    peaks_from_beads,
-)
+from biahub.registration.methods.landmark.node_graph import match_nodes, transform_from_matches
+from biahub.registration.methods.landmark.bead_matching import peaks_from_beads
 from biahub.registration.methods.landmark.bead_matching import build_beads_estimator
 from biahub.registration.metrics import metric_fn
 
@@ -181,7 +178,7 @@ if visualize:
     )
 
 # %% Match beads between moving and reference peak sets
-matches = matches_from_beads(
+matches = match_nodes(
     mov_peaks,
     ref_peaks,
     config.beads_match_settings,
