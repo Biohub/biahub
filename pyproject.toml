@@ -158,15 +158,15 @@ ultrack = { git = "https://github.com/ieivanov/ultrack", rev = "69e7589a050b0aa5
 # A549 benchmark used.
 tracksdata = { git = "https://github.com/royerlab/tracksdata", rev = "e13cf379b5127deeb8301ce56410fda35b5a3cf9" }
 
-# Pin waveorder to Biohub/waveorder#595 (faad7bf, on top of main at
-# Biohub/waveorder#594): apply-inv-tf passes the config's `device` to the phase and
-# fluorescence models, without which the reconstruct step's `device: cuda`
-# deconvolutions run Richardson-Lucy on the CPU. Main carries #583 (apply-inv-tf
-# through iohub's process_single_position with resume, which `biahub apply-inv-tf
-# --resume` passes through), #582 (one transfer function shared across workers) and
-# the RL / confocal-pinhole fluorescence models. Repoint at main once #595 merges,
-# and at a PyPI floor once waveorder cuts a release containing them.
-waveorder = { git = "https://github.com/Biohub/waveorder", rev = "faad7bf69b459b4dd28e10ee77d95e7ec8bcfa5e" }
+# Pin waveorder to main at the Biohub/waveorder#595 merge (0e25b9b): apply-inv-tf
+# passes the config's `device` to the phase and fluorescence models, without which
+# the reconstruct step's `device: cuda` deconvolutions run Richardson-Lucy on the
+# CPU. Main also carries #583 (apply-inv-tf through iohub's process_single_position
+# with resume, which `biahub apply-inv-tf --resume` passes through), #582 (one
+# transfer function shared across workers) and the RL / confocal-pinhole
+# fluorescence models. Drop this back to a PyPI floor once waveorder cuts a release
+# containing them.
+waveorder = { git = "https://github.com/Biohub/waveorder", rev = "0e25b9bbe760e5278fde867ef24bdf28979f0bca" }
 
 [tool.hatch.metadata]
 allow-direct-references = true

@@ -462,7 +462,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'build'" },
     { name = "ultrack", marker = "extra == 'all'", git = "https://github.com/ieivanov/ultrack?rev=69e7589a050b0aa5f84ccda3bdf072f5289f939c" },
     { name = "ultrack", marker = "extra == 'track'", git = "https://github.com/ieivanov/ultrack?rev=69e7589a050b0aa5f84ccda3bdf072f5289f939c" },
-    { name = "waveorder", git = "https://github.com/Biohub/waveorder?rev=faad7bf69b459b4dd28e10ee77d95e7ec8bcfa5e" },
+    { name = "waveorder", git = "https://github.com/Biohub/waveorder?rev=0e25b9bbe760e5278fde867ef24bdf28979f0bca" },
     { name = "zensical", marker = "extra == 'doc'", specifier = ">=0.0.32" },
 ]
 provides-extras = ["all", "build", "doc", "gui", "qc", "segment", "stain", "track"]
@@ -7877,8 +7877,8 @@ wheels = [
 
 [[package]]
 name = "waveorder"
-version = "3.0.6.dev19+faad7bf"
-source = { git = "https://github.com/Biohub/waveorder?rev=faad7bf69b459b4dd28e10ee77d95e7ec8bcfa5e#faad7bf69b459b4dd28e10ee77d95e7ec8bcfa5e" }
+version = "3.0.6.dev19+0e25b9b"
+source = { git = "https://github.com/Biohub/waveorder?rev=0e25b9bbe760e5278fde867ef24bdf28979f0bca#0e25b9bbe760e5278fde867ef24bdf28979f0bca" }
 dependencies = [
     { name = "colorspacious" },
     { name = "importlib-metadata" },
