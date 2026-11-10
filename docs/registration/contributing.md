@@ -1,4 +1,4 @@
-# Changing the registration engine
+# Registration: changing the engine
 
 How to add a method, a preprocessing block, a score metric or a setting to
 `estimate-transform`, and the rules every change follows. The rules a test can check are

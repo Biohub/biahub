@@ -28,7 +28,7 @@ to [fork](https://github.com/czbiohub/biahub/fork) the repository.
 ## Registration methods and features
 
 Adding a method, a preprocessing block, a score metric or a setting to `estimate-transform`
-follows the [registration engine guide](https://github.com/czbiohub-sf/biahub/blob/main/biahub/registration/CONTRIBUTING.md).
+follows the [registration engine guide](https://github.com/czbiohub-sf/biahub/blob/main/docs/registration/contributing.md).
 
 ## Setting up a development environment
 

@@ -1,4 +1,4 @@
-"""The rules of biahub/registration/CONTRIBUTING.md that a test can check.
+"""The rules of docs/registration/contributing.md that a test can check.
 
 Each test is named in the guide next to its rule: a method, block or setting added without
 everything the guide lists fails here, saying what is missing.

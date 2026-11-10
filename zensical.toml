@@ -54,6 +54,9 @@ nav = [
     "confocal/confocal_imaging.md",
     "confocal/image_processing.md",
   ] },
+  { "Registration" = [
+    "registration/contributing.md",
+  ] },
   { "Contributing" = "contributing.md" },
 ]
 
