@@ -8,8 +8,8 @@ registration by directly optimizing image similarity metrics.
 Key conventions
 ---------------
 - Coordinates are in ZYX order for 3D data.
-- "mov" / "moving" refers to the source channel being aligned.
-- "ref" / "reference" refers to the fixed target channel.
+- "mov" / "moving" is the channel being aligned; "ref" / "reference" the one it is
+  aligned to.
 - Transforms are 4x4 homogeneous matrices stored as Transform objects.
 """
 

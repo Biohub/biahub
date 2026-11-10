@@ -223,3 +223,28 @@ def test_a_timepoint_without_an_estimate_falls_back_to_its_initial_transform_fro
     stand_in = model.entry_for(1)
     assert stand_in.status == "unreliable" and stand_in.filled_from == "file"
     np.testing.assert_allclose(model.matrix_for(1, "inverse")[:3, 3], SHIFTS["0"], atol=1e-6)
+
+
+def test_a_step_refuses_an_initial_transform_file_changed_since_init(
+    three_positions, tmp_path
+):
+    from click.testing import CliRunner
+
+    from biahub.cli.main import cli
+
+    initial_transform_file = _plate_file(tmp_path, SHIFTS["0"])
+    config = _config(
+        tmp_path, transform__initial={"from": "file", "file": str(initial_transform_file)}
+    )
+    position = three_positions[0]
+    common = ["-m", position, "-r", position, "-c", config, "-o", tmp_path / "t.yml"]
+
+    def step(*args):
+        return CliRunner().invoke(
+            cli, ["estimate-transform", *map(str, args), *map(str, common)]
+        )
+
+    assert step("--init").exit_code == 0
+    _plate_file(tmp_path, SHIFTS["2"])  # same name, other content
+    result = step("--step", "estimate")
+    assert result.exit_code != 0 and "config changed since --init" in result.output
