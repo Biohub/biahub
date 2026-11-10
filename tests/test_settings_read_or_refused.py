@@ -193,3 +193,14 @@ def test_a_stack_block_that_cannot_fit_the_runs_type_is_told_to_set_its_own():
         _settings(
             method=[{"phase_cross_corr": {}}, {"ants": {}}], transform={"type": "affine"}
         )
+
+
+@pytest.mark.parametrize("text", ["", "- a\n- b\n", "just a string\n"])
+def test_a_config_that_is_not_a_mapping_is_refused_saying_so(text, tmp_path):
+    # it reached model(**data) and raised "argument after ** must be a mapping"
+    from biahub.settings import load_estimate_transform_settings
+
+    path = tmp_path / "config.yml"
+    path.write_text(text)
+    with pytest.raises(ValueError, match="must hold a mapping of settings"):
+        load_estimate_transform_settings(path)

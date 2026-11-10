@@ -2618,8 +2618,10 @@ LEGACY_CONFIG_KEYS = {
 
 
 def _load_unified(path, model):
-    data = yaml.safe_load(open(path))
-    legacy_keys = sorted(LEGACY_CONFIG_KEYS & set(data or {}))
+    data = yaml.safe_load(Path(path).read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must hold a mapping of settings; got {type(data).__name__}")
+    legacy_keys = sorted(LEGACY_CONFIG_KEYS & set(data))
     if legacy_keys:
         raise ValueError(
             f"{path} is a retired estimate-registration / estimate-stabilization / register / "
