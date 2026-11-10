@@ -32,6 +32,7 @@ from biahub.cli.parsing import config_filepaths, output_filepath
 from biahub.settings import (
     LEGACY_BEAD_KEYS,
     METHOD_TRANSFORM_TYPES,
+    RENAMED_METHODS,
     AffineTransformSettings,
     AntsRegistrationSettings,
     BeadsMatchSettings,
@@ -263,14 +264,6 @@ def _ants_blocks(legacy, notes: list[str]) -> list[dict]:
     return blocks
 
 
-# Retired method names -> the engine's.
-_UNIFIED_METHOD = {
-    "beads": "bead_matching",
-    "phase-cross-corr": "phase_cross_corr",
-    "focus-finding": "focus_finding",
-}
-
-
 # The legacy section each unified block came from, for the notes.
 _LEGACY_SECTION = {
     "bead_matching": "beads_match_settings",
@@ -311,11 +304,16 @@ def estimate_settings_from_legacy(
     if ats.compute_approx_transform:
         # the legacy pipeline built it from the store shapes, in the mantis orientation
         initial = {"from": "shapes", "rotate90": -1, "fliplr": False}
+        if not np.allclose(np.asarray(ats.approx_transform, dtype=float), np.eye(4)):
+            notes.append(
+                "approx_transform ignored: compute_approx_transform replaced it (as before), "
+                "so the run starts from the shapes method's answer"
+            )
     elif not np.allclose(np.asarray(ats.approx_transform, dtype=float), np.eye(4)):
         initial = {"from": "matrix", "matrix": ats.approx_transform, "direction": "inverse"}
     if propagate:
         initial["propagate"] = True
-    method = _UNIFIED_METHOD.get(legacy_method, legacy_method)
+    method = RENAMED_METHODS.get(legacy_method, legacy_method)
     transform_type = ats.transform_type
     fits = METHOD_TRANSFORM_TYPES.get(method)
     if fits is not None and transform_type not in fits:
@@ -472,7 +470,7 @@ def transform_settings_from_legacy(
             {*legacy.stabilization_channels, legacy.stabilization_estimation_channel}
         ),
         reference_channel=None,
-        method=_UNIFIED_METHOD.get(legacy.stabilization_method, legacy.stabilization_method),
+        method=RENAMED_METHODS.get(legacy.stabilization_method, legacy.stabilization_method),
         voxel_size=list(legacy.output_voxel_size),
         transforms=[
             TransformEntry(t=t, matrix=matrix)

@@ -19,6 +19,7 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    StrictInt,
     TypeAdapter,
     ValidationError,
     field_validator,
@@ -893,7 +894,7 @@ AxisRange = Literal["all"] | Annotated[list[NonNegativeInt], Field(min_length=2,
 
 
 class MaskBox(_Block):
-    """Compare only inside a box: one `[start, stop]` voxel range (or `all`) per z, y, x.
+    """Compare only inside a box: one half-open `[start, stop)` voxel range (or `all`) per z, y, x.
 
     Its voxels belong to one volume's grid, so it names exactly one volume.
     """
@@ -1093,6 +1094,10 @@ class CharacterizeSettings(MyBaseModel):
         import torch  # here, not at the top: 1.5 s for every command that reads a config
 
         return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# A timepoint index as written: an integer, never a bool.
+StrictTimepoint = Annotated[StrictInt, Field(ge=0)]
 
 
 class TimeRange(MyBaseModel):
@@ -1502,8 +1507,9 @@ InitialSource = Literal["matrix", "shapes", "file"]
 class InitialTransformSettings(MyBaseModel):
     """`transform.initial`: where every estimate starts (absent, or no `from`: identity).
 
-    `from: matrix` -- `matrix` (4x4) in `direction`: "inverse" (reference -> moving, the
-    convention of every transform on disk) or "forward" (moving -> reference).
+    `from: matrix` -- `matrix` (4x4) in `direction`: "inverse" (reference -> moving: what
+    retired configs and converted files hold) or "forward" (moving -> reference: what
+    estimate-transform writes).
     `from: shapes` -- the initial transform from the two stores' shapes and voxel
     sizes (their OME-NGFF scale), after `rotate90` quarter turns in yx and `fliplr`.
     `from: file` -- each position and timepoint's transform in a transforms `file` (an
@@ -1699,16 +1705,6 @@ EstimationMethod = Literal[
     "nuclei_matching",
     "shapes",
 ]
-# The settings block each method reads.
-METHOD_BLOCKS: dict[str, str] = {
-    "bead_matching": "bead_matching",
-    "ants": "ants",
-    "phase_cross_corr": "phase_cross_corr",
-    "manual": "manual",
-    "focus_finding": "focus_finding",
-    "nuclei_matching": "nuclei_matching",
-    "shapes": "shapes",
-}
 TransformType = Literal["euclidean", "similarity", "affine"]
 
 
@@ -2008,7 +2004,8 @@ class EstimateTransformSettings(MyBaseModel):
     nuclei_matching: NucleiSettings | None = None
     shapes: ShapesSettings | None = None
     transform: TransformFitSettings = TransformFitSettings()
-    time_indices: NonNegativeInt | list[NonNegativeInt] | Literal["all"] = "all"
+    # strict: a YAML `true` is not timepoint 1
+    time_indices: StrictTimepoint | list[StrictTimepoint] | Literal["all"] = "all"
     score: ScoreSettings = ScoreSettings()
     fallback: FallbackSettings = FallbackSettings()
     # Estimate on several positions, write one shared transform (their medoid); each
@@ -2034,9 +2031,9 @@ class EstimateTransformSettings(MyBaseModel):
     def check_only_the_methods_block_is_given(self) -> "EstimateTransformSettings":
         if self.is_stack:  # check_stack says it for a stack
             return self
-        own = METHOD_BLOCKS[self.method]
+        own = self.method
         ignored = [
-            f for f in METHOD_BLOCKS.values() if f != own and getattr(self, f) is not None
+            f for f in get_args(EstimationMethod) if f != own and getattr(self, f) is not None
         ]
         if ignored:
             raise ValueError(
@@ -2253,7 +2250,7 @@ class EstimateTransformSettings(MyBaseModel):
         # A sweep trial only rebuilds the estimator: the score, initial transform and
         # reference come from these settings, so only the method's own block and the fit
         # type can change.
-        block = METHOD_BLOCKS[self.method]
+        block = self.method
         for overrides in self.fallback.sweep.trials():
             for path in overrides:
                 if not (path.startswith(f"{block}.") or path == "transform.type"):
@@ -2269,7 +2266,7 @@ class EstimateTransformSettings(MyBaseModel):
     def check_stack(self) -> "EstimateTransformSettings":
         if not self.is_stack:
             return self
-        sections = [f for f in METHOD_BLOCKS.values() if getattr(self, f) is not None]
+        sections = [f for f in get_args(EstimationMethod) if getattr(self, f) is not None]
         if sections or self.preprocess:
             given = sections + (["preprocess"] if self.preprocess else [])
             raise ValueError(
@@ -2322,7 +2319,7 @@ class EstimateTransformSettings(MyBaseModel):
                 data["transform"]["initial"] = None
             data["method"] = block.method
             data["preprocess"] = [b.model_dump() for b in block.preprocess]
-            data[METHOD_BLOCKS[block.method]] = block.settings
+            data[block.method] = block.settings
             if block.type is not None:
                 data["transform"]["type"] = block.type
             fits = _fitted_types(block.method, (block.settings or {}).get("local") is not None)

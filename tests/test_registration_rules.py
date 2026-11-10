@@ -13,7 +13,6 @@ from typing import get_args
 
 from biahub.settings import (
     DEFAULT_SCORE_METRIC,
-    METHOD_BLOCKS,
     METHOD_FAMILIES,
     METHOD_TRANSFORM_TYPES,
     EstimateTransformSettings,
@@ -35,10 +34,9 @@ def test_every_method_has_a_family_and_says_what_it_estimates():
 
 
 def test_every_method_is_named_like_its_settings_section():
-    # YAML values and keys follow one style: a method's name is its settings section
-    assert {m: METHOD_BLOCKS[m] for m in METHODS} == {
-        m: m for m in METHODS if m in METHOD_BLOCKS
-    }
+    # YAML values and keys follow one style: `method: ants` reads `ants:`
+    sections = set(EstimateTransformSettings.model_fields)
+    assert [m for m in METHODS if m not in sections] == []
 
 
 def test_every_method_lives_in_its_familys_folder_under_its_own_name():

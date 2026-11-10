@@ -38,7 +38,7 @@ images) or `manual` (a person or the setup decides).
    records it and moves on); anything else is a bug.
    *(test: `test_every_method_but_shapes_starts_from_its_initial_transform`)*
 2. **Settings** (`biahub/settings.py`): a `<Method>Settings` block and its field on
-   `EstimateTransformSettings`, the name in `EstimationMethod`, `METHOD_BLOCKS`,
+   `EstimateTransformSettings`, the name in `EstimationMethod`,
    `METHOD_FAMILIES` (family, what it estimates) and `DEFAULT_SCORE_METRIC`; in
    `METHOD_TRANSFORM_TYPES` when it cannot fit every transform type; a default in
    `fill_method_block` unless the method has none to give (as `shapes`).
