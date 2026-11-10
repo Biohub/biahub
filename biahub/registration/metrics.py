@@ -1,20 +1,19 @@
 """Alignment metrics: every measure of how well a transform brings `mov` onto `ref`.
 
-The engine decides with some of them (a score per transform) and the evaluation
-analyses with all of them (residuals in voxels or µm); both call them from here.
+The engine decides with the scores (`metric_fn` maps a config's name to one) and the
+evaluation analyses with the residuals; both call them from here.
 
-Two families, because the pipeline registers across modalities:
-
-- Bead metrics (`bead_alignment_metrics`, `residual_score`) need beads visible in both
-  channels. They complement `bead_matching.overlap_score`, which is a bead-count ratio
-  quantized at ~1/N per bead, with continuous residuals in voxels.
-- Intensity metrics work on any pair of channels. Plain correlation is meaningless
-  between, say, phase and fluorescence (the correct transform can score ~0.1), so
-  `normalized_mutual_information` -- the cross-modal similarity ANTs' Mattes metric
-  approximates -- is the choice when no beads are available, and
-  `gradient_correlation` is a cheaper edge-based alternative.
-
-Every function takes the engine's forward transform and warps with `Transform.apply`.
+- Scores, one number per transform, higher is better (`ScoreMetric` in the settings):
+  the bead metrics (`score_transform`, the overlap; `residual_score`) need beads in both
+  channels; the intensity metrics (`correlation_score`, `normalized_mutual_information`
+  -- the cross-modal similarity ANTs' Mattes metric approximates -- and
+  `gradient_correlation`) work on any pair. These warp `mov` with the forward
+  transform (`Transform.apply`); NaN is no data.
+- Residuals, in reference voxels or µm: `bead_alignment_metrics`, `point_residuals` (maps
+  points, no warp), `tile_residuals` and `z_residuals` (on `prepare_pair`), and
+  `residual_shift` (a displacement, lower is better: not a score).
+- Over time, with no transform: `raw_shift` / `leftover_motion` and the anchor's
+  `intensity_centroid` / `smooth_track`.
 """
 
 from __future__ import annotations
@@ -65,8 +64,9 @@ def bead_alignment_metrics(
     """Warp, re-detect beads, and measure how the two peak sets line up.
 
     Beads pair within the settings' radius, in voxels. The residuals are in reference
-    voxels, or in µm with the reference's voxel size `ref_um` (each axis scaled). Returns
-    None when peaks cannot be detected on either side.
+    voxels, or in µm with the reference's voxel size `ref_um` (each axis scaled). Each
+    reference bead takes its nearest moving bead (many-to-one: two can share one).
+    Returns None when either side has fewer than two peaks.
     """
     radius = beads_match_settings.qc_settings.score_centroid_mask_radius
     mov, ref = np.asarray(mov), np.asarray(ref)
@@ -103,7 +103,8 @@ def residual_score(
 
     `overlap * (1 - median_residual / radius)`: the same quantity `overlap_score`
     measures, but a transform whose matched beads land 0.5 voxel off outscores one whose
-    beads land 4 voxels off instead of tying with it. nan when no beads are detected.
+    beads land 4 voxels off instead of tying with it. nan when either side has fewer than
+    two peaks; 0 when beads are found but none pair.
     """
     metrics = bead_alignment_metrics(transform, mov, ref, beads_match_settings)
     if metrics is None or metrics.n_matched == 0:
@@ -141,7 +142,12 @@ PREWARPED = Prewarped()
 
 
 def _footprint(prepare, *, sobel: bool = False) -> int:
-    """Return how far the score's blocks (and any built-in Sobel) reach, in voxels."""
+    """Return how far the score's blocks (and any built-in Sobel) reach, in voxels.
+
+    A `prepare` says its reach as a `footprint` attribute (`engine.core._score_fn` sets it
+    from the blocks); without one it reaches nothing, and the score keeps no margin from
+    the padding edge.
+    """
     return getattr(prepare, "footprint", 0) + (SOBEL_FOOTPRINT if sobel else 0)
 
 
@@ -222,6 +228,8 @@ def residual_shift(
     transform: Transform, mov: ArrayLike, ref: ArrayLike, ref_um: tuple | None = None
 ) -> float:
     """Remaining misalignment after `transform`, as a displacement not a similarity.
+
+    A residual for analysis, not a score: lower is better, and no config names it.
 
     Phase cross-correlation between the Sobel edges of the warped moving volume and the
     reference; the norm of the recovered shift, in reference voxels, or in µm with the
@@ -374,9 +382,8 @@ def score_transform(
 
     Warps `mov` with `transform`, re-detects beads, and scores their overlap against
     `ref`, without refining the transform (an estimator's pass would score something
-    other than what was passed in). Used as the
-    `score_fn` a fallback pass (e.g. `registration.engine.repair`) needs to compare
-    candidate initial transforms against each other and against the current transform.
+    other than what was passed in): the score the engine compares candidates with, in
+    the estimate and in its fallback passes (`engine.fallback`).
     """
     metrics = bead_alignment_metrics(transform, mov, ref, beads_match_settings)
     return float("nan") if metrics is None else metrics.overlap
@@ -554,6 +561,8 @@ def point_residuals(
         i = j = np.arange(len(mov_points))
         matched_by = "given pairs"
     else:
+        if axes not in ("zyx", "yx"):
+            raise ValueError(f"axes must be 'zyx' or 'yx', got {axes!r}")
         cols = slice(1, 3) if axes == "yx" else slice(0, 3)
         um = np.asarray(ref_um, float)
         i, j = mutual_nearest(

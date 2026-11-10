@@ -645,3 +645,18 @@ def test_an_evaluation_takes_each_volumes_edges_once_for_all_its_transforms(monk
         Transform.from_translation([0.0, -2.0, 1.0]), mov, ref, VOX3, VOX3, tile_px=64
     )
     assert again.tiles == first
+
+
+def test_the_residuals_refuse_what_they_cannot_measure():
+    from biahub.registration.metrics import point_residuals, prepare_pair, tile_residuals
+
+    identity = Transform.identity(3)
+    points = np.zeros((3, 3))
+    with pytest.raises(ValueError, match="paired points need one partner each"):
+        point_residuals(identity, points, np.zeros((2, 3)), VOX3, 1.0, paired=True)
+    with pytest.raises(ValueError, match="axes must be 'zyx' or 'yx'"):
+        point_residuals(identity, points, points, VOX3, 1.0, axes="xy")
+    vol = _cells(shape=(24, 64, 64))
+    pair = prepare_pair(identity, vol, vol, "intensity")
+    with pytest.raises(ValueError, match="prepared for 'intensity', not 'edges'"):
+        tile_residuals(identity, vol, vol, VOX3, compare="edges", pair=pair)

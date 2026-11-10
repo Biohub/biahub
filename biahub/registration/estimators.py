@@ -2,10 +2,9 @@
 
 A `TransformEstimator` promises `estimate(mov, ref, initial_transform=None) ->
 Transform` in the forward (moving -> reference) direction, plus the few members the
-engine reads (`EstimatorBase` gives their defaults). Vocabulary, fixed across the
-package: at the array level `mov` / `ref`; at the channel and CLI level `source` /
-`target`. `source` is always the moving side and `target` always the reference -- the
-two pairs are the same thing at two levels, never mixed within one signature. Each
+engine reads (`EstimatorBase` gives their defaults). The two volumes are moving and
+reference (`mov` / `ref` for short locals); `source` means only where something came
+from (docs/registration/contributing.md). Each
 method's estimator lives with the method in `biahub.registration.methods`; this module
 holds what they share -- the protocols, the failure types, the one "keep the best" rule
 (`is_higher`, `select_best`) and the two compositions (`ChainedEstimator`: acquire then

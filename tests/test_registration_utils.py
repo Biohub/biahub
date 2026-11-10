@@ -66,3 +66,30 @@ def test_a_remembered_result_is_released_with_its_arrays():
     del result, volume
     gc.collect()
     assert alive() is None and len(memo._results) == 0
+
+
+def test_remembered_returns_its_result_by_the_arrays_and_the_extra_key():
+    from biahub.registration.utils import Remembered
+
+    memo = Remembered(2)
+    a, b = np.zeros(2), np.zeros(2)
+    calls = []
+    first = memo((a,), ("x",), lambda: calls.append(1) or object())
+    assert memo((a,), ("x",), lambda: calls.append(1) or object()) is first  # a hit
+    memo((a,), ("y",), lambda: calls.append(1) or object())  # another extra key: computed
+    memo((b,), ("x",), lambda: calls.append(1) or object())  # a third entry evicts the oldest
+    memo((a,), ("x",), lambda: calls.append(1) or object())
+    assert len(calls) == 4
+    assert memo(([1, 2],), (), lambda: "list") == "list"  # no weak reference: computed
+
+
+def test_transform_key_names_a_transform_by_its_matrix():
+    from biahub.core.transform import Transform
+    from biahub.registration.metrics import PREWARPED
+    from biahub.registration.utils import transform_key
+
+    assert transform_key(Transform.identity(3)) == transform_key(Transform.identity(3))
+    assert transform_key(Transform.identity(3)) != transform_key(
+        Transform.from_translation([0.0, 0.0, 1.0])
+    )
+    assert transform_key(PREWARPED) == "as is"

@@ -126,3 +126,13 @@ def test_every_method_but_shapes_starts_from_its_initial_transform():
         )
         estimator, _ = build_estimator(settings, (8, 32, 32), (1.0, 1.0, 1.0), (1.0, 1.0, 1.0))
         assert estimator.uses_initial_transform == (method != "shapes"), method
+
+
+def test_the_score_metric_names_agree_everywhere():
+    # the names live in settings.ScoreMetric, settings.INTENSITY_METRICS and metrics.py's
+    # functions: a metric added to one place only is refused or misread as a bead metric
+    from biahub.registration.metrics import INTENSITY_METRIC_FNS
+    from biahub.settings import INTENSITY_METRICS, ScoreMetric
+
+    assert set(INTENSITY_METRIC_FNS) == INTENSITY_METRICS
+    assert set(get_args(ScoreMetric)) == INTENSITY_METRICS | {"overlap", "residual"}

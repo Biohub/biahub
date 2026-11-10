@@ -132,6 +132,7 @@ def match_shape(
         Padded or cropped array.
     """
     # each axis on its own: pad up to the larger size, then centre-crop down to `shape`
+    in_shape = img.shape
     shape = tuple(int(n) for n in shape)
     padded = tuple(max(n, m) for n, m in zip(img.shape, shape, strict=True))
     if padded != img.shape:
@@ -140,7 +141,7 @@ def match_shape(
         img = center_crop(img, shape)
 
     if verbose:
-        click.echo(f"matched shape: input shape {img.shape}, output shape {shape}")
+        click.echo(f"matched shape: input shape {in_shape}, output shape {shape}")
 
     return img
 

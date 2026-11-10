@@ -61,8 +61,11 @@ images) or `manual` (a person or the setup decides).
   reference]`). An image block changes pixels in its volume's own grid; a mask block says
   where to compare. Give its reach (`blocks_footprint`) so the score keeps clear of the
   padding edge.
-- **A score metric** goes in `INTENSITY_METRIC_FNS` or the bead metrics; it returns a
-  float in a known range and nan when the volumes do not overlap.
+- **A score metric** returns a float, higher is better, and nan when the volumes do not
+  overlap. Its name goes in `settings.ScoreMetric` and, for an intensity metric, in
+  `IntensityMetric` (the settings) and `metrics.INTENSITY_METRIC_FNS` (its function); a
+  bead metric has its branch in `metrics.metric_fn`.
+  *(test: `test_the_score_metric_names_agree_everywhere`)*
 - **A setting is read or refused.** A setting the run would ignore raises, saying why
   (`method X ignores ...`); a combination that cannot work raises at load, not mid-run.
   Use `RunError` for a run refused for its data; commands show it as a usage error.
