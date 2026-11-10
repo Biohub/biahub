@@ -2554,7 +2554,8 @@ class TransformSettings(MyBaseModel):
         return m if direction == self.direction else np.linalg.inv(m)
 
 
-_LEGACY_KEYS = {
+# Top-level keys only a retired estimate-* / register / stabilize config has.
+LEGACY_CONFIG_KEYS = {
     "target_channel_name",
     "source_channel_name",
     "stabilization_estimation_channel",
@@ -2570,7 +2571,7 @@ _LEGACY_KEYS = {
 
 def _load_unified(path, model):
     data = yaml.safe_load(open(path))
-    legacy_keys = sorted(_LEGACY_KEYS & set(data or {}))
+    legacy_keys = sorted(LEGACY_CONFIG_KEYS & set(data or {}))
     if legacy_keys:
         raise ValueError(
             f"{path} is a retired estimate-registration / estimate-stabilization / register / "

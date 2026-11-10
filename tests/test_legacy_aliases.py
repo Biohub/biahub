@@ -345,3 +345,23 @@ def test_the_printed_command_is_copy_pasteable(capsys):
     words = shlex.split(line)
     assert words[words.index("-m") + 1 : words.index("-c")] == paths
     assert words[-1] == "--crop-to-overlap"
+
+
+def test_a_mistake_in_a_new_transforms_file_shows_its_own_error(tmp_path):
+    # it fell through to the legacy reader: four legacy schemas' errors, and the real one lost
+    from biahub.registration.legacy.aliases import _transforms_config
+
+    path = tmp_path / "transforms.yml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "direction": "sideways",
+                "moving_channels": ["GFP"],
+                "reference_channel": "Phase3D",
+                "transforms": [{"matrix": np.eye(4).tolist()}],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="direction") as error:
+        _transforms_config([path], tmp_path / "out.zarr")
+    assert "legacy" not in str(error.value)

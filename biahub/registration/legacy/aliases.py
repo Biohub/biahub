@@ -15,6 +15,7 @@ import shlex
 from pathlib import Path
 
 import click
+import yaml
 
 from biahub.apply_transform import apply_transform
 from biahub.cli.option_eat_all import OptionEatAll
@@ -35,7 +36,7 @@ from biahub.registration.legacy.convert_settings import (
     load_legacy_settings,
     per_position_stabilization,
 )
-from biahub.settings import TransformSettings, load_transform_settings
+from biahub.settings import LEGACY_CONFIG_KEYS, TransformSettings, load_transform_settings
 from biahub.utils.config import model_to_yaml
 
 
@@ -149,12 +150,11 @@ def _transforms_config(config_filepaths: list[Path], next_to: Path) -> tuple[Pat
     or several per-position stabilize configs (folded into one file per position).
     """
     paths = [Path(p) for p in config_filepaths]
-    if len(paths) == 1:
-        try:
-            load_transform_settings(paths[0])
-            return paths[0], {}
-        except ValueError:
-            pass
+    if len(paths) == 1 and not LEGACY_CONFIG_KEYS & set(
+        yaml.safe_load(paths[0].read_text()) or {}
+    ):
+        load_transform_settings(paths[0])  # a new transforms file: its own errors, if any
+        return paths[0], {}
     legacy = [load_legacy_settings(p) for p in paths]
     options = {
         key: getattr(legacy[0], key)
