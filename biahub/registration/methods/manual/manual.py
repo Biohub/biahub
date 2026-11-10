@@ -50,6 +50,7 @@ def user_assisted_registration(
     similarity: bool = False,
     pre_affine_90degree_rotation: int = 0,
     pre_affine_fliplr: bool = False,
+    pre_alignment: Transform | None = None,
 ) -> list[ArrayLike]:
     """
     Perform user-assisted registration of two volumetric image channels.
@@ -79,6 +80,10 @@ def user_assisted_registration(
     pre_affine_fliplr : bool
         If True, apply left-right flip to the moving channel before registration.
         Note: Flip is applied first, then rotation.
+    pre_alignment : Transform, optional
+        Where the estimate starts (forward): the moving volume is shown aligned by it,
+        and the clicked fit comes after it. Without one, the shapes method's answer from
+        the voxel sizes, `pre_affine_90degree_rotation` and `pre_affine_fliplr`.
 
     Returns
     -------
@@ -145,21 +150,22 @@ def user_assisted_registration(
             f"Could not determine best reference channel focus slice, using {reference_channel_focus_idx}"
         )
 
-    # Add layers to napari with and transform
-    # the shapes method's answer (flip, rotate, rescale) pre-aligns the moving volume for display
-    shapes = ShapesEstimator(
-        moving_channel_voxel_size,
-        reference_channel_voxel_size,
-        rotate90=pre_affine_90degree_rotation,
-        fliplr=pre_affine_fliplr,
-    ).transform_for(
-        (moving_channel_Z, moving_channel_Y, moving_channel_X),
-        (reference_channel_Z, reference_channel_Y, reference_channel_X),
-    )
+    # the start pre-aligns the moving volume for display; without one, the shapes method's
+    # answer (flip, rotate, rescale)
+    if pre_alignment is None:
+        pre_alignment = ShapesEstimator(
+            moving_channel_voxel_size,
+            reference_channel_voxel_size,
+            rotate90=pre_affine_90degree_rotation,
+            fliplr=pre_affine_fliplr,
+        ).transform_for(
+            (moving_channel_Z, moving_channel_Y, moving_channel_X),
+            (reference_channel_Z, reference_channel_Y, reference_channel_X),
+        )
     # the focus slice in reference planes, for the viewer
     scaling_factor_z = moving_channel_voxel_size[-3] / reference_channel_voxel_size[-3]
 
-    moving_pre_aligned = shapes.apply(
+    moving_pre_aligned = pre_alignment.apply(
         moving_channel_volume, reference=reference_channel_volume
     )
 
@@ -291,7 +297,7 @@ def user_assisted_registration(
         fitted = Transform.from_yx(Transform.from_skimage(transform, ndim=2), z_translation)
 
     # the clicked points are on the pre-aligned moving volume: the fit comes after the pre-alignment
-    clicked = fitted @ shapes  # moving -> reference
+    clicked = fitted @ pre_alignment  # moving -> reference
     moving_registered = clicked.apply(
         moving_channel_volume, reference=reference_channel_volume
     )
@@ -324,10 +330,6 @@ class ManualEstimator(EstimatorBase):
     (moving -> reference) transform fitted to them, composed with the pre-alignment.
     """
 
-    # Ignores the initial transform: repair from other initial transforms would return
-    # the same answer.
-    uses_initial_transform = False
-
     def __init__(
         self,
         moving_channel_name: str,
@@ -349,8 +351,12 @@ class ManualEstimator(EstimatorBase):
     def estimate(
         self, mov: ArrayLike, ref: ArrayLike, initial_transform: Transform | None = None
     ) -> Transform:
-        # No initial transform support -- napari display could pre-align with it, but
-        # that's not implemented, and the point-fit itself doesn't take an initial guess.
+        # the start pre-aligns the annotation; identity keeps the turn and flip's
+        start = (
+            None
+            if initial_transform is None or initial_transform.is_identity
+            else initial_transform
+        )
         return user_assisted_registration(
             moving_channel_volume=np.asarray(mov),
             moving_channel_name=self.moving_channel_name,
@@ -361,4 +367,5 @@ class ManualEstimator(EstimatorBase):
             similarity=self.similarity,
             pre_affine_90degree_rotation=self.pre_affine_90degree_rotation,
             pre_affine_fliplr=self.pre_affine_fliplr,
+            pre_alignment=start,
         )

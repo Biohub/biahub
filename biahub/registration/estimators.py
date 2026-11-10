@@ -176,16 +176,17 @@ def measure_from_start(
 
     For methods that measure from the two images alone (phase correlation, focus
     finding, manual): with no start, or identity, `measure(mov, ref)` on the volumes as
-    they are. Otherwise the moving volume is warped by the start onto the reference grid,
-    the reference blanked where the warp brings no data (so neither side has an edge the
-    other lacks), and what `measure` finds is composed after the start: `measured @ start`.
+    they are. Otherwise the moving volume is warped by the start onto the reference grid
+    and what `measure` finds there is composed after the start: `measured @ start`. The
+    reference is left whole: zeroing it where the warp brings no data gave both images
+    the same edges, which plain cross-correlation then matched at no shift (measured in
+    the review of #419).
     """
     if initial_transform is None or initial_transform.is_identity:
         return measure(mov, ref)
     mov, ref = np.asarray(mov), np.asarray(ref)
     warped = initial_transform.apply(mov.astype(np.float32, copy=False), reference=ref)
-    covered = initial_transform.coverage(mov.shape, ref.shape)
-    return measure(warped, np.where(covered, ref, 0).astype(ref.dtype)) @ initial_transform
+    return measure(warped, ref) @ initial_transform
 
 
 class ChainedEstimator(EstimatorBase):

@@ -13,7 +13,7 @@ from numpy.typing import ArrayLike
 from scipy.fftpack import next_fast_len
 
 from biahub.core.transform import Transform
-from biahub.registration.estimators import EstimationError, EstimatorBase
+from biahub.registration.estimators import EstimationError, EstimatorBase, measure_from_start
 from biahub.registration.utils import center_window_yx, match_shape, match_shape_origin
 from biahub.settings import PhaseCrossCorrSettings
 
@@ -252,10 +252,6 @@ class PCCEstimator(EstimatorBase):
     sub-volume (a translation measured on a crop holds for the whole volume).
     """
 
-    # Ignores the initial transform: repair from other initial transforms would return
-    # the same answer.
-    uses_initial_transform = False
-
     def __init__(
         self,
         function_type: Literal["custom", "custom_padding"] = "custom",
@@ -286,7 +282,10 @@ class PCCEstimator(EstimatorBase):
     def estimate(
         self, mov: ArrayLike, ref: ArrayLike, initial_transform: Transform | None = None
     ) -> Transform:
-        # PCC is correlation-based -- it finds the peak directly, no initial transform needed.
+        return measure_from_start(self._measure, mov, ref, initial_transform)
+
+    def _measure(self, mov: ArrayLike, ref: ArrayLike) -> Transform:
+        """Return the shift of the correlation peak, from the two volumes alone."""
         mov = np.asarray(mov).astype(np.float32)
         ref = np.asarray(ref).astype(np.float32)
         if self.crop_zyx is not None:

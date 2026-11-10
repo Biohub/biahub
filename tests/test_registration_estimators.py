@@ -1072,10 +1072,14 @@ def test_every_estimator_declares_the_members_the_engine_reads():
         False,
     )
     assert defaults.trace() == {"best_candidate": None, "blocks": None}
-    assert (PCCEstimator.uses_initial_transform, FocusEstimator.holds_xy_across_gaps) == (
-        False,
-        True,
+    # every method starts from its initial transform; shapes computes one instead
+    from biahub.registration.methods.manual.shapes import ShapesEstimator
+
+    assert all(
+        cls.uses_initial_transform for cls in (PCCEstimator, FocusEstimator, ManualEstimator)
     )
+    assert not ShapesEstimator.uses_initial_transform
+    assert FocusEstimator.holds_xy_across_gaps
     assert NodeGraphEstimator.accepts_competitor
     assert isinstance(ChainedEstimator([PCCEstimator()]), TransformEstimator)
 
@@ -1117,10 +1121,49 @@ def test_an_image_method_measures_after_its_start():
     for start in (None, Transform.identity(3)):
         assert measure_from_start(measure, mov, ref, start) == step
         assert seen[-1][0] is mov and seen[-1][1] is ref
-    # a start: the moving volume on the reference grid, the reference only where it lands
+    # a start: the moving volume on the reference grid, the reference as it is
     start = Transform.from_translation([0.0, 3.0, -2.0])
     assert measure_from_start(measure, mov, ref, start) == step @ start
-    warped, blanked = seen[-1]
-    covered = start.coverage(mov.shape, ref.shape)
+    warped, reference = seen[-1]
     np.testing.assert_array_equal(warped, start.apply(mov, reference=ref))
-    assert (blanked[~covered] == 0).all() and (blanked[covered] == ref[covered]).all()
+    assert reference is ref
+
+
+def test_whole_volume_phase_correlation_starts_from_its_initial_transform():
+    # it ignored the start and needed equal grids; from a start it measures what is left,
+    # on the moving volume warped onto the reference grid, so the grids may differ
+    rng = np.random.default_rng(9)
+    ref = rng.random((20, 48, 56)).astype(np.float32)
+    mov = ndi_shift(ref, (2, -5, 7), order=0)[:, 4:44, 3:51]  # shifted, and a smaller grid
+    start = Transform.from_translation([-1.0, 6.0, -2.0])  # part of the way there
+    found = PCCEstimator(upsample_factor=10).estimate(mov, ref, initial_transform=start)
+    # moving voxel (z, y, x) holds reference content at (z - 2, y + 4 + 5, x + 3 - 7)
+    np.testing.assert_allclose(found.translation, [-2.0, 9.0, -4.0], atol=0.1)
+
+
+def test_focus_finding_composes_its_measure_after_the_start():
+    rng = np.random.default_rng(4)
+    shape = (12, 64, 64)
+    ref = _synthetic_focus_volume(rng, shape, z_focus=5)
+    mov = _synthetic_focus_volume(np.random.default_rng(4), shape, z_focus=8, yx_shift=(2, -4))
+    estimator = FocusEstimator(
+        pixel_size=FOCUS_PIXEL_SIZE, axes="xyz", center_crop_xy=(48, 48)
+    )
+    start = Transform.from_translation([-1.0, -1.0, 2.0])
+    found = estimator.estimate(mov, ref, initial_transform=start)
+    np.testing.assert_allclose(found.translation, [-3.0, -2.0, 4.0], atol=0.5)
+
+
+def test_manual_annotation_is_pre_aligned_by_the_start(monkeypatch):
+    # the annotation showed the moving volume pre-aligned by its own turn and flip only
+    captured = {}
+    monkeypatch.setattr(
+        "biahub.registration.methods.manual.manual.user_assisted_registration",
+        lambda **kwargs: captured.update(kwargs) or Transform.identity(3),
+    )
+    estimator = ManualEstimator("GFP", "Phase3D", (1.0, 1.0, 1.0), (1.0, 1.0, 1.0))
+    start = Transform.from_translation([0.0, 2.0, 1.0])
+    estimator.estimate(np.zeros((4, 8, 8)), np.zeros((4, 8, 8)), initial_transform=start)
+    assert captured["pre_alignment"] == start
+    estimator.estimate(np.zeros((4, 8, 8)), np.zeros((4, 8, 8)), Transform.identity(3))
+    assert captured["pre_alignment"] is None  # its own turn and flip, as before

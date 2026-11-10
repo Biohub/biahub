@@ -17,7 +17,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from biahub.core.transform import Transform
-from biahub.registration.estimators import EstimationError, EstimatorBase
+from biahub.registration.estimators import EstimationError, EstimatorBase, measure_from_start
 from biahub.registration.methods.intensity.stackreg import StackregEstimator
 from biahub.registration.utils import center_window_yx
 from biahub.settings import FocusSettings
@@ -60,9 +60,6 @@ class FocusEstimator(EstimatorBase):
     is a pure translation in the forward (moving -> reference) direction.
     """
 
-    # Ignores the initial transform: repair from other initial transforms would return
-    # the same answer.
-    uses_initial_transform = False
     # With reference 'previous', across a gap of empty frames the legacy pipeline measured
     # z against the last frame with data but held yx (stackreg had nothing to compare with);
     # the engine reproduces that for estimators that set this.
@@ -106,6 +103,10 @@ class FocusEstimator(EstimatorBase):
     def estimate(
         self, mov: ArrayLike, ref: ArrayLike, initial_transform: Transform | None = None
     ) -> Transform:
+        return measure_from_start(self._measure, mov, ref, initial_transform)
+
+    def _measure(self, mov: ArrayLike, ref: ArrayLike) -> Transform:
+        """Return z from each volume's focus and yx from stackreg on the in-focus slices."""
         mov = np.asarray(mov, dtype=np.float32)
         ref = np.asarray(ref, dtype=np.float32)
         z_mov, z_ref = self._focus(mov), self._focus(ref)
