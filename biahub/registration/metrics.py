@@ -635,6 +635,9 @@ def tile_residuals(
     max_shift_px: float | None = None,
     min_coverage: float = 0.95,
     pair: ComparablePair | None = None,
+    normalization: str | None = None,
+    upsample_factor: int = 10,
+    region: tuple[slice, slice, slice] | None = None,
 ) -> dict:
     """Return local yx residuals over a grid of tiles of the max projections, in µm.
 
@@ -643,21 +646,28 @@ def tile_residuals(
     default a quarter tile) and its shifted copy correlates above `min_ncc`. Displacements
     follow `point_residuals`' convention (reference minus mapped moving) and are summarised
     by `displacement_stats` and `residual_affine` (a radial pattern = a scale error).
-    `pair` (from `prepare_pair`) skips preparing the volumes again.
+    `pair` (from `prepare_pair`) skips preparing the volumes again. `region` (z, y, x
+    slices of the reference grid) limits the projections to its z range and the tiles to
+    its yx box; `normalization` and `upsample_factor` are each tile's phase correlation's.
     """
     pair = _pair(transform, mov, ref, compare, pair)
     warped, ref_p, has_data = pair.warped, pair.ref, pair.has_data
-    w_mip, r_mip = warped.max(axis=0), ref_p.max(axis=0)
-    covered = has_data.mean(axis=0) >= 0.5
-    _, ny, nx = ref_p.shape
+    z, (y0, y1), (x0, x1) = slice(None), (0, ref_p.shape[1]), (0, ref_p.shape[2])
+    if region is not None:
+        z = region[0]
+        y0, y1, _ = region[1].indices(ref_p.shape[1])
+        x0, x1, _ = region[2].indices(ref_p.shape[2])
+    w_mip, r_mip = warped[z].max(axis=0), ref_p[z].max(axis=0)
+    covered = has_data[z].mean(axis=0) >= 0.5
+    ny, nx = y1 - y0, x1 - x0
     size = min(tile_px, ny, nx)  # a tile fits the image, and is exactly the window's size
     max_shift = size / 4 if max_shift_px is None else max_shift_px
     h = size // 2
     window = np.outer(np.hanning(size), np.hanning(size))
     points, diffs = [], []
     # distinct centres only: a tile that fits the image once is one measurement
-    for cy in np.unique(np.linspace(h, ny - (size - h), grid).astype(int)):
-        for cx in np.unique(np.linspace(h, nx - (size - h), grid).astype(int)):
+    for cy in np.unique(np.linspace(y0 + h, y1 - (size - h), grid).astype(int)):
+        for cx in np.unique(np.linspace(x0 + h, x1 - (size - h), grid).astype(int)):
             tile = (slice(cy - h, cy - h + size), slice(cx - h, cx - h + size))
             if covered[tile].mean() < min_coverage:
                 continue
@@ -665,13 +675,17 @@ def tile_residuals(
             if r.std() == 0 or w.std() == 0:
                 continue
             r, w = _zscore(r), _zscore(w)
-            shift, _ = phase_cross_corr(r * window, w * window, upsample_factor=10)
+            shift, _ = phase_cross_corr(
+                r * window, w * window, normalization, upsample_factor=upsample_factor
+            )
             if np.abs(shift).max() > max_shift:
                 continue
             # the shared window pulls the peak toward zero shift (~5% short on nuclei):
             # measure the remainder once more, where that pull is a share of almost nothing
             moved = ndi_shift(w, shift, order=1, mode="nearest")
-            remainder, _ = phase_cross_corr(r * window, moved * window, upsample_factor=10)
+            remainder, _ = phase_cross_corr(
+                r * window, moved * window, normalization, upsample_factor=upsample_factor
+            )
             shift = shift + remainder
             if np.abs(shift).max() > max_shift:
                 continue

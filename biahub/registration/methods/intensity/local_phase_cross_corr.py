@@ -14,8 +14,9 @@ from numpy.typing import ArrayLike
 
 from biahub.core.transform import Transform
 from biahub.registration.estimators import EstimationError, EstimatorBase, fit_pairs
+from biahub.registration.methods.intensity.phase_cross_corr import pcc_crop
 from biahub.registration.metrics import tile_residuals
-from biahub.settings import LocalPhaseCrossCorrSettings
+from biahub.settings import LocalPhaseCrossCorrSettings, PhaseCrossCorrSettings
 
 
 class LocalPCCEstimator(EstimatorBase):
@@ -35,16 +36,37 @@ class LocalPCCEstimator(EstimatorBase):
         settings: LocalPhaseCrossCorrSettings,
         transform_type: str,
         ref_um: tuple[float, float, float],
+        normalization: str | None = None,
+        upsample_factor: int = 10,
+        crop: PhaseCrossCorrSettings | None = None,
     ):
         self.settings = settings
         self.transform_type = transform_type
         self.ref_um = np.asarray(ref_um, float)
+        self.normalization = normalization
+        self.upsample_factor = upsample_factor
+        self.crop = crop  # its center_crop_xy / slices: where on the reference the tiles go
+
+    @classmethod
+    def from_settings(
+        cls, settings: PhaseCrossCorrSettings, transform_type: str, ref_um
+    ) -> LocalPCCEstimator:
+        """Build from a `phase_cross_corr` block with `local` set: its crop, too."""
+        return cls(
+            settings.local,
+            transform_type,
+            ref_um,
+            normalization=settings.normalization,
+            upsample_factor=settings.effective_upsample_factor,
+            crop=settings,
+        )
 
     def estimate(
         self, mov: ArrayLike, ref: ArrayLike, initial_transform: Transform | None = None
     ) -> Transform:
         s = self.settings
         current = initial_transform if initial_transform is not None else Transform.identity(3)
+        region = pcc_crop(self.crop, np.shape(ref)) if self.crop is not None else None
         for _ in range(s.rounds):
             tiles = tile_residuals(
                 current,
@@ -55,6 +77,9 @@ class LocalPCCEstimator(EstimatorBase):
                 tile_px=s.tile_px,
                 grid=s.grid,
                 min_ncc=s.min_ncc,
+                normalization=self.normalization,
+                upsample_factor=self.upsample_factor,
+                region=region,
             )
             if tiles["n_tiles"] < s.min_tiles:
                 raise EstimationError(

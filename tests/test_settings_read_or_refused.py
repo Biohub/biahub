@@ -125,3 +125,20 @@ def test_the_bead_detections_are_named_for_the_volumes():
     ]:
         with pytest.raises(ValidationError, match=f"{old} is now {new}.*convert-settings"):
             _settings("bead_matching", bead_matching={old: peaks})
+
+
+def test_local_phase_correlation_refuses_the_whole_volume_options():
+    # local tiles are one size and limit their own shift: these options were loaded and
+    # never read
+    for extra, name in (
+        ({"maximum_shift": 1.5}, "maximum_shift"),
+        ({"function_type": "custom_padding"}, "custom_padding"),
+    ):
+        with pytest.raises(ValidationError, match=f"{name}.*whole-volume"):
+            _settings(phase_cross_corr={"local": {}, **extra})
+    # each mode's own sub-pixel default: 1 for the whole volume, 10 for tiles
+    assert _settings(phase_cross_corr={}).phase_cross_corr.effective_upsample_factor == 1
+    assert (
+        _settings(phase_cross_corr={"local": {}}).phase_cross_corr.effective_upsample_factor
+        == 10
+    )

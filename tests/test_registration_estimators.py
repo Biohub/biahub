@@ -1167,3 +1167,30 @@ def test_manual_annotation_is_pre_aligned_by_the_start(monkeypatch):
     assert captured["pre_alignment"] == start
     estimator.estimate(np.zeros((4, 8, 8)), np.zeros((4, 8, 8)), Transform.identity(3))
     assert captured["pre_alignment"] is None  # its own turn and flip, as before
+
+
+def test_local_phase_correlation_reads_the_crop_normalization_and_upsampling(monkeypatch):
+    # LocalPCCEstimator read only `local`: the crop, normalization and upsample_factor of
+    # the same block were loaded and ignored
+    from biahub.registration.methods.intensity import local_phase_cross_corr as local
+    from biahub.settings import PhaseCrossCorrSettings
+
+    seen = {}
+
+    def tiles(transform, mov, ref, voxel_um, **kwargs):
+        seen.update(kwargs)
+        return {"n_tiles": 0}
+
+    monkeypatch.setattr(local, "tile_residuals", tiles)
+    pcc = PhaseCrossCorrSettings(
+        local={},
+        normalization="magnitude",
+        upsample_factor=4,
+        center_crop_xy=[20, 30],
+        Z_slice=[1, 5],
+    )
+    estimator = local.LocalPCCEstimator.from_settings(pcc, "euclidean", (1.0, 1.0, 1.0))
+    with pytest.raises(EstimationError):  # no tiles: the stub has none
+        estimator.estimate(np.zeros((8, 40, 50)), np.zeros((8, 40, 50)))
+    assert (seen["normalization"], seen["upsample_factor"]) == ("magnitude", 4)
+    assert seen["region"] == (slice(1, 5), slice(5, 35), slice(15, 35))  # center_crop_xy is x, y

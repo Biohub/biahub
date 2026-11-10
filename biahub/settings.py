@@ -536,12 +536,35 @@ class PhaseCrossCorrSettings(MyBaseModel):
     # translation for the whole volume.
     local: LocalPhaseCrossCorrSettings | None = None
     # 1: whole-pixel shifts. Above 1: refined to 1/upsample_factor of a pixel (an upsampled
-    # DFT around the peak) -- chained whole-pixel steps add up to a drift.
-    upsample_factor: PositiveInt = 1
+    # DFT around the peak) -- chained whole-pixel steps add up to a drift. None: the mode's
+    # own, 1 for the whole volume, 10 for local tiles.
+    upsample_factor: PositiveInt | None = None
+
+    @property
+    def effective_upsample_factor(self) -> int:
+        if self.upsample_factor is not None:
+            return self.upsample_factor
+        return 10 if self.local is not None else 1
+
+    @model_validator(mode="after")
+    def check_local_reads_its_options(self) -> "PhaseCrossCorrSettings":
+        if self.local is None:
+            return self
+        if "maximum_shift" in self.model_fields_set:
+            raise ValueError(
+                "phase_cross_corr.maximum_shift is a whole-volume option (how far to pad); "
+                "local tiles limit their own shift"
+            )
+        if self.function_type == "custom_padding":
+            raise ValueError(
+                "phase_cross_corr.function_type custom_padding is a whole-volume option "
+                "(padding to a fast FFT size); local tiles are one size"
+            )
+        return self
 
     @model_validator(mode="after")
     def check_upsample_factor(self) -> "PhaseCrossCorrSettings":
-        if self.upsample_factor > 1 and self.function_type == "custom_padding":
+        if self.effective_upsample_factor > 1 and self.function_type == "custom_padding":
             raise ValueError(
                 "upsample_factor > 1 refines the plain phase correlation; function_type "
                 "custom_padding has no sub-pixel step (use function_type: custom)"

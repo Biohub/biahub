@@ -276,7 +276,7 @@ class PCCEstimator(EstimatorBase):
             normalization=settings.normalization,
             maximum_shift=settings.maximum_shift,
             crop_zyx=pcc_crop(settings, shape_zyx) if shape_zyx is not None else None,
-            upsample_factor=settings.upsample_factor,
+            upsample_factor=settings.effective_upsample_factor,
         )
 
     def estimate(

@@ -260,8 +260,8 @@ def build_estimator(
             settings.ants, settings.transform.type, verbose=settings.verbose
         )
     elif settings.method == "phase_cross_corr" and settings.phase_cross_corr.local:
-        estimator = LocalPCCEstimator(
-            settings.phase_cross_corr.local,
+        estimator = LocalPCCEstimator.from_settings(
+            settings.phase_cross_corr,
             settings.transform.type,
             ref_voxel_size or (1.0, 1.0, 1.0),
         )
@@ -465,7 +465,12 @@ MIN_GB_PER_CPU = 4
 
 def _ram_volumes(block: EstimateTransformSettings) -> int:
     """Return the volumes one block's estimate holds at its peak (RAM_VOLUMES_PER_JOB)."""
-    if block.method == "phase_cross_corr" and block.phase_cross_corr.upsample_factor > 1:
+    pcc = block.phase_cross_corr
+    if (
+        block.method == "phase_cross_corr"
+        and pcc.local is None
+        and pcc.effective_upsample_factor > 1
+    ):
         return UPSAMPLED_PCC_RAM_VOLUMES
     return RAM_VOLUMES_PER_JOB.get(block.method, DEFAULT_RAM_VOLUMES_PER_JOB)
 
