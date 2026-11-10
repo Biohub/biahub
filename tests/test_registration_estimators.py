@@ -1096,3 +1096,31 @@ def test_the_cross_power_is_its_definition_computed_in_place(normalization):
     elif normalization == "classic":
         expected /= np.fmax(np.abs(f_ref) * np.abs(f_mov), eps)
     np.testing.assert_array_equal(_cross_power(f_ref, f_mov.copy(), normalization), expected)
+
+
+def test_an_image_method_measures_after_its_start():
+    # whole-volume phase correlation, focus finding and manual ignored their start; they
+    # now measure on the moving volume warped by it and compose: measured @ start
+    from biahub.registration.estimators import measure_from_start
+
+    rng = np.random.default_rng(8)
+    mov = rng.random((6, 20, 24)).astype(np.float32) + 1.0
+    ref = rng.random((6, 18, 22)).astype(np.float32) + 1.0
+    seen = []
+    step = Transform.from_translation([0.0, 0.5, -0.5])
+
+    def measure(m, r):
+        seen.append((m, r))
+        return step
+
+    # no start, or identity: the volumes as they are, nothing warped
+    for start in (None, Transform.identity(3)):
+        assert measure_from_start(measure, mov, ref, start) == step
+        assert seen[-1][0] is mov and seen[-1][1] is ref
+    # a start: the moving volume on the reference grid, the reference only where it lands
+    start = Transform.from_translation([0.0, 3.0, -2.0])
+    assert measure_from_start(measure, mov, ref, start) == step @ start
+    warped, blanked = seen[-1]
+    covered = start.coverage(mov.shape, ref.shape)
+    np.testing.assert_array_equal(warped, start.apply(mov, reference=ref))
+    assert (blanked[~covered] == 0).all() and (blanked[covered] == ref[covered]).all()

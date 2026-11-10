@@ -166,6 +166,28 @@ def fit_pairs(
         raise EstimationError(str(error)) from error
 
 
+def measure_from_start(
+    measure: Callable[[np.ndarray, np.ndarray], Transform],
+    mov: ArrayLike,
+    ref: ArrayLike,
+    initial_transform: Transform | None,
+) -> Transform:
+    """Return the forward transform an image method measures after its start.
+
+    For methods that measure from the two images alone (phase correlation, focus
+    finding, manual): with no start, or identity, `measure(mov, ref)` on the volumes as
+    they are. Otherwise the moving volume is warped by the start onto the reference grid,
+    the reference blanked where the warp brings no data (so neither side has an edge the
+    other lacks), and what `measure` finds is composed after the start: `measured @ start`.
+    """
+    if initial_transform is None or initial_transform.is_identity:
+        return measure(mov, ref)
+    mov, ref = np.asarray(mov), np.asarray(ref)
+    warped = initial_transform.apply(mov.astype(np.float32, copy=False), reference=ref)
+    covered = initial_transform.coverage(mov.shape, ref.shape)
+    return measure(warped, np.where(covered, ref, 0).astype(ref.dtype)) @ initial_transform
+
+
 class ChainedEstimator(EstimatorBase):
     """Run estimators in sequence, each started from the previous result.
 
