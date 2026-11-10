@@ -88,6 +88,7 @@ from biahub.registration.preprocess import (
     RawVolumeScore,
     apply_image_blocks,
     blocks_footprint,
+    check_boxes,
 )
 from biahub.registration.utils import (
     Remembered,
@@ -530,6 +531,17 @@ def init_run(
                 f"timepoints {beyond} are past the reference store, which has {ref_T} "
                 f"timepoints ({reference})"
             )
+
+    # a mask_box past its volume would fail every job: refuse the run once, here
+    shapes = {
+        "moving": (Z, Y, X),
+        "reference": tuple(ref_shape) if settings.reference.frame == "cross" else (Z, Y, X),
+    }
+    for block in settings.stack_settings():
+        try:
+            check_boxes(block.preprocess, shapes)
+        except ValueError as error:
+            raise RunError(str(error)) from None
 
     settings = settings.model_copy(deep=True)
     init = settings.transform.initial

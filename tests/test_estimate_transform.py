@@ -1402,3 +1402,23 @@ def test_reference_positions_given_for_a_stabilization_are_said_to_be_unread(
         "reference frame 'first' aligns the moving channel onto itself"
         in capsys.readouterr().out
     )
+
+
+def test_a_mask_box_outside_its_volume_refuses_the_run_before_any_job(beads_plate, tmp_path):
+    # it was found inside every timepoint job, a bare ValueError each, after submitting
+    from biahub.registration.engine import init_run
+    from biahub.registration.utils import RunError
+    from biahub.settings import load_estimate_transform_settings
+
+    config = _write_config(
+        tmp_path,
+        method="ants",
+        transform_type="euclidean",
+        preprocess=[
+            {"mask_box": {"volumes": ["reference"], "box": ["all", [0, SHAPE[1] + 5], "all"]}}
+        ],
+    )
+    settings = load_estimate_transform_settings(config)
+    with pytest.raises(RunError, match="mask_box y range"):
+        init_run(beads_plate, beads_plate, settings, tmp_path / "run", resume=False)
+    assert not (tmp_path / "run").exists() or not any((tmp_path / "run").iterdir())

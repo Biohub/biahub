@@ -119,6 +119,29 @@ def build_mask(shape_zyx: tuple, blocks: PreprocessBlocks, which: str) -> np.nda
     return np.logical_and.reduce(masks)
 
 
+def _box_slices(block: MaskBox, shape_zyx: tuple) -> tuple[slice, slice, slice]:
+    """Return a mask_box's voxels in its volume; ValueError when it reaches past it."""
+    slices = []
+    for axis, size, r in zip("zyx", shape_zyx, block.box, strict=True):
+        if r == "all":
+            slices.append(slice(0, size))
+            continue
+        if r[1] > size:
+            raise ValueError(
+                f"mask_box {axis} range {r} is outside the {block.volumes[0]} volume "
+                f"({axis} size {size})"
+            )
+        slices.append(slice(r[0], r[1]))
+    return tuple(slices)
+
+
+def check_boxes(blocks: PreprocessBlocks, shapes: dict[str, tuple]) -> None:
+    """Check every mask_box against its volume's shape (`shapes`: moving, reference)."""
+    for block in blocks:
+        if isinstance(block, MaskBox):
+            _box_slices(block, tuple(shapes[block.volumes[0]]))
+
+
 def _mask(block, shape_zyx: tuple) -> np.ndarray:
     Z, Y, X = shape_zyx
     if isinstance(block, MaskCircle):
@@ -128,19 +151,8 @@ def _mask(block, shape_zyx: tuple) -> np.ndarray:
         disk = (y - center_y) ** 2 + (x - center_x) ** 2 <= radius**2
         return np.broadcast_to(disk, shape_zyx).copy()
     if isinstance(block, MaskBox):
-        slices = []
-        for axis, size, r in zip("zyx", shape_zyx, block.box, strict=True):
-            if r == "all":
-                slices.append(slice(0, size))
-                continue
-            if r[1] > size:
-                raise ValueError(
-                    f"mask_box {axis} range {r} is outside the {block.volumes[0]} volume "
-                    f"({axis} size {size})"
-                )
-            slices.append(slice(r[0], r[1]))
         mask = np.zeros(shape_zyx, dtype=bool)
-        mask[tuple(slices)] = True
+        mask[_box_slices(block, shape_zyx)] = True
         return mask
     raise TypeError(f"no mask for {type(block).__name__}")
 
