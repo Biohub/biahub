@@ -159,7 +159,8 @@ def test_deskew_settings():
 def test_ants_settings_are_all_consumed_by_the_engine():
     """Every AntsRegistrationSettings field must be read by AntsEstimator.from_settings
     (which is what the config-driven ANTs path runs), so a config knob can't be silently
-    ignored."""
+    ignored. The block has no fields today (ANTs' options are DEFAULT_ANTS_KWARGS): this
+    guards the ones added later."""
     from biahub.registration.engine import build_estimator
     from biahub.registration.methods.intensity.ants import AntsEstimator
     from biahub.settings import AntsRegistrationSettings

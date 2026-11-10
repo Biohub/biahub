@@ -7,8 +7,6 @@ models in `biahub.settings`).
 
 from __future__ import annotations
 
-import functools
-
 import numpy as np
 
 from scipy import ndimage
@@ -193,27 +191,24 @@ class PreprocessedEstimator(EstimatorBase):
         # the score the method was built with, if it scores internally (beads)
         self.raw_score = raw_score
 
-        @functools.wraps(method.estimate)
-        def estimate(mov, ref, initial_transform=None, **kwargs):
-            masks = {
-                "ref_mask": build_mask(np.shape(ref), self.blocks, "reference"),
-                "mov_mask": build_mask(np.shape(mov), self.blocks, "moving"),
-            }
+    def estimate(self, mov, ref, initial_transform=None, **kwargs):
+        masks = {
+            "ref_mask": build_mask(np.shape(ref), self.blocks, "reference"),
+            "mov_mask": build_mask(np.shape(mov), self.blocks, "moving"),
+        }
+        if self.raw_score is not None:
+            self.raw_score.raw = (mov, ref)
+        try:
+            return self.method.estimate(
+                apply_image_blocks(mov, self.blocks, "moving"),
+                apply_image_blocks(ref, self.blocks, "reference"),
+                initial_transform=initial_transform,
+                **{k: m for k, m in masks.items() if m is not None},
+                **kwargs,
+            )
+        finally:
             if self.raw_score is not None:
-                self.raw_score.raw = (mov, ref)
-            try:
-                return self.method.estimate(
-                    apply_image_blocks(mov, self.blocks, "moving"),
-                    apply_image_blocks(ref, self.blocks, "reference"),
-                    initial_transform=initial_transform,
-                    **{k: m for k, m in masks.items() if m is not None},
-                    **kwargs,
-                )
-            finally:
-                if self.raw_score is not None:
-                    self.raw_score.raw = None
-
-        self.estimate = estimate
+                self.raw_score.raw = None
 
     @property
     def uses_initial_transform(self) -> bool:

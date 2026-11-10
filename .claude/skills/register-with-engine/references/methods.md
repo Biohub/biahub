@@ -178,8 +178,8 @@ within ~0.4 µm before ANTs ran). `initial: {from: shapes, rotate90: -1, fliplr:
 builds one from the store shapes with the mantis light-sheet rotation: mantis only.
 
 **Judging the result.** The score is a correlation; a correct cross-modal transform often
-scores 0.1-0.3 and comes out `unreliable` against the bead-tuned thresholds (read it as
-"check"), and on DragonFly the Sobel correlation even ranked the unregistered pair above a
+scores 0.1-0.3 (the absolute thresholds are the bead overlap's, off for correlation, so
+only the run's own line flags it; an `unreliable` here means "check"), and on DragonFly the Sobel correlation even ranked the unregistered pair above a
 good initial transform. Judge with overlays -- an XY max projection and an XZ section, on FOVs not used
 for the estimate -- and with the report metrics against the unregistered pair.
 

@@ -380,3 +380,21 @@ def test_conversion_keeps_only_the_methods_block_and_a_type_it_fits():
     assert unified.transform.type == "euclidean"  # focus finding fits a translation
     assert any("beads_match_settings dropped" in n for n in notes)
     assert any("transform_type 'affine'" in n for n in notes)
+
+
+def test_compute_approx_transform_converts_to_the_shapes_start():
+    # the legacy pipeline built the start from the store shapes (mantis orientation) and
+    # overwrote approx_transform with it
+    legacy = EstimateRegistrationSettings(
+        source_channel_name="GFP",
+        target_channel_name="Phase3D",
+        estimation_method="beads",
+        affine_transform_settings={
+            "compute_approx_transform": True,
+            "approx_transform": INVERSE.tolist(),
+        },
+    )
+    unified, notes = convert_settings(legacy)
+    initial = unified.transform.initial
+    assert (initial.from_, initial.rotate90, initial.fliplr) == ("shapes", -1, False)
+    assert any("approx_transform ignored" in n for n in notes)

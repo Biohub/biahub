@@ -204,3 +204,34 @@ def test_a_config_that_is_not_a_mapping_is_refused_saying_so(text, tmp_path):
     path.write_text(text)
     with pytest.raises(ValueError, match="must hold a mapping of settings"):
         load_estimate_transform_settings(path)
+
+
+def test_time_indices_refuses_a_bool():
+    # `time_indices: true` loaded as timepoint 1
+    with pytest.raises(ValidationError):
+        _settings(time_indices=True)
+
+
+def test_a_stack_blocks_transform_sets_only_its_type():
+    with pytest.raises(ValidationError, match="a block's transform sets only its type"):
+        _settings(
+            method=[{"ants": {"transform": {"type": "affine", "initial": {"from": "shapes"}}}}]
+        )
+
+
+@pytest.mark.parametrize(
+    "initial, message",
+    [
+        ({"from": "matrix", "direction": "forward"}, "needs matrix"),
+        ({"from": "matrix", "matrix": [[1.0]]}, "needs direction"),
+        ({"from": "file"}, "needs file"),
+        (
+            {"from": "matrix", "matrix": [[1.0, 0.0], [0.0, 1.0]], "direction": "forward"},
+            "4x4",
+        ),
+        ({"from": "file", "file": "x.yml", "rotate90": 1}, "is for from: shapes"),
+    ],
+)
+def test_each_initial_transform_source_reads_its_own_fields(initial, message, tmp_path):
+    with pytest.raises(ValidationError, match=message):
+        _settings(transform={"initial": initial})

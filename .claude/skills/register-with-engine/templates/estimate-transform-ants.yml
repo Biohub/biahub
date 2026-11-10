@@ -18,9 +18,10 @@
 #                                light-sheet rotation; only for mantis data)
 #   fallback.repair           -- for a single timepoint, set it to null: there is nothing to
 #                                repair from, and each repair is another full ANTs run
-# The score is a correlation: a correct transform often scores 0.1-0.3, below the bead-tuned
-# fallback.flag thresholds, so `unreliable` here means "check", not "wrong"; check the result
-# with overlays rather than the score (references/methods.md).
+# The score is a correlation: a correct transform often scores 0.1-0.3. The absolute
+# fallback.flag thresholds are the bead overlap's (off for correlation), so only the run's
+# own line flags it, and `unreliable` here means "check", not "wrong"; check the result with
+# overlays rather than the score (references/methods.md).
 moving:
   channel: <moving channel>
 reference:
