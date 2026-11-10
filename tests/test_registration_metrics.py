@@ -284,3 +284,18 @@ def test_a_bead_metric_needs_bead_settings_and_takes_no_score_blocks():
         metric_fn("residual", BeadsMatchSettings(), prepare=lambda w, r, o: (w, r))
     with pytest.raises(ValueError, match="unknown score metric"):
         metric_fn("sharpness")
+
+
+def test_a_bead_at_the_radius_pairs_in_the_overlap_and_the_residuals_alike(monkeypatch):
+    # the overlap counted a bead exactly at the radius; the residual pairing did not
+    from biahub.registration import metrics
+
+    ref_peaks = np.array([[10.0, 10.0, 10.0], [10.0, 30.0, 30.0], [30.0, 10.0, 30.0]])
+    mov_peaks = ref_peaks + [6.0, 0.0, 0.0]  # every bead exactly at the radius (6)
+    monkeypatch.setattr(metrics, "bead_peaks", lambda volume, settings: ref_peaks)
+    monkeypatch.setattr(metrics, "warped_bead_peaks", lambda *a: mov_peaks)
+    settings = BeadsMatchSettings()
+    assert settings.qc_settings.score_centroid_mask_radius == 6
+    vol = np.zeros((4, 4, 4))
+    m = bead_alignment_metrics(Transform.identity(3), vol, vol, settings)
+    assert m.overlap == 1.0 and m.n_matched == 3 and m.median_residual == pytest.approx(6.0)

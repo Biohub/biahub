@@ -77,7 +77,9 @@ def bead_alignment_metrics(
     ref_peaks = bead_peaks(ref, beads_match_settings.reference_peaks_settings).astype(float)
     if len(mov_peaks) < 2 or len(ref_peaks) < 2:  # too few to pair
         return None
-    distances, nearest = cKDTree(mov_peaks).query(ref_peaks, distance_upper_bound=radius)
+    # a bead at the radius pairs, as the overlap counts it (query keeps only nearer ones)
+    reach = np.nextafter(radius, np.inf)
+    distances, nearest = cKDTree(mov_peaks).query(ref_peaks, distance_upper_bound=reach)
     paired = np.isfinite(distances)
     matched = distances[paired]
     if ref_um is not None:  # the same pairs, measured in µm
