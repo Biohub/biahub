@@ -444,6 +444,8 @@ def _init_output_plate(
     with open_ome_zarr(str(input_position_dirpaths[0]), mode="r") as input_dataset:
         channel_names = input_dataset.channel_names
         input_shape = input_dataset.data.shape
+        # Deskew keeps every time point, so the time between them is the input's.
+        time_scale = float(input_dataset.scale[0])
     T, C, Z, Y, X = input_shape
 
     deskewed_shape, voxel_size = get_deskewed_data_shape(
@@ -461,7 +463,7 @@ def _init_output_plate(
         position_keys=[Path(p).parts[-3:] for p in input_position_dirpaths],
         channel_names=channel_names,
         shape=(T, C) + deskewed_shape,
-        scale=(1, 1) + voxel_size,
+        scale=(time_scale, 1) + voxel_size,
         version=resolve_ome_zarr_version(
             input_position_dirpaths[0], settings.output_ome_zarr_version
         ),
