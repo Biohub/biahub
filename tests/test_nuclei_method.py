@@ -150,3 +150,18 @@ def test_the_initial_transform_padding_does_not_hide_the_moving_nuclei():
     mov, ref = _pair(truth)
     found = _estimator().estimate(mov + 250.0, ref, initial_transform=truth)
     np.testing.assert_allclose(found.apply_points(PROBE), truth.apply_points(PROBE), atol=1.0)
+
+
+@pytest.mark.parametrize("empty", ["zeros", "noise", "nan"])
+def test_nuclei_fail_with_an_estimation_error_where_there_are_none(empty):
+    from biahub.registration.estimators import EstimationError
+
+    _, ref = _pair(Transform.identity(3))
+    rng = np.random.default_rng(1)
+    mov = {
+        "zeros": np.zeros(ref.shape, np.float32),
+        "noise": rng.normal(10, 1, ref.shape).astype(np.float32),
+        "nan": np.full(ref.shape, np.nan, np.float32),
+    }[empty]
+    with pytest.raises(EstimationError):
+        _estimator().estimate(mov, ref, initial_transform=Transform.identity(3))

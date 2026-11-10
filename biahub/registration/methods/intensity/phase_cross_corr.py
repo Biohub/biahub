@@ -100,8 +100,9 @@ def phase_cross_corr_padding(
     """
     Borrowing from Jordao dexpv2.crosscorr https://github.com/royerlab/dexpv2.
 
-    Computes translation shift using arg. maximum of phase cross correlation.
-    Input are padded or cropped for fast FFT computation assuming a maximum translation shift.
+    Computes the translation shift from the argmax of the phase cross-correlation of two
+    images on the same grid, as given (nothing is padded or cropped), refined to
+    `1 / upsample_factor` of a voxel.
 
     Parameters
     ----------

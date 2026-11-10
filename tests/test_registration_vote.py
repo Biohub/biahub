@@ -333,3 +333,47 @@ def test_a_degenerate_vote_leaves_the_start_unchanged_instead_of_crashing(monkey
     assert isinstance(corrected, Transform)
     assert "fit rejected" in correction.last_note
     assert correction.trace()["best_candidate"] in ("keep", "+drift", "-drift")
+
+
+def test_vote_translation_moves_a_drifted_initial_transform_by_the_drift():
+    rng = np.random.default_rng(11)
+    ref = _synthetic_bead_volume(rng, (40, 60, 60))
+    applied_zyx = (8, -12, 16)
+    mov = ndi_shift(ref, shift=applied_zyx, order=1, mode="constant", cval=0.0)
+    truth = [-a for a in applied_zyx]
+    correction = VoteInitialTransformCorrection(
+        InitialTransformCorrectionSettings(
+            mode="vote_translation",
+            vote_peaks_settings=PEAKS,
+            capture_radius=40.0,
+            cluster_radius=3.0,
+        ),
+        mov_detector=BeadNodeDetector(PEAKS),
+        ref_detector=BeadNodeDetector(PEAKS),
+    )
+    corrected = correction.estimate(mov, ref, initial_transform=Transform.identity(3))
+    np.testing.assert_allclose(corrected.translation, truth, atol=1.0)
+    np.testing.assert_allclose(np.asarray(corrected.matrix)[:3, :3], np.eye(3))
+    assert correction.trace()["best_candidate"] in ("+drift", "-drift")
+
+
+def _vote_icp(mov_points, ref_points, **settings):
+    return VoteIcpEstimator(
+        dense_detector=_Points(mov_points),
+        precise_detector=_Points(mov_points),
+        ref_detector=_Points(ref_points),
+        settings=VoteIcpSettings(**settings),
+        score_fn=lambda t, m, r: 0.0,
+        transform_type="euclidean",
+    )
+
+
+def test_vote_icp_fails_with_too_few_peaks_or_when_voting_abstains():
+    vol = np.zeros((8, 8, 8), np.float32)
+    ref_points = np.random.default_rng(15).uniform(0, 30, (20, 3))
+    with pytest.raises(EstimationError, match="peaks \\(need >= 3\\)"):
+        _vote_icp(ref_points[:2], ref_points).estimate(vol, vol)
+    # every moving point further from the reference than the capture radius reaches
+    far = ref_points + 1000.0
+    with pytest.raises(EstimationError, match="abstained"):
+        _vote_icp(far, ref_points).estimate(vol, vol)

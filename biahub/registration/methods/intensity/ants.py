@@ -156,7 +156,11 @@ class AntsEstimator(EstimatorBase):
         transform_type: str,
         verbose: bool = False,
     ) -> AntsEstimator:
-        """ANTs fitting `transform_type` (euclidean, similarity or affine)."""
+        """ANTs fitting `transform_type` (euclidean, similarity or affine).
+
+        The `ants` block has no fields to read: it exists so `ants:` loads and the
+        legacy ANTs fields are refused.
+        """
         ants_kwargs = dict(DEFAULT_ANTS_KWARGS)
         ants_kwargs["type_of_transform"] = _ANTS_TRANSFORM_TYPE[transform_type]
         return cls(ants_kwargs=ants_kwargs, verbose=verbose)

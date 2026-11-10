@@ -40,11 +40,13 @@ def match_nodes(
     """
     Find bead correspondences between moving and reference peak sets.
 
-    Supports two matching algorithms:
+    Supports three matching algorithms:
     - "hungarian": Builds k-NN graphs for both peak sets, computes a cost matrix
       based on position distance and edge consistency, then solves the assignment
       problem with the Hungarian algorithm.
     - "match_descriptor": Uses scikit-image's descriptor matching on peak positions.
+    - "spectral": Matches from the pairwise distances of the raw coordinates
+      (`spectral_match_settings`).
 
     After matching, applies geometric consistency filters (distance quantiles,
     direction threshold, angle threshold) to remove outliers.
@@ -104,7 +106,6 @@ def match_nodes(
 
         matches = matcher.match(mov_graph, ref_graph)
 
-    # Filter as part of the pipeline
     elif beads_match_settings.algorithm == "spectral":
         spectral_match_settings = beads_match_settings.spectral_match_settings
         # Spectral matching works from pairwise distances of the raw coordinates; the
@@ -200,8 +201,8 @@ class NodeGraphEstimator(EstimatorBase):
         self.transform_type = transform_type
         self.iterations = iterations
         self.score_fn = score_fn
-        # (matches, mov_nodes, ref_nodes) -> the correction; default: the transform type's
-        # full fit (transform_from_matches), as beads use
+        # (matches, mov_nodes, ref_nodes) -> the correction; default: the transform
+        # type's fit of the matched pairs (fit_pairs), as beads use
         self.fit = fit
         self.matcher = matcher or (
             lambda mov_nodes, ref_nodes: match_nodes(

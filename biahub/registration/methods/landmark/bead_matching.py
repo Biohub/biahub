@@ -3,21 +3,25 @@ Beads-based registration module.
 
 Provides functions for registering volumetric imaging data by detecting fluorescent
 bead landmarks in moving and reference channels, matching them using graph-based
-algorithms, and estimating affine transformations.
+algorithms, and fitting the run's transform type.
 
 Pipeline overview
 -----------------
-1. **Peak detection** (`peaks_from_beads`): Detect bead positions in both channels.
+1. **Peak detection** (`bead_peaks`, wrapped as `BeadNodeDetector`): bead positions in
+   both channels.
 2. **Matching, fit and refinement** (`node_graph`, shared with nuclei: `match_nodes`,
-   `transform_from_matches`, `NodeGraphEstimator`), built on bead peaks by
-   `bead_node_graph`: graph matching (Hungarian, spectral or descriptor) with geometric
-   consistency filtering, a fit, and passes that re-detect on the warped moving volume.
+   `NodeGraphEstimator`), built on bead peaks by `bead_node_graph`: graph matching
+   (Hungarian, spectral or descriptor) with geometric consistency filtering, a fit of
+   the transform type (`fit_pairs`), and passes that re-detect on the warped moving
+   volume.
+3. **Options** (`build_beads_estimator`): vote ICP instead of graph matching, a vote
+   correction of the initial transform, and a spectral-then-refine competitor.
 
 Key conventions
 ---------------
 - Coordinates are in ZYX order for 3D data.
-- "mov" / "moving" refers to the source channel being aligned.
-- "ref" / "reference" refers to the fixed target channel.
+- "mov" / "moving" is the channel being aligned; "ref" / "reference" the one it is
+  aligned to.
 - Transforms map from moving space to reference space (forward direction).
 """
 
@@ -91,7 +95,8 @@ def overlap_score(
         volume (e.g. 3.0 for 1 moving and 3 reference peaks). np.nan if either set is empty.
     """
     if len(mov_peaks) == 0 or len(ref_peaks) == 0:
-        click.echo("No peaks found, returning nan metrics")
+        if verbose:
+            click.echo("No peaks found, returning nan metrics")
         return np.nan
 
     # ---- Overlap counting using KDTree ----
@@ -558,7 +563,7 @@ def build_beads_estimator(
     `CompetingEstimator` of the configured matcher and a spectral-acquire-then-refine
     cascade, the higher-scoring candidate wins.
     """
-    # imported here: metrics imports this module (overlap_score, peaks_from_beads)
+    # imported here: metrics imports this module (bead_peaks, overlap_score, ...)
     from biahub.registration.metrics import metric_fn
 
     score_fn = score_fn or metric_fn("overlap", beads_match_settings)

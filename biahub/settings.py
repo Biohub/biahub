@@ -518,7 +518,7 @@ class BeadsMatchSettings(MyBaseModel):
 class LocalPhaseCrossCorrSettings(MyBaseModel):
     """Local phase cross-correlation: a shift per tile of the max projections, fitted in yx.
 
-    As `biahub.registration.evaluate.tile_residuals`: `compare` edges (Sobel in each
+    As `biahub.registration.metrics.tile_residuals`: `compare` edges (Sobel in each
     volume's grid) or intensity, tiles of `tile_px` on a `grid` x `grid` layout, kept
     when their shifted copy correlates above `min_ncc`. `rounds` re-measures with the
     corrected transform (one warp each).
@@ -1836,7 +1836,7 @@ _METHOD_STACK = TypeAdapter(MethodStack)
 # who knows the setup); the estimate says where it goes in a stack (translations make
 # coarse first blocks).
 METHOD_FAMILIES: dict[str, tuple[str, str]] = {
-    "bead_matching": ("landmark-based", "affine"),
+    "bead_matching": ("landmark-based", "linear (the transform type)"),
     "nuclei_matching": ("landmark-based", "yx linear and a z shift"),
     "phase_cross_corr": ("intensity-based", "translation; yx linear when local"),
     "ants": ("intensity-based", "linear (the transform type)"),
