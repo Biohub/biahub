@@ -119,7 +119,9 @@ def estimate(
             )
         except (RuntimeError, ValueError) as error:  # ITK's failures: a failed estimate
             raise EstimationError(f"ANTs registration failed: {error}") from error
-    inverse = Transform.from_ants(ants.read_transform(reg["fwdtransforms"][0]))
+    # ANTs writes every linear fit as an AffineTransform: say what it fitted
+    fitted = _FITTED_TYPE.get(ants_kwargs.get("type_of_transform"), "affine")
+    inverse = Transform.from_ants(ants.read_transform(reg["fwdtransforms"][0]), fitted)
     return inverse.invert()
 
 
@@ -129,6 +131,8 @@ _ANTS_TRANSFORM_TYPE = {
     "similarity": "Similarity",
     "affine": "Affine",
 }
+# ANTs' name back to the transform type it fits
+_FITTED_TYPE = {"Rigid": "euclidean", "Similarity": "similarity", "Affine": "affine"}
 
 
 class AntsEstimator(EstimatorBase):

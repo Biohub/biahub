@@ -782,14 +782,19 @@ class Transform:
         return T_ants
 
     @classmethod
-    def from_ants(cls, T_ants) -> Transform:
+    def from_ants(cls, T_ants, transform_type: TransformType | None = None) -> Transform:
         """
         Create Transform from ANTs transform.
 
         Parameters
         ----------
         T_ants : ants.ANTsTransform
-            ANTs transform object.
+            Any linear ANTs transform (2D or 3D): AffineTransform, Euler, Similarity,
+            Rigid or VersorRigid.
+        transform_type : {'affine', 'similarity', 'euclidean', 'rigid'}, optional
+            What the transform is. ANTs writes every linear registration as an
+            AffineTransform, so a caller that knows what was fitted says so; by default
+            it is read from the ANTs type's name.
 
         Returns
         -------
@@ -798,27 +803,38 @@ class Transform:
 
         Notes
         -----
-        Works for both 2D and 3D ANTs transforms.
-        Based on conversion from:
-        https://sourceforge.net/p/advants/discussion/840261/thread/9fbbaab7/
+        An AffineTransform is read from its parameters (matrix, translation and centre:
+        https://sourceforge.net/p/advants/discussion/840261/thread/9fbbaab7/); any other
+        kind by evaluating it at the origin and the unit vectors, exact for a linear map
+        to ANTs' float32 precision.
         """
+        name = T_ants.type
+        if transform_type is None:
+            transform_type = (
+                "euclidean"
+                if any(k in name for k in ("Euler", "Rigid", "Versor"))
+                else "similarity"
+                if "Similarity" in name
+                else "affine"
+            )
+        ndim = T_ants.dimension
+        if name != "AffineTransform":
+            origin = np.asarray(T_ants.apply_to_point([0.0] * ndim), dtype=float)
+            matrix = np.eye(ndim + 1)
+            for axis in range(ndim):
+                unit = np.eye(ndim)[axis]
+                matrix[:ndim, axis] = np.asarray(T_ants.apply_to_point(unit), float) - origin
+            matrix[:ndim, ndim] = origin
+            return cls(matrix, transform_type=transform_type)
+
         params = T_ants.parameters
         fixed_params = T_ants.fixed_parameters
-        if len(params) == 6:
-            ndim = 2
-        elif len(params) == 12:
-            ndim = 3
-        else:
-            raise ValueError(
-                f"Unexpected ANTs parameter count: {len(params)}. Expected 6 (2D) or 12 (3D)."
-            )
-
         T_numpy = params.reshape((ndim, ndim + 1), order="F")
         T_numpy[:, :ndim] = T_numpy[:, :ndim].transpose()
         T_numpy = np.vstack((T_numpy, np.array([0] * ndim + [1])))
         T_numpy[:ndim, -1] += (np.eye(ndim) - T_numpy[:ndim, :ndim]) @ fixed_params
 
-        return cls(T_numpy)
+        return cls(T_numpy, transform_type=transform_type)
 
     # ==================== Serialization ====================
 
