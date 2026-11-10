@@ -31,6 +31,7 @@ from pydantic import Field, NonNegativeInt, PositiveFloat, field_validator, mode
 from biahub.cli.parsing import config_filepaths, output_filepath
 from biahub.settings import (
     LEGACY_BEAD_KEYS,
+    METHOD_TRANSFORM_TYPES,
     AffineTransformSettings,
     AntsRegistrationSettings,
     BeadsMatchSettings,
@@ -270,6 +271,23 @@ _UNIFIED_METHOD = {
 }
 
 
+# The legacy section each unified block came from, for the notes.
+_LEGACY_SECTION = {
+    "bead_matching": "beads_match_settings",
+    "phase_cross_corr": "phase_cross_corr_settings",
+    "manual": "manual_registration_settings",
+    "focus_finding": "focus_finding_settings",
+}
+
+
+def _only_the_methods_blocks(method: str, blocks: dict, notes: list[str]) -> dict:
+    """Keep the block `method` reads; note each other one given (a legacy file kept them all)."""
+    for name, block in blocks.items():
+        if block is not None and name != method:
+            notes.append(f"{_LEGACY_SECTION[name]} dropped: read only by {name}, not {method}")
+    return {name: block for name, block in blocks.items() if name == method}
+
+
 def estimate_settings_from_legacy(
     legacy: EstimateRegistrationSettings | EstimateStabilizationSettings,
 ) -> tuple[EstimateTransformSettings, list[str]]:
@@ -297,7 +315,16 @@ def estimate_settings_from_legacy(
         initial = {"from": "matrix", "matrix": ats.approx_transform, "direction": "inverse"}
     if propagate:
         initial["propagate"] = True
-    fit = TransformFitSettings(type=ats.transform_type, initial=initial or None)
+    method = _UNIFIED_METHOD.get(legacy_method, legacy_method)
+    transform_type = ats.transform_type
+    fits = METHOD_TRANSFORM_TYPES.get(method)
+    if fits is not None and transform_type not in fits:
+        notes.append(
+            f"transform_type {transform_type!r} -> {fits[0]!r}: {method} fits "
+            f"{' or '.join(fits)} only (the legacy pipeline ignored the setting)"
+        )
+        transform_type = fits[0]
+    fit = TransformFitSettings(type=transform_type, initial=initial or None)
     if isinstance(legacy, EstimateRegistrationSettings):
         # estimate-registration always read the source channel from the source store and
         # the target channel from the target store, so this is a cross estimate even when
@@ -309,11 +336,25 @@ def estimate_settings_from_legacy(
                 "reference.frame to 'first' or 'previous' and drop reference.channel"
             )
         manual = legacy.manual_registration_settings
+        blocks = _only_the_methods_blocks(
+            method,
+            {
+                "bead_matching": legacy.beads_match_settings,
+                "phase_cross_corr": _unified_pcc(legacy.phase_cross_corr_settings, notes),
+                "manual": None
+                if manual is None
+                else ManualSettings(
+                    affine_90degree_rotation=manual.affine_90degree_rotation,
+                    affine_fliplr=manual.affine_fliplr,
+                ),
+            },
+            notes,
+        )
         settings = EstimateTransformSettings(
             moving=ChannelSettings(channel=legacy.source_channel_name),
             reference=ReferenceSettings(frame="cross", channel=legacy.target_channel_name),
-            method=_UNIFIED_METHOD.get(legacy.estimation_method, legacy.estimation_method),
-            bead_matching=legacy.beads_match_settings,
+            method=method,
+            **blocks,
             ants=AntsRegistrationSettings() if legacy.estimation_method == "ants" else None,
             preprocess=_ants_blocks(legacy, notes),
             # the legacy ANTs score compared Sobel edges when sobel_filter was on
@@ -321,13 +362,6 @@ def estimate_settings_from_legacy(
             if legacy.estimation_method == "ants"
             and legacy.ants_registration_settings.sobel_filter
             else {},
-            phase_cross_corr=_unified_pcc(legacy.phase_cross_corr_settings, notes),
-            manual=None
-            if manual is None
-            else ManualSettings(
-                affine_90degree_rotation=manual.affine_90degree_rotation,
-                affine_fliplr=manual.affine_fliplr,
-            ),
             transform=fit,
             # legacy manual registered manual_registration_settings.time_index
             time_indices=manual.time_index
@@ -337,10 +371,9 @@ def estimate_settings_from_legacy(
         )
         return settings, notes
 
-    method = legacy.stabilization_method
     focus_finding = None
     reference = ats.t_reference
-    if method == "focus-finding":
+    if legacy_method == "focus-finding":
         stack_reg = legacy.stack_reg_settings
         focus = legacy.focus_finding_settings or (
             stack_reg.focus_finding_settings if stack_reg is not None else None
@@ -376,15 +409,21 @@ def estimate_settings_from_legacy(
                 "average_across_wells / skip_beads_fov dropped: per-plate orchestration, "
                 "not part of the estimate (leave the beads FOV out of -m)"
             )
-    elif method == "phase-cross-corr" and legacy.phase_cross_corr_settings is not None:
+    elif legacy_method == "phase-cross-corr" and legacy.phase_cross_corr_settings is not None:
         reference = legacy.phase_cross_corr_settings.t_reference
     settings = EstimateTransformSettings(
         moving=ChannelSettings(channel=legacy.stabilization_estimation_channel),
         reference=ReferenceSettings(frame=reference),
-        method=_UNIFIED_METHOD.get(method, method),
-        bead_matching=legacy.beads_match_settings,
-        phase_cross_corr=_unified_pcc(legacy.phase_cross_corr_settings, notes),
-        focus_finding=focus_finding,
+        method=method,
+        **_only_the_methods_blocks(
+            method,
+            {
+                "bead_matching": legacy.beads_match_settings,
+                "phase_cross_corr": _unified_pcc(legacy.phase_cross_corr_settings, notes),
+                "focus_finding": focus_finding,
+            },
+            notes,
+        ),
         transform=fit,
         verbose=legacy.verbose,
     )

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -10,6 +12,7 @@ from biahub.registration.legacy.convert_settings import (
     StabilizationSettings,
     convert_settings,
     convert_settings_cli,
+    convert_settings_file,
     load_legacy_settings,
 )
 from biahub.settings import (
@@ -347,3 +350,33 @@ def test_a_legacy_beads_config_converts_its_detections_to_the_volumes_names():
         beads_match_settings={"source_peaks_settings": peaks},
     )
     assert stabilization.beads_match_settings.moving_peaks_settings.threshold_abs == 50.0
+
+
+LEGACY_EXAMPLES = sorted((Path(__file__).parent / "data" / "legacy").glob("*.yml"))
+
+
+@pytest.mark.parametrize("source", LEGACY_EXAMPLES, ids=lambda p: p.stem)
+def test_biahubs_own_legacy_examples_convert(source, tmp_path):
+    # the estimate examples main shipped before the engine (focus finding carrying the
+    # beads block, a type the method never fitted): the new refusals made convert-settings
+    # raise about fields the user never wrote
+    output = tmp_path / "converted.yml"
+    convert_settings_file([source], output)
+    load_estimate_transform_settings(output)
+
+
+def test_conversion_keeps_only_the_methods_block_and_a_type_it_fits():
+    legacy = EstimateStabilizationSettings(
+        stabilization_estimation_channel="Phase3D",
+        stabilization_channels=["Phase3D"],
+        stabilization_type="z",
+        stabilization_method="focus-finding",
+        beads_match_settings={},
+        phase_cross_corr_settings={},
+        affine_transform_settings={"transform_type": "affine"},
+    )
+    unified, notes = convert_settings(legacy)
+    assert unified.bead_matching is None and unified.phase_cross_corr is None
+    assert unified.transform.type == "euclidean"  # focus finding fits a translation
+    assert any("beads_match_settings dropped" in n for n in notes)
+    assert any("transform_type 'affine'" in n for n in notes)

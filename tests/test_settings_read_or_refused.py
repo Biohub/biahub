@@ -142,3 +142,11 @@ def test_local_phase_correlation_refuses_the_whole_volume_options():
         _settings(phase_cross_corr={"local": {}}).phase_cross_corr.effective_upsample_factor
         == 10
     )
+
+
+def test_propagation_loads_for_phase_correlation_without_its_section():
+    # the start check read phase_cross_corr.local before the section was filled in
+    propagate = {"initial": {"propagate": True}}
+    assert _settings(method="phase_cross_corr", transform=propagate).transform.propagates
+    stack = [{"phase_cross_corr": {}}, {"ants": {}}]
+    assert _settings(method=stack, transform=propagate).transform.propagates
