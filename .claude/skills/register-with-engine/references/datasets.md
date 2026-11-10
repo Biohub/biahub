@@ -24,10 +24,14 @@ stores in `0-convert/`, with the project's own configs, into a scratch folder:
 
 ```bash
 biahub deskew -i <raw lightsheet.zarr>/<beads well> -c <project>/1-preprocess/light-sheet/raw/0-deskew/deskew_settings.yml -o <scratch>/light-sheet-deskew.zarr
-biahub reconstruct -i <raw labelfree.zarr>/<beads well> -c <project>/1-preprocess/label-free/0-reconstruct/phase_config.yaml -o <scratch>/beads-recon/label-free-reconstruct.zarr
+biahub reconstruct -i <raw labelfree.zarr>/<beads well> -c <scratch>/beads-recon/reconstruct.yml -o <scratch>/beads-recon/label-free-reconstruct.zarr
 ```
 
-Run each reconstruct in its own folder: it writes `transfer_function_<config>.zarr` next to
+`biahub reconstruct` takes its waveorder configs by name under `reconstructions:`, so nest
+the project's `<project>/1-preprocess/label-free/0-reconstruct/phase_config.yaml`, a bare
+waveorder config, as `reconstructions: {phase: <its contents>}` in that `reconstruct.yml`.
+
+Run each reconstruct in its own folder: it writes `transfer_functions/<name>.zarr` next to
 the output, and two runs sharing a folder overwrite each other's (and `reconstruct` does not
 report the failed job). Check every timepoint has data afterwards; a timepoint empty in both
 the raw light-sheet and label-free is an acquisition gap.

@@ -101,17 +101,29 @@ lateral pixel size of the *input* store (no longer read from the zarr);
 `scan_step_um` comes from the acquisition — read
 `/hpc/instruments/cm.mantis/<DATASET>/config.yaml`, do not assume 0.150.
 
-**`reconstruct.yml` — `input_channel_names`, and `project.yml`'s brightfield
-key.** Must name the brightfield channel exactly as it appears in the deskewed
-store. The templates say `BF` (current acquisitions); older acquisitions name it
-`BF - Oblique` (e.g. `2026_08_11_A549_SEC61B_DENV`, so a v9 rerun of it too).
-Read the raw store's channel names and, when it says `BF - Oblique`, suggest
-that edit in **both** `reconstruct.yml` and `project.yml` — §5a's check flags
-the project.yml side; a reconstruct.yml mismatch fails at
+**`reconstruct.yml` — each reconstruction's `input_channel_names`, and
+`project.yml`'s brightfield key.** `reconstructions.phase` must name the
+brightfield channel exactly as it appears in the deskewed store. The templates
+say `BF` (current acquisitions); older acquisitions name it `BF - Oblique`
+(e.g. `2026_08_11_A549_SEC61B_DENV`, so a v9 rerun of it too). Read the raw
+store's channel names and, when it says `BF - Oblique`, suggest that edit in
+**both** `reconstruct.yml` and `project.yml` — §5a's check flags the
+project.yml side; a reconstruct.yml mismatch fails at
 `compute_transfer_function`, after flat-field and deskew have already burned
-hours.
+hours. The zebrafish template's `gfp` and `mcherry` deconvolutions name the
+mantis V2 fluorescence channels (`GFP EX488 EM525-45`,
+`mCherry EX561 EM600-37`) the same way; drop an entry for a dataset without
+that channel.
 
-**`reconstruct.yml` — `phase.transfer_function.{yx,z}_pixel_size`.** These are
+**`reconstruct.yml` — `rl.background` of each fluorescence deconvolution.**
+The Richardson-Lucy background in counts depends on the dataset: the mean of
+the empty voxels of the deskewed input at t = 0. The template's 31.01 / 31.21
+were measured on `2026_06_11_dynatrack_debug_48hpf` (camera offset 30). A
+finished run's QC table (`4-assemble/<DATASET>.zarr/tables/qc/stage5_position.parquet`,
+metric `intensity_stats_median`) reads it to within 0.1 at t = 0.
+
+**`reconstruct.yml` — every reconstruction's
+`transfer_function.{yx,z}_pixel_size`.** These are
 the voxel sizes of the *deskewed* store, so they follow from `deskew.yml`:
 
 ```

@@ -64,6 +64,17 @@ process init_virtual_stain {
     """
 }
 
+// The channels of the input plate the model reads: `data.init_args.source_channel`
+// of the predict config, a name or a list of names.
+def virtual_stain_source_channels(config) {
+    def cfg = new org.yaml.snakeyaml.Yaml().load(new File(config as String).text) ?: [:]
+    def source = cfg.data?.init_args?.source_channel
+    if (!source) {
+        error "${config}: no data.init_args.source_channel; virtual staining needs its input channel"
+    }
+    return (source instanceof List ? source : [source]).collect { name -> name as String }
+}
+
 process run_virtual_stain_preprocess {
     label 'cpu'
     clusterOptions { slurm_logs('virtual_stain') }
@@ -73,11 +84,17 @@ process run_virtual_stain_preprocess {
 
     input:
     val input_zarr
+    val source_channels
     val trigger
 
     output:
     val true
 
+    // `--channel_names`: only the channels the model reads. The input plate also
+    // holds channels that are still being written when this runs (the
+    // reconstruct step's fluorescence deconvolutions, which nothing here reads),
+    // and their statistics would be computed over half-written volumes.
+    //
     // `--trainer.logger false` disables the viscy CLI's default WandbLogger.
     // The VisCy LightningCLI sets trainer.logger to a lazy WandbLogger for every
     // subcommand (viscy_utils/cli.py); preprocess needs no logger, and W&B isn't
@@ -94,7 +111,7 @@ process run_virtual_stain_preprocess {
     unset SLURM_NTASKS
     viscy preprocess \
         --data_path "${input_zarr}" \
-        --channel_names -1 \
+        --channel_names '${groovy.json.JsonOutput.toJson(source_channels)}' \
         --num_workers ${task.cpus} \
         --block_size 32 \
         --trainer.logger false
@@ -166,8 +183,8 @@ workflow virtual_stain_init_wf {
 }
 
 
-// Compute normalization statistics over the whole input plate, then fan out one
-// GPU prediction per position.
+// Compute normalization statistics of the model's source channels over the whole
+// input plate, then fan out one GPU prediction per position.
 //
 // take:
 //   positions    collected channel of position keys (e.g. ['A/1/0', 'B/1/0'])
@@ -175,8 +192,8 @@ workflow virtual_stain_init_wf {
 //   output_zarr  path to the virtual-stain output plate.zarr
 //   config       path to the virtual-stain (viscy predict) settings YAML
 //   resources    RESOURCES payload from virtual_stain_init_wf
-//   prev_done    gating channel — the input store holds data for EVERY position,
-//                which preprocess requires
+//   prev_done    gating channel — the source channels hold data for EVERY
+//                position, which preprocess requires
 workflow virtual_stain_run_wf {
     take:
     positions
@@ -187,7 +204,8 @@ workflow virtual_stain_run_wf {
     prev_done
 
     main:
-    vs_preprocess = run_virtual_stain_preprocess(input_zarr, prev_done.collect().map { 'done' })
+    vs_preprocess = run_virtual_stain_preprocess(input_zarr, virtual_stain_source_channels(config),
+                                                 prev_done.collect().map { 'done' })
 
     pos_meta = positions
         .flatMap { items -> items }

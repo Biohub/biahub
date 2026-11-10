@@ -111,9 +111,9 @@ Some steps include an `estimate-*` command that writes a YAML of parameters you 
 | `estimate-psf` | Estimate a PSF from beads |
 | `deconvolve` | Deconvolve across T and C using a PSF |
 | | |
-| `compute-tf` | Compute a transfer function from a PSF |
-| `apply-inv-tf` | Apply an inverse transfer function to a dataset |
-| `reconstruct` | Reconstruct phase/birefringence in one step |
+| `compute-tf` | Compute the transfer functions of a reconstruct config |
+| `apply-inv-tf` | Apply the inverse transfer functions of a reconstruct config to a dataset |
+| `reconstruct` | Reconstruct phase/birefringence and deconvolve fluorescence in one step |
 | | |
 | `estimate-transform` | Estimate a transform series: registration between arms or stabilization over time |
 | `apply-transform` | Apply a transform series to positions |
@@ -147,7 +147,9 @@ biahub deconvolve       -i ./lightsheet.zarr -c ./deconvolve.yml \
 biahub estimate-deskew -i ./lightsheet.zarr/0/0/0 -o ./deskew.yml
 biahub deskew          -i ./lightsheet.zarr/*/*/* -c ./deskew.yml -o ./lightsheet_deskewed.zarr
 
-# RECONSTRUCT PHASE/BIREFRINGENCE
+# RECONSTRUCT PHASE/BIREFRINGENCE, DECONVOLVE FLUORESCENCE
+# recon.yml names one waveorder config per reconstruction under `reconstructions:`
+# (e.g. `phase`, `gfp`); see nextflow/configs/zebrafish/reconstruct.yml
 biahub reconstruct -i ./labelfree.zarr/*/*/* -c ./recon.yml -o ./labelfree_reconstructed.zarr
 
 # STABILIZE (the moving channel against its own first / previous timepoint; every position
@@ -227,7 +229,7 @@ With `--biahub_project`, each task runs as `uv run --project <path> biahub ...`;
 Profiles select *where* work runs:
 
 - `-profile local` — everything on the current machine. Good for debugging and single-node runs.
-- `-profile slurm` — per-position work goes to the `preempted` partition, virtual-stain prediction and segmentation to the `preempted` partition on GPU nodes (both resume where a reclaimed task stopped), tracking to the `preempted` partition as well (ultrack cannot resume, but a position tracks in minutes), and lightweight init steps stay local. Preempted, timed-out, and OOM-killed tasks are retried automatically (up to 5 times, with escalating time/memory); genuine errors fail fast instead of burning retries.
+- `-profile slurm` — per-position work goes to the `preempted` partition; virtual-stain prediction, segmentation and the GPU reconstructions (fluorescence deconvolution with `device: cuda`) go to the `preempted` partition on GPU nodes (all three resume where a reclaimed task stopped), tracking to the `preempted` partition as well (ultrack cannot resume, but a position tracks in minutes), and lightweight init steps stay local. Preempted, timed-out, and OOM-killed tasks are retried automatically (up to 5 times, with escalating time/memory); genuine errors fail fast instead of burning retries.
 
 Nextflow's own flags still apply — most usefully `-resume` to reuse completed tasks after a failure or a config tweak, and `-w /fast/scratch` to move the work directory off the output filesystem.
 

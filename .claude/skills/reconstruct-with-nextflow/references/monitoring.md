@@ -141,8 +141,9 @@ done
 
 Two traps, both hit for real:
 
-- **Name the store.** A bare `$d/*.zarr/*/*/*/` overcounts `2-reconstruct`, which
-  also holds `transfer_function.zarr` (10 instead of 8 for an 8-position plate).
+- **Name the store.** A bare `$d/*.zarr/*/*/*/` also counts any other zarr in
+  the step directory; `2-reconstruct` held a `transfer_function.zarr` there
+  before the transfer functions moved into `transfer_functions/`.
 - **This counts scaffolds, not finished work.** Every step's `init_*` task runs
   in the run's first minutes — the pipeline does the whole init chain before any
   compute — and each creates every position's metadata up front. So EVERY step
@@ -170,7 +171,7 @@ Steps run strictly in sequence; within a step, positions fan out with
 |---|---|---|
 | `run_flat_field` | fan-out, CPU (`preempted`) | first, so it absorbs most preemption |
 | `run_deskew` | fan-out, CPU | CPU on current main, not GPU |
-| `compute_transfer_function` + `run_apply_inv_tf` | one-shot + fan-out, CPU | TF is quick; apply is the bulk |
+| `compute_transfer_function` + `run_apply_inv_tf` / `run_apply_inv_tf_gpu` | one per reconstruction + fan-out per position and reconstruction; phase on CPU, the fluorescence deconvolutions (`device: cuda`) on a **GPU** | the pinhole fluorescence TF needs >100 GB; virtual staining starts once phase is done, beside the deconvolutions; assemble waits for all of them |
 | `run_virtual_stain_preprocess` + `run_virtual_stain` | one-shot + fan-out, **GPU** | `preempted` partition, any GPU node (A40 workstations included); a reclaimed task resumes at the timepoint it lost; longest per-position step |
 | `run_concatenate` | **single job**, one reserved node | longest single job; whole-plate I/O |
 | `run_track` | fan-out, GPU (cellpose) | reads the assembled plate and writes `labels/<target_channel>`, `tracks.geff` and a tracks CSV into each position; nothing else is kept (the Ultrack database is temporary, in the node's `$TMPDIR`) |

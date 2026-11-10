@@ -321,6 +321,24 @@ def init_only() -> Callable:
     return decorator
 
 
+def reconstruction_names() -> Callable:
+    """`--reconstruction` / `-r`: entries of a reconstruct config's `reconstructions:`."""
+
+    def decorator(f: Callable) -> Callable:
+        return click.option(
+            "--reconstruction",
+            "-r",
+            "reconstruction_names",
+            multiple=True,
+            help=(
+                "Name of a reconstruction under the config's `reconstructions:` to run. "
+                "Repeat for several; default: all of them."
+            ),
+        )(f)
+
+    return decorator
+
+
 def monitor(short: bool = True) -> Callable:
     """`--monitor` / `-m`; `short=False` frees `-m` for CLIs whose moving store takes it."""
 
