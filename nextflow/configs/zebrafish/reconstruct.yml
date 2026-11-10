@@ -32,18 +32,6 @@ reconstructions:
         TV_rho_strength: 0.001
         TV_iterations: 1
 
-  # Richardson-Lucy deconvolution of the two fluorescence channels, on a GPU
-  # (`device: cuda`), into "<channel>_Density3D". The settings were chosen from
-  # single-volume sweeps on the mantis V2 neuromast time-lapse
-  # 2026_06_11_dynatrack_debug_48hpf (FOV 0/2/2): the confocal-pinhole model
-  # with a 4 um pinhole (sample space), 160 iterations, matched back projector.
-  #
-  # rl.background is the RL forward model's constant background, in counts, and
-  # depends on the dataset: the mean of the empty voxels of the deskewed input
-  # at t = 0. The values below were measured on 2026_06_11 (camera offset 30).
-  # The QC step's per-volume median (tables/qc/stage5_position.parquet, metric
-  # intensity_stats_median) at t = 0 is within 0.1 of it, since most voxels are
-  # empty.
   gfp:
     input_channel_names: ["GFP EX488 EM525-45"]
     time_indices: "all"
