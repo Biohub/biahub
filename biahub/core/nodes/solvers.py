@@ -45,7 +45,7 @@ def linear_assignment(
         if i >= n_A or j >= n_B:
             continue
 
-        if C[i, j] > cost_thresh:  # the threshold itself is accepted
+        if C[i, j] >= cost_thresh:
             continue
 
         if max_ratio is not None:

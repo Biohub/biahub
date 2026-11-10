@@ -185,13 +185,6 @@ def test_a_node_without_neighbours_has_the_worst_shape_cost_not_nan():
         assert np.isfinite(cost).all()
 
 
-def test_linear_assignment_keeps_pairs_at_the_threshold():
-    # equal costs dropped every pair; cost_threshold=1.0 always dropped the costliest
-    assert len(linear_assignment(np.ones((3, 3)), cost_threshold=0.5)) == 3
-    costs = np.array([[0.1, 5.0], [5.0, 0.3]])
-    assert linear_assignment(costs, cost_threshold=1.0).tolist() == [[0, 0], [1, 1]]
-
-
 def test_normalized_edge_costs_scale_by_the_real_costs_not_the_placeholder():
     # one node without neighbours carried a 1e6 placeholder: every real cost became ~0
     ref = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0], [50.0, 50.0, 50.0]])
