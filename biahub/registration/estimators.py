@@ -189,6 +189,10 @@ def measure_from_start(
     return measure(warped, ref) @ initial_transform
 
 
+# What a stack records for the blocks after one that failed.
+NOT_RUN = "not run: an earlier block failed"
+
+
 class ChainedEstimator(EstimatorBase):
     """Run estimators in sequence, each started from the previous result.
 
@@ -230,7 +234,12 @@ class ChainedEstimator(EstimatorBase):
         return all(stage.holds_xy_across_gaps for stage in self.stages)
 
     def trace(self) -> dict:
-        return {"best_candidate": None, "blocks": self._blocks}
+        # the winning block's kept candidate (a competing bead block), as a single method's
+        won = next((b for b in self._blocks or [] if b["won"]), None)
+        return {
+            "best_candidate": won["best_candidate"] if won else None,
+            "blocks": self._blocks,
+        }
 
     def estimate(
         self, mov: ArrayLike, ref: ArrayLike, initial_transform: Transform | None = None
@@ -242,7 +251,14 @@ class ChainedEstimator(EstimatorBase):
         best: Transform | None = None
         best_score = -np.inf
         stages = [
-            {"block": name, "matrix": None, "score": None, "error": None, "won": False}
+            {
+                "block": name,
+                "matrix": None,
+                "score": None,
+                "error": None,
+                "won": False,
+                "best_candidate": None,
+            }
             for name in (self.names or [""] * len(self.stages))
         ]
         winner = None
@@ -251,19 +267,22 @@ class ChainedEstimator(EstimatorBase):
                 current = stage.estimate(mov, ref, initial_transform=current)
             except EstimationError as error:
                 stages[k]["error"] = str(error)
+                for later in stages[k + 1 :]:
+                    later["error"] = NOT_RUN
                 if best is not None:
-                    for later in stages[k + 1 :]:
-                        later["error"] = "not run: an earlier block failed"
                     break
                 self._keep(stages, winner)
                 raise
             stages[k]["matrix"] = current.to_list()
+            stages[k]["best_candidate"] = stage.trace()["best_candidate"]
             if self.score_fn is None:
                 best, winner = current, k
                 continue
             score = self.score_fn(current, mov, ref)
             if np.isfinite(score):
                 stages[k]["score"] = float(score)
+            else:  # as select_best words it: the block ran, its result cannot be judged
+                stages[k]["error"] = f"its transform scored {score}"
             if is_higher(score, best_score):
                 best, best_score, winner = current, score, k
         self._keep(stages, winner)

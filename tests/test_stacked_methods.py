@@ -49,7 +49,9 @@ def test_each_block_becomes_an_ordinary_single_method_config():
     # a block's transform type, else the run's; the rest of the run is shared
     assert (pcc.transform.type, ants.transform.type) == ("euclidean", "similarity")
     # the first block starts where the run does; a later one from the block before
-    assert pcc.transform.initial == settings.transform.initial and ants.transform.initial is None
+    assert (
+        pcc.transform.initial == settings.transform.initial and ants.transform.initial is None
+    )
     assert not pcc.is_stack
 
 
@@ -456,3 +458,57 @@ def test_a_timepoint_whose_block_failed_is_unreliable_and_says_why():
     result.repaired_from[0] = "consensus_full"
     entries = transform_entries(result, [0, 1], [Transform.identity(3)] * 2, hard_fail=0.0)
     assert (entries[0].status, entries[0].note) == ("accepted", None)
+
+
+class _Named(_Fixed):
+    """A fixed stage that names the candidate it kept (as a competing bead block does)."""
+
+    def trace(self):
+        return {"best_candidate": "spectral", "blocks": None}
+
+
+def test_a_stacks_record_says_what_every_block_did():
+    # a first block's failure left later blocks without a reason; a NaN-scored block was
+    # neither failed nor scored; a competing block's kept candidate was dropped; and the
+    # report counted blocks that never ran as failed
+    import numpy as np
+
+    from biahub.core.transform import Transform
+    from biahub.registration.engine.core import _blocks_summary, block_failure
+    from biahub.registration.estimators import ChainedEstimator, EstimationError
+
+    vol = np.zeros((2, 2, 2))
+    names = ["1:a", "2:b", "3:c"]
+    first_fails = ChainedEstimator(
+        [
+            _Fixed(error="no beads"),
+            _Fixed(Transform.identity(3)),
+            _Fixed(Transform.identity(3)),
+        ],
+        score_fn=lambda t, m, r: 0.5,
+        names=names,
+    )
+    with pytest.raises(EstimationError):
+        first_fails.estimate(vol, vol)
+    blocks = first_fails.trace()["blocks"]
+    assert [b["error"] for b in blocks[1:]] == ["not run: an earlier block failed"] * 2
+    summary = _blocks_summary({0: blocks})
+    assert (summary["1:a"]["failed"], summary["2:b"]["failed"]) == (1, 0)
+
+    shift = Transform.from_translation([0.0, 0.0, 1.0])
+    chain = ChainedEstimator(
+        [_Named(Transform.identity(3)), _Fixed(shift)],
+        score_fn=lambda t, m, r: float("nan") if t == shift else 0.5,
+        names=names[:2],
+    )
+    chain.estimate(vol, vol)
+    blocks = chain.trace()["blocks"]
+    assert blocks[1]["error"] == "its transform scored nan"
+    assert (
+        block_failure(blocks)
+        == "block 2:b failed (its transform scored nan); kept block 1:a's result"
+    )
+    assert (
+        blocks[0]["best_candidate"] == "spectral"
+        and chain.trace()["best_candidate"] == "spectral"
+    )

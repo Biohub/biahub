@@ -62,6 +62,7 @@ from biahub.registration.engine.series import (
     SeriesResult,
 )
 from biahub.registration.estimators import (
+    NOT_RUN,
     ChainedEstimator,
     ScoreFn,
     TransformEstimator,
@@ -415,7 +416,7 @@ def block_failure(stages: list[dict] | None) -> str | None:
 
     Blocks after a failed one are "not run"; the first failure is the one to report.
     """
-    failed = next((s for s in stages or [] if s["matrix"] is None and s["error"]), None)
+    failed = next((s for s in stages or [] if s["error"] and s["error"] != NOT_RUN), None)
     if failed is None:
         return None
     kept = next((s["block"] for s in stages if s["won"]), None)
@@ -430,7 +431,7 @@ def _blocks_summary(blocks: dict[int, list[dict]]) -> dict:
         for stage in stages:
             entry = summary.setdefault(stage["block"], {"won": 0, "failed": 0, "scores": []})
             entry["won"] += bool(stage["won"])
-            entry["failed"] += stage["matrix"] is None
+            entry["failed"] += bool(stage["error"]) and stage["error"] != NOT_RUN  # ran
             if stage["score"] is not None:
                 entry["scores"].append(stage["score"])
     return {
