@@ -24,7 +24,9 @@ from biahub.registration.engine.policies import (
     ReferencePolicy,
 )
 from biahub.registration.engine.series import (
+    EMPTY_FRAME,
     SeriesResult,
+    with_gap_rule,
 )
 from biahub.registration.estimators import (
     CANDIDATE_FAILURES,
@@ -99,13 +101,12 @@ def select_flagged(
     score_col: ArrayLike,
     label: str,
     k_mad: float = FLAG_K_MAD,
-    floor: float = FLAG_FLOOR_SCORE,
-    hard_fail: float = HARD_FAIL_SCORE,
+    floor: float | None = FLAG_FLOOR_SCORE,
+    hard_fail: float | None = HARD_FAIL_SCORE,
 ) -> tuple[list[int], dict]:
-    """Timepoints for a fallback pass to act on, from the adaptive median-2*MAD line.
+    """Timepoints for the fallback passes to act on, below the median - k_mad * MAD line.
 
-    Shared by every fallback pass so they can't drift apart in how they choose work, and
-    so no pass carries its own fixed score threshold.
+    `flag_timepoints` decides; this logs what was flagged.
 
     Returns (flagged timepoints, run statistics) -- the statistics are returned rather
     than left for callers to recompute, so whatever gets logged is provably the same
@@ -164,8 +165,8 @@ def neighbour_consensus_initial_candidates(
 ) -> RepairCandidates:
     """Build the repair candidate set in the given order.
 
-    "t-1" / "t+1": non-flagged neighbours; "consensus": the run's consensus geometry
-    (named `consensus_full` in results); "initial": the timepoint's initial transform.
+    "t-1" / "t+1": non-flagged neighbours; "consensus": the run's consensus geometry;
+    "initial": the timepoint's initial transform.
     """
 
     def candidates(
@@ -178,7 +179,7 @@ def neighbour_consensus_initial_candidates(
                 if idx in history and idx not in flagged:
                     out[name] = FixedInitialTransform(history[idx])
             elif name == "consensus":
-                out["consensus_full"] = ConsensusInitialTransform(
+                out["consensus"] = ConsensusInitialTransform(
                     history=history,
                     scores=scores,
                     score_threshold=consensus_score_threshold,
@@ -207,7 +208,8 @@ class PassResult:
     polish_rounds: int = 0  # polish rounds that improved the accepted candidate
     # the accepted repair candidate's score, before polish refined it
     repair_transform_score: float | None = None
-    # score.report metrics of the accepted transform
+    # score.report metrics of the accepted transform: the cluster job that ran the pass
+    # attaches them (`cluster._report_metrics`); the passes here leave None
     report: dict[str, float | None] | None = None
 
 
@@ -386,17 +388,24 @@ def polish(
 def flag_series(
     result: SeriesResult,
     k_mad: float = FLAG_K_MAD,
-    floor: float = FLAG_FLOOR_SCORE,
-    hard_fail: float = HARD_FAIL_SCORE,
+    floor: float | None = FLAG_FLOOR_SCORE,
+    hard_fail: float | None = HARD_FAIL_SCORE,
 ) -> list[int]:
     """Flag attempted timepoints against the run's own score distribution.
 
-    Only timepoints that were attempted can be flagged; gaps in `time_indices` are not
-    "missing scores". Sets and returns `result.flagged`.
+    Only timepoints that were attempted can be flagged: gaps in `time_indices` are not
+    "missing scores", and an empty frame (no data) has nothing to repair (its record
+    says why it has no transform). With no finite score at all there is no line to
+    judge against, so every attempted timepoint is flagged. Sets and returns
+    `result.flagged`.
     """
-    attempted = sorted(result.scores)
+    attempted = sorted(t for t in result.scores if result.errors.get(t) != EMPTY_FRAME)
     if not attempted:
         result.flagged = []
+        return result.flagged
+    if not any(np.isfinite(result.scores[t]) for t in attempted):
+        click.echo(f"flag: no finite scores; all {len(attempted)} timepoint(s) flagged")
+        result.flagged = attempted
         return result.flagged
     flagged_positions, stats = select_flagged(
         np.array([result.scores[t] for t in attempted]),
@@ -427,6 +436,7 @@ def repair_timepoint(
     """
     mov_t = np.asarray(mov[t])
     ref_t = np.asarray(reference_policy.reference_for(mov, t))
+    estimator = with_gap_rule(estimator, reference_policy, mov, t)
     current = result.transforms.get(t)
     outcome = repair(
         t=t,
@@ -504,7 +514,10 @@ def sweep_timepoint(
     outcome = sweep(
         mov=mov_t,
         ref=ref_t,
-        trials=trials,
+        trials={
+            name: with_gap_rule(trial, reference_policy, mov, t)
+            for name, trial in trials.items()
+        },
         initial_transform=initial_transform,
         current_transform=current if current is not None else Transform.identity(mov_t.ndim),
         current_score=-np.inf if not np.isfinite(baseline_score) else baseline_score,

@@ -22,9 +22,7 @@ def test_fixed_initial_transform_returns_the_same_transform_for_every_t():
         assert policy.initial_for(t) is transform
 
 
-def test_a_fixed_initial_transform_is_how_optimize_registration_needs_no_command():
-    # "Refine an existing transform" is just estimate() with this as the initial
-    # transform policy.
+def test_a_fixed_initial_transform_is_the_same_transform_at_every_timepoint():
     existing_transform = Transform.from_translation([7.0, -3.0, 0.5])
     policy = FixedInitialTransform(existing_transform)
     assert policy.initial_for(0) is existing_transform
@@ -103,7 +101,7 @@ def test_repair_tries_the_initial_transform_as_the_candidate_initial():
     assert RepairSettings().candidates == ["t-1", "t+1", "consensus", "initial"]
     initial = Transform.from_translation([1.0, 0.0, 0.0])
     candidates = neighbour_consensus_initial_candidates(initial)(5, {}, {}, set())
-    assert list(candidates) == ["consensus_full", "initial"]
+    assert list(candidates) == ["consensus", "initial"]
     assert candidates["initial"].initial_for(5) is initial
 
 

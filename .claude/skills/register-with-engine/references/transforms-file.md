@@ -41,7 +41,7 @@ transforms:                                  # one list shared by every position
   missing step of a `previous` chain), or `rejected` (decided by a person). A timepoint is
   never dropped; `apply-transform` writes every one and records the non-accepted ones in
   the output metadata.
-- `repaired_from`: which repair candidate won (e.g. `consensus_full+polish1`).
+- `repaired_from`: which repair candidate won (e.g. `consensus+polish1`).
 - `initialized_from` (with `transform.initial` from a file): `file` (the file's transform,
   kept as it is: the estimate from it did not score better) or `file+refined` (the
   estimate from it, which did).

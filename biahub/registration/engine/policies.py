@@ -12,6 +12,7 @@ inputs only materialize the frame requested.
 
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -55,7 +56,7 @@ class CrossChannel:
 
 
 class FixedFrame:
-    """Stabilization `t_reference: "first"`: every t compares against one fixed frame.
+    """Stabilization `reference.frame: first`: every t compares against one fixed frame.
 
     The frame is `t_ref`, or the first frame with data after it when `t_ref` is empty (an
     empty frame cannot be a reference: every timepoint would read as empty).
@@ -106,7 +107,7 @@ def is_empty(volume: ArrayLike) -> bool:
 
 
 class PreviousFrame:
-    """Stabilization `t_reference: "previous"`: t compares against the previous frame with data.
+    """Stabilization `reference.frame: previous`: t against the previous frame with data.
 
     Usually t-1. Empty frames (no data) are skipped, so after a gap the first frame with
     data is compared against the last frame before the gap and the accumulated chain
@@ -117,19 +118,28 @@ class PreviousFrame:
 
     def __init__(self, first: int = 0):
         self.first = first
+        self._t: int | None = None  # the last timepoint resolved, its reference and frame
+        self._index: int | None = None
+        self._frame: np.ndarray | None = None
+
+    def _resolve(self, mov: ArrayLike, t: int) -> None:
+        """Find t's previous frame with data once (every call for t reuses it)."""
+        if self._t == t:
+            return
+        self._t, self._index, self._frame = t, None, None
+        for earlier in range(t - 1, self.first - 1, -1):
+            frame = np.asarray(mov[earlier])
+            if not is_empty(frame):
+                self._index, self._frame = earlier, frame
+                return
 
     def reference_index(self, mov: ArrayLike, t: int) -> int | None:
-        for earlier in range(t - 1, self.first - 1, -1):
-            if not is_empty(mov[earlier]):
-                return earlier
-        return None
+        self._resolve(mov, t)
+        return self._index
 
     def reference_for(self, mov: ArrayLike, t: int) -> ArrayLike:
-        for earlier in range(t - 1, self.first - 1, -1):
-            frame = np.asarray(mov[earlier])  # read once: checked, then returned
-            if not is_empty(frame):
-                return frame
-        return np.asarray(mov[t])
+        self._resolve(mov, t)
+        return self._frame if self._frame is not None else np.asarray(mov[t])
 
     def compares_with_itself(self, mov: ArrayLike, t: int) -> bool:
         return self.reference_index(mov, t) is None
@@ -217,12 +227,7 @@ class InitialTransformPolicy(Protocol):
 
 
 class FixedInitialTransform:
-    """A fixed initial transform for every t -- today's default.
-
-    Also what `optimize-registration`'s "refine an existing transform" case is: pass the
-    existing transform as this initial transform instead of a fresh default. No separate
-    "optimize" concept is needed once initial transform policies exist.
-    """
+    """One initial transform for every t: the run's (a matrix, or identity), or a repair's."""
 
     keep_unless_beaten = False
 
@@ -257,13 +262,13 @@ class FileInitialTransform:
 class ConsensusInitialTransform:
     """Repair initial transform from the run's own well-scoring timepoints.
 
-    Element-wise median transform over every timepoint (other than `t` itself) whose
-    score is >= `score_threshold` -- or, with no threshold (a score without an absolute
-    scale), every scored timepoint not in `excluded` (the flagged ones). Recomputed fresh on every call from a caller-owned
-    history/scores mapping rather than memoized, so a repair pass sees results it has
-    already accepted earlier in the same run. Built only from good timepoints:
+    Element-wise median transform over every scored timepoint other than `t` itself and
+    those in `excluded` (the flagged ones) -- with a `score_threshold` (a score with an
+    absolute scale), also only those scoring >= it. Built only from good timepoints:
     including the ones being repaired would contaminate the very reference used to
-    detect and fix them.
+    detect and fix them. It reads the `history` and `scores` it is given at each call;
+    a cluster repair job gives it the run's estimates, so repairs do not see each other
+    (they are folded in at finalize).
 
     Raises `CandidateUnavailableError` when fewer than `min_good` timepoints qualify, so
     a caller trying this as one of several candidates (e.g.
@@ -280,7 +285,7 @@ class ConsensusInitialTransform:
         scores: dict[int, float],
         score_threshold: float | None = 0.75,
         min_good: int = 5,
-        excluded: set[int] = frozenset(),
+        excluded: AbstractSet[int] = frozenset(),
     ):
         self.history = history
         self.scores = scores
@@ -293,18 +298,13 @@ class ConsensusInitialTransform:
             t2
             for t2 in self.history
             if t2 != t
+            and t2 not in self.excluded
             and np.isfinite(self.scores.get(t2, np.nan))
-            and (
-                t2 not in self.excluded
-                if self.score_threshold is None
-                else self.scores[t2] >= self.score_threshold
-            )
+            and (self.score_threshold is None or self.scores[t2] >= self.score_threshold)
         ]
         if len(good) < self.min_good:
-            which = (
-                "are unflagged"
-                if self.score_threshold is None
-                else f"score >= {self.score_threshold}"
+            which = "are unflagged" + (
+                "" if self.score_threshold is None else f" and score >= {self.score_threshold}"
             )
             raise CandidateUnavailableError(
                 f"Consensus initial transform: only {len(good)} timepoints {which}; "

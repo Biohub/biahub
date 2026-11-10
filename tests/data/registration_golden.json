@@ -430,7 +430,7 @@
      "2": {
       "accepted": false,
       "candidate_failures": {
-       "consensus_full": "CandidateUnavailableError: Consensus initial transform: only 2 timepoints score >= 0.75; need at least 5.",
+       "consensus": "CandidateUnavailableError: Consensus initial transform: only 2 timepoints are unflagged and score >= 0.75; need at least 5.",
        "initial": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)",
        "t-1": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
       },
@@ -524,9 +524,37 @@
      "0": "initial",
      "1": "initial"
     },
-    "flagged": [],
+    "flagged": [
+     0,
+     1
+    ],
     "repaired_from": {},
-    "repairs": {},
+    "repairs": {
+     "0": {
+      "accepted": false,
+      "candidate_failures": {
+       "consensus": "CandidateUnavailableError: Consensus initial transform: only 0 timepoints are unflagged and score >= 0.75; need at least 5.",
+       "initial": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)"
+      },
+      "candidate_scores": {},
+      "polish_rounds": 0,
+      "repair_transform_score": null,
+      "repaired_from": "unchanged",
+      "score": null
+     },
+     "1": {
+      "accepted": false,
+      "candidate_failures": {
+       "consensus": "CandidateUnavailableError: Consensus initial transform: only 0 timepoints are unflagged and score >= 0.75; need at least 5.",
+       "initial": "EstimationError: too few matches to fit a transform: 2 from 15 x 17 nodes (need >= 3)"
+      },
+      "candidate_scores": {},
+      "polish_rounds": 0,
+      "repair_transform_score": null,
+      "repaired_from": "unchanged",
+      "score": null
+     }
+    },
     "scores": {
      "0": null,
      "1": null

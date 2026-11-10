@@ -281,13 +281,13 @@ def test_neighbour_consensus_initial_candidates_skips_flagged_neighbours():
     factory = neighbour_consensus_initial_candidates(config_initial_transform)
 
     middle = factory(4, history, scores, flagged={3, 4})
-    assert list(middle) == ["t+1", "consensus_full", "initial"]
+    assert list(middle) == ["t+1", "consensus", "initial"]
     assert middle["t+1"].initial_for(4) is history[5]
-    assert isinstance(middle["consensus_full"], ConsensusInitialTransform)
+    assert isinstance(middle["consensus"], ConsensusInitialTransform)
     assert middle["initial"].initial_for(4) is config_initial_transform
 
     first = factory(0, history, scores, flagged={0})
-    assert list(first) == ["t+1", "consensus_full", "initial"]
+    assert list(first) == ["t+1", "consensus", "initial"]
 
 
 class _StepEstimator(EstimatorBase):
@@ -752,3 +752,204 @@ def test_a_frame_is_empty_when_every_voxel_is_zero_or_nan():
     assert not is_empty(frame)  # one voxel of data, in the last plane
     assert not is_empty(np.full((4, 6, 8), np.inf))  # inf is data, not padding
     assert is_empty(np.zeros((6, 8), dtype=np.uint16)) and not is_empty(np.eye(3))  # 2D
+
+
+# --- area 5 review: estimating ---------------------------------------------------------
+
+
+def test_a_failed_estimate_from_a_file_keeps_its_error_and_trace():
+    # the file's transform is kept, and the record still says the estimate raised
+    from biahub.registration.engine.policies import FileInitialTransform
+
+    class _Raises(EstimatorBase):
+        def estimate(self, mov, ref, initial_transform=None):
+            raise EstimationError("too few nodes")
+
+        def trace(self):
+            return {"best_candidate": None, "blocks": [{"method": "x", "error": "raised"}]}
+
+    mov = _frames([1, 2])
+    result = estimate_series(
+        mov,
+        CrossChannel(mov),
+        _Raises(),
+        FileInitialTransform({0: _shift_x(3), 1: _shift_x(3)}),
+        _finite_score,
+        range(2),
+    )
+    assert result.initialized_from == {0: "file", 1: "file"}
+    assert result.transforms[0].translation[2] == 3.0
+    assert "too few nodes" in result.errors[0]
+    assert result.blocks[0] == [{"method": "x", "error": "raised"}]
+
+
+@pytest.mark.parametrize("better, kept", [(0.0, "file"), (1e-9, "file+refined")])
+def test_the_files_transform_is_kept_on_a_tie_and_beaten_only_when_strictly_higher(
+    better, kept
+):
+    from biahub.registration.engine.policies import FileInitialTransform
+
+    mov = _frames([1])
+
+    def score(transform, m, r):  # the file's transform scores 0; the estimate `better`
+        return better if transform.translation[2] == 4.0 else 0.0
+
+    result = estimate_series(
+        mov,
+        CrossChannel(mov),
+        _StepX(),
+        FileInitialTransform({0: _shift_x(3)}),
+        score,
+        range(1),
+    )
+    assert result.initialized_from[0] == kept
+
+
+def test_failures_from_the_start_name_the_initial_transform_and_run_once():
+    # t=0 and t=1 fail from the run's initial transform: their stand-ins say "initial",
+    # and t=1, t=2 are not run twice from the same start
+    from biahub.registration.engine import estimate_propagated
+
+    mov = _frames([1, 2, 3])
+    estimator = _StepX(fail_on={1, 2})
+    result = estimate_propagated(
+        mov, CrossChannel(mov), estimator, _shift_x(10), _finite_score, range(3)
+    )
+    assert {t: source for t, (_, source) in result.stand_ins.items()} == {
+        0: "initial",
+        1: "initial",
+    }
+    assert [s.translation[2] for s in estimator.initial_transforms] == [10.0, 10.0, 10.0]
+    assert result.transforms[2].translation[2] == 11.0
+
+
+@pytest.mark.parametrize("fail_on", [{3, 4}, {1, 2}], ids=["after-a-success", "from-start"])
+def test_a_resumed_chain_names_its_stand_ins_as_the_fresh_run(fail_on):
+    from biahub.registration.engine import estimate_propagated
+
+    mov = _frames([1, 2, 3, 4, 5])
+
+    def run(done=None):
+        return estimate_propagated(
+            mov,
+            CrossChannel(mov),
+            _StepX(fail_on=fail_on),
+            _shift_x(10),
+            _finite_score,
+            range(5),
+            done=done,
+        )
+
+    fresh = run()
+    sources = {t: source for t, (_, source) in fresh.stand_ins.items()}
+    for upto in range(1, 5):
+        resumed = run(_records(fresh, upto))
+        assert {t: source for t, (_, source) in resumed.stand_ins.items()} == sources
+        assert {t: tr.translation[2] for t, tr in resumed.transforms.items()} == {
+            t: tr.translation[2] for t, tr in fresh.transforms.items()
+        }
+
+
+def test_a_resumed_chain_passes_an_empty_frame_as_the_fresh_run():
+    # t=3 is empty with no neighbour with data: the fresh run leaves the chain alone, and
+    # a resume must not restart it there
+    from biahub.registration.engine import estimate_propagated
+    from biahub.registration.engine.policies import NeighbourMedian
+
+    mov = _frames([1, 2, 0, 0, 0, 6, 7])
+
+    def run(done=None):
+        return estimate_propagated(
+            mov,
+            NeighbourMedian(window=1),
+            _StepX(),
+            _shift_x(10),
+            _finite_score,
+            range(7),
+            done=done,
+        )
+
+    fresh = run()
+    expected = {t: tr.translation[2] for t, tr in fresh.transforms.items()}
+    resumed = run(_records(fresh, 5))
+    assert {t: tr.translation[2] for t, tr in resumed.transforms.items()} == expected
+
+
+def test_repair_and_sweep_hold_yx_across_a_gap_as_the_estimate_does():
+    mov = np.stack([np.full((2, 2, 2), v) for v in (1.0, 2.0, 0.0, 0.0, 5.0)])
+    result = estimate_series(
+        mov,
+        PreviousFrame(),
+        _FocusLike(),
+        FixedInitialTransform(IDENTITY),
+        _finite_score,
+        range(5),
+    )
+    assert list(result.transforms[4].translation) == [-3.0, 0.0, 0.0]
+    result.flagged = [4]
+
+    def score(transform, m, r):  # a yx brought back across the gap would win
+        return float(transform.translation[1])
+
+    repair_timepoint(
+        4,
+        mov,
+        PreviousFrame(),
+        _FocusLike(),
+        score,
+        result,
+        neighbour_consensus_initial_candidates(IDENTITY, order=("initial",)),
+        polish_rounds=2,
+    )
+    sweep_timepoint(4, mov, PreviousFrame(), {"other": _FocusLike()}, IDENTITY, score, result)
+    assert list(result.transforms[4].translation) == [-3.0, 0.0, 0.0]
+
+
+def test_empty_frames_are_not_flagged_and_an_all_failed_run_flags_every_attempt():
+    from biahub.registration.engine.series import EMPTY_FRAME, SeriesResult
+
+    result = SeriesResult(
+        scores={0: 0.9, 1: float("nan"), 2: 0.91, 3: 0.89},
+        errors={1: EMPTY_FRAME},
+    )
+    assert flag_series(result, floor=None, hard_fail=None) == []
+    failed = SeriesResult(
+        scores={0: float("nan"), 1: float("nan"), 2: float("nan")},
+        errors={0: "EstimationError: x", 1: EMPTY_FRAME, 2: "EstimationError: y"},
+    )
+    assert flag_series(failed, floor=None, hard_fail=None) == [0, 2]
+
+
+def test_the_consensus_leaves_out_flagged_timepoints_with_a_threshold_too():
+    history = {t: _shift_x(1) for t in range(5)} | {5: _shift_x(100)}
+    scores = dict.fromkeys(range(6), 0.9)
+    consensus = ConsensusInitialTransform(
+        history, scores, score_threshold=0.5, min_good=5, excluded={5}
+    )
+    # without the flagged t=5, the median of five x=1 shifts (t=0 excluded as itself:
+    # min_good counts the rest)
+    with pytest.raises(Exception, match="only 4"):
+        consensus.initial_for(0)
+    assert consensus.initial_for(6).translation[2] == 1.0
+
+
+def test_the_consensus_repair_candidate_keeps_its_config_name():
+    candidates = neighbour_consensus_initial_candidates(IDENTITY, order=("consensus",))
+    assert list(candidates(0, {}, {}, set())) == ["consensus"]
+
+
+def test_the_previous_frame_reads_each_earlier_frame_once_per_timepoint():
+    class _Counted:
+        def __init__(self, frames):
+            self.frames, self.reads = frames, []
+
+        def __getitem__(self, t):
+            self.reads.append(t)
+            return self.frames[t]
+
+    mov = _Counted(_frames([1, 0, 3]))
+    policy = PreviousFrame()
+    policy.reference_for(mov, 2)
+    policy.compares_with_itself(mov, 2)
+    policy.spans_gap(mov, 2)
+    assert sorted(mov.reads) == [0, 1]

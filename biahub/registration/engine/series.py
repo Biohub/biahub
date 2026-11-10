@@ -22,6 +22,7 @@ from biahub.registration.engine.policies import (
 )
 from biahub.registration.estimators import (
     EstimationError,
+    EstimatorBase,
     ScoreFn,
     TransformEstimator,
     is_higher,
@@ -30,6 +31,9 @@ from biahub.registration.estimators import (
 
 if TYPE_CHECKING:  # an annotation only
     from biahub.registration.engine.fallback import PassResult
+
+# the error an empty frame (all zeros or all NaN) is recorded with: nothing was estimated
+EMPTY_FRAME = "empty frame (no data)"
 
 
 @dataclass
@@ -46,10 +50,10 @@ class SeriesResult:
     flag_line: float | None = None
     repairs: dict[int, PassResult] = field(default_factory=dict)
     sweeps: dict[int, PassResult] = field(default_factory=dict)
-    # How an accepted fallback transform was reached, e.g. "consensus_full+polish1".
+    # How an accepted fallback transform was reached, e.g. "consensus+polish1".
     repaired_from: dict[int, str] = field(default_factory=dict)
     # Timepoints with no transform of their own, and where the stand-in written for them
-    # came from ("t=81", "initial", "identity"); set by `transforms_for_file`.
+    # came from ("t=81", "initial", "identity", "file"); set by `transforms_for_file`.
     filled_from: dict[int, str] = field(default_factory=dict)
     # A stand-in decided while estimating (propagation: a failed timepoint returns the
     # initial transform it started from), with its source; used instead of the run's
@@ -152,7 +156,8 @@ def estimate_series(
 
     An `EstimationError` records nan plus the message for that timepoint and moves on.
     An initial transform the policy keeps unless beaten (from a file, an earlier result)
-    competes as it is (`_keep_initial`).
+    competes as it is (`_keep_initial`); when it is kept, its score stands, and an
+    estimate that raised still records its message and trace.
     """
     result = SeriesResult()
     for t in time_indices:
@@ -161,7 +166,7 @@ def estimate_series(
         if is_empty(mov_t) or is_empty(ref_t):
             # Nothing to estimate from; reported like propagation does, not as a failed fit.
             result.scores[t] = float("nan")
-            result.errors[t] = "empty frame (no data)"
+            result.errors[t] = EMPTY_FRAME
             if on_timepoint is not None:
                 on_timepoint(t, result)
             continue
@@ -184,16 +189,18 @@ def estimate_series(
             transform = _gap_rule(estimator, reference_policy, mov, t, transform)
             estimate = (transform, float(score_fn(transform, mov_t, ref_t)))
         trace = estimator.trace()
+        if error is not None:
+            result.errors[t] = error
         if initial_policy.keep_unless_beaten:
+            lost = estimate is not None
             estimate, result.initialized_from[t] = _keep_initial(
                 estimate, initial_transform, score_fn, mov_t, ref_t
             )
-            if result.initialized_from[t] == "file":
+            if result.initialized_from[t] == "file" and lost:
                 trace = None  # the kept initial transform is not the estimator's
         _keep_trace(result, t, trace)
         if estimate is None:
             result.scores[t] = float("nan")
-            result.errors[t] = error
         else:
             result.transforms[t], result.scores[t] = estimate
         if on_timepoint is not None:
@@ -245,24 +252,45 @@ def _gap_rule(estimator, reference_policy, mov, t: int, transform: Transform) ->
     return transform
 
 
-def _estimate_competing(
-    estimator, mov, ref, initial_transform, competitor, score_fn
-) -> tuple[Transform, dict]:
-    """Estimate from `initial_transform`, with `competitor` competing (ties keep the first).
+class _HoldsXy(EstimatorBase):
+    """An estimator whose every estimate has its yx held (`_hold_xy`)."""
 
-    An estimator that takes a competitor refines both on its first pass (the legacy
-    rule); any other estimator is run from both initial transforms and the better score
-    is kept. Returns the transform, the estimator's trace and the start that produced it
-    (an estimator refining both at once: `initial_transform`).
+    def __init__(self, estimator: TransformEstimator):
+        self.estimator = estimator
+
+    def estimate(self, mov, ref, initial_transform=None) -> Transform:
+        return _hold_xy(self.estimator.estimate(mov, ref, initial_transform=initial_transform))
+
+    def trace(self) -> dict:
+        return self.estimator.trace()
+
+
+def with_gap_rule(estimator, reference_policy, mov, t: int) -> TransformEstimator:
+    """Return `estimator` as the gap rule has it estimate t (fallback passes re-estimate)."""
+    if estimator.holds_xy_across_gaps and reference_policy.spans_gap(mov, t):
+        return _HoldsXy(estimator)
+    return estimator
+
+
+def _estimate_competing(
+    estimator, mov, ref, start, competitor, score_fn
+) -> tuple[Transform, dict, Transform]:
+    """Estimate from `start`, with `competitor` competing (ties keep `start`).
+
+    Under propagation `start` is the previous result and `competitor` the run's initial
+    transform. An estimator that takes a competitor refines both on its first pass (the
+    legacy rule); any other estimator is run from both and the better score is kept.
+    Returns the transform, the estimator's trace and the start that produced it (an
+    estimator refining both at once: `start`).
     """
     if competitor is None:
-        transform = estimator.estimate(mov, ref, initial_transform=initial_transform)
-        return transform, estimator.trace(), initial_transform
+        transform = estimator.estimate(mov, ref, initial_transform=start)
+        return transform, estimator.trace(), start
     if estimator.accepts_competitor:
         transform = estimator.estimate(
-            mov, ref, initial_transform=initial_transform, competitor=competitor
+            mov, ref, initial_transform=start, competitor=competitor
         )
-        return transform, estimator.trace(), initial_transform
+        return transform, estimator.trace(), start
     traces: dict[str, dict] = {}
 
     def from_start(name: str, start: Transform):
@@ -275,7 +303,7 @@ def _estimate_competing(
 
     chosen = select_best(
         {
-            "previous": from_start("previous", initial_transform),
+            "previous": from_start("previous", start),
             "initial": from_start("initial", competitor),
         }
     )
@@ -284,7 +312,7 @@ def _estimate_competing(
             "failed from both the previous result and the run's initial transform: "
             + "; ".join(chosen.failures.values())
         )
-    starts = {"previous": initial_transform, "initial": competitor}
+    starts = {"previous": start, "initial": competitor}
     return chosen.transform, traces[chosen.name], starts[chosen.name]
 
 
@@ -303,8 +331,8 @@ def estimate_propagated(
 
     The legacy `use_prev_t_transform` rules: timepoint t starts from what t-1 returned,
     with `initial_transform` competing on the first pass; a timepoint that fails returns
-    the initial transform it started from (recorded as a stand-in, the error kept) and
-    that initial transform is passed on; an empty frame (no data) is skipped and the
+    the initial transform it started from (recorded as a stand-in named after where that
+    came from, the error kept) and the next timepoint starts where it did; an empty frame (no data) is skipped and the
     chain carries on from the last result before it; the stabilization reference frame
     is not estimated against itself -- it is identity, and the chain starts after it
     from `initial_transform`. `done` holds records of timepoints already estimated
@@ -312,24 +340,30 @@ def estimate_propagated(
     """
     done = done or {}
     result = SeriesResult()
-    previous: Transform | None = None  # what the next timepoint starts from
-    previous_t: int | None = None  # the timepoint it came from (a stand-in's source)
+    # what the next timepoint starts from (None: the run's initial transform), and where
+    # it came from ("t=k"), the name of a stand-in for a timepoint that fails from it
+    previous: Transform | None = None
+    previous_source = "initial"
     for t in time_indices:
         if t in done:
-            # Carry the chain on as the fresh run did: the reference frame restarts it, an
-            # empty frame (no transform, no stand-in) leaves it alone.
-            carried = TimepointRecord.from_dict(done[t]).fold_into(result, transform_type)
-            if reference_policy.compares_with_itself(mov, t):
+            # Carry the chain on as the fresh run did: an empty frame (no transform, no
+            # stand-in) leaves it alone, the reference frame restarts it, a stand-in
+            # passes on where it came from.
+            record = TimepointRecord.from_dict(done[t])
+            carried = record.fold_into(result, transform_type)
+            if carried is not None and reference_policy.compares_with_itself(mov, t):
                 previous = None
-            elif carried is not None:
-                previous, previous_t = carried, t
+            elif record.matrix is not None:
+                previous, previous_source = carried, f"t={t}"
+            elif record.filled_from not in (None, "initial"):
+                previous, previous_source = carried, record.filled_from
         else:
             mov_t = np.asarray(mov[t])
             ref_t = np.asarray(reference_policy.reference_for(mov, t))
             if is_empty(mov_t) or is_empty(ref_t):
                 # Legacy skipped empty frames without touching the propagated transform.
                 result.scores[t] = float("nan")
-                result.errors[t] = "empty frame (no data)"
+                result.errors[t] = EMPTY_FRAME
             elif reference_policy.compares_with_itself(mov, t):
                 identity = Transform.identity(mov_t.ndim)
                 result.transforms[t] = identity
@@ -346,15 +380,14 @@ def estimate_propagated(
                     _keep_trace(result, t, estimator.trace())
                     result.scores[t] = float("nan")
                     result.errors[t] = f"{type(e).__name__}: {e}"
-                    source = f"t={previous_t}" if previous is not None else "initial"
+                    source = previous_source if previous is not None else "initial"
                     result.stand_ins[t] = (start, source)
-                    previous = start
                 else:
                     _keep_trace(result, t, trace)
                     transform = _gap_rule(estimator, reference_policy, mov, t, transform)
                     result.transforms[t] = transform
                     result.scores[t] = float(score_fn(transform, mov_t, ref_t))
-                    previous, previous_t = transform, t
+                    previous, previous_source = transform, f"t={t}"
         if on_timepoint is not None:
             on_timepoint(t, result)
     return result

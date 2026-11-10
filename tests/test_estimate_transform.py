@@ -342,10 +342,10 @@ def test_estimate_transform_flags_and_tries_to_repair_a_failed_timepoint(
     assert repair["accepted"] is False
     # No beads in the frame: every candidate fails the same way, and each failure is named
     # (re-estimated only: a failed estimate takes no candidate as it is).
-    assert set(repair["candidate_failures"]) == {"t-1", "consensus_full", "initial"}
+    assert set(repair["candidate_failures"]) == {"t-1", "consensus", "initial"}
     failures = repair["candidate_failures"]
     assert "EstimationError" in failures["t-1"] and "EstimationError" in failures["initial"]
-    assert failures["consensus_full"].startswith(
+    assert failures["consensus"].startswith(
         "CandidateUnavailableError: Consensus initial transform: only 2 timepoints"
     )
     assert report["filled_from"] == {"2": "initial"}

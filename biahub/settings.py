@@ -2423,7 +2423,7 @@ class TransformEntry(MyBaseModel):
     # A metric with no value (nan: no overlap, a flat pair, no beads) is None.
     report: dict[str, float | None] | None = None
     # How a fallback pass reached this matrix: the winning repair candidate (plus any
-    # polish rounds, "consensus_full+polish1") or "sweep:<trial>".
+    # polish rounds, "consensus+polish1") or "sweep:<trial>".
     repaired_from: str | None = None
     # For an entry without `t`: the timepoint it was estimated on (provenance only).
     estimated_at: NonNegativeInt | None = None
