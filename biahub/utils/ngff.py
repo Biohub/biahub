@@ -1,5 +1,8 @@
 """OME-Zarr store helpers: output paths, version, provenance, channels, label images."""
 
+import warnings
+
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -44,6 +47,43 @@ def resolve_ome_zarr_version(
         return override
     with open_ome_zarr(str(reference_store_path), mode="r") as dataset:
         return dataset.version
+
+
+def output_time_scale(
+    input_time_scale: float, time_indices: Sequence[int] | None = None
+) -> float:
+    """Return the T scale of a store written from ``time_indices`` of an input.
+
+    A step that creates its output plate must carry the input's T scale (the
+    time between time points) rather than a placeholder 1: every later step
+    copies it, and it ends up as the store's time increment.
+
+    Parameters
+    ----------
+    input_time_scale
+        T scale of the input position, ``position.scale[0]``.
+    time_indices
+        Input time points the output holds, in order. None, a single time point
+        or consecutive time points keep ``input_time_scale``; evenly spaced ones
+        (``range(0, T, 2)``) multiply it by the spacing.
+
+    Returns
+    -------
+    float
+        The output's T scale. Unevenly spaced time points have no single scale;
+        that case warns and returns ``input_time_scale``.
+    """
+    if time_indices is None or len(time_indices) < 2:
+        return float(input_time_scale)
+    steps = set(np.diff(np.asarray(time_indices)).tolist())
+    if len(steps) == 1 and (step := steps.pop()) > 0:
+        return float(input_time_scale) * step
+    warnings.warn(
+        f"Time points {list(time_indices)} are not evenly spaced, so no single T scale "
+        f"describes them; keeping the input's T scale ({input_time_scale}).",
+        stacklevel=2,
+    )
+    return float(input_time_scale)
 
 
 def get_output_paths(
