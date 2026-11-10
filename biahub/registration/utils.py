@@ -17,6 +17,7 @@ initial transform from the two grids in the shapes method (`methods/manual/shape
 Shapes are ZYX.
 """
 
+import threading
 import weakref
 
 from collections import OrderedDict
@@ -193,35 +194,43 @@ class Remembered:
     A result is reused only while the very arrays it was computed on are alive (they are
     held by weak reference), so a new array at a freed one's address is not mistaken for
     it, and it is released when any of them is freed. Arrays changed in place are not
-    noticed: keep a result only for arrays a job reads, never writes.
+    noticed: keep a result only for arrays a job reads, never writes. One can be shared
+    between threads (positions run in threads under cluster=debug): its bookkeeping is
+    locked, the computing is not.
     """
 
     def __init__(self, kept: int):
         self.kept = kept
         self._results: OrderedDict = OrderedDict()
+        # reentrant: a freed array's callback can run inside a locked section
+        self._lock = threading.RLock()
 
     def __call__(self, arrays: tuple, extra: tuple, compute):
         """Return `compute()` for `arrays` and `extra` (hashable), computed once."""
         key = (tuple(id(a) for a in arrays), extra)
 
         def forget(ref):  # an array was freed: release its entry (not a newer one's)
-            entry = self._results.get(key)
-            if entry is not None and ref in entry[0]:
-                del self._results[key]
+            with self._lock:
+                entry = self._results.get(key)
+                if entry is not None and ref in entry[0]:
+                    del self._results[key]
 
         try:
             refs = tuple(weakref.ref(a, forget) for a in arrays)
         except TypeError:  # an array without weak references (e.g. a list): not remembered
             return compute()
-        hit = self._results.get(key)
-        if hit is not None and all(r() is a for r, a in zip(hit[0], arrays, strict=True)):
-            self._results.move_to_end(key)
-            return hit[1]
+        with self._lock:
+            hit = self._results.get(key)
+            if hit is not None and all(r() is a for r, a in zip(hit[0], arrays, strict=True)):
+                self._results.move_to_end(key)
+                return hit[1]
         result = compute()
-        self._results.pop(key, None)  # a freed array's entry: the new result is the newest
-        self._results[key] = (refs, result)
-        while len(self._results) > self.kept:
-            self._results.popitem(last=False)
+        with self._lock:
+            # a freed array's entry: the new result is the newest
+            self._results.pop(key, None)
+            self._results[key] = (refs, result)
+            while len(self._results) > self.kept:
+                self._results.popitem(last=False)
         return result
 
 

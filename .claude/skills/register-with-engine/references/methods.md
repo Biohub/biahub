@@ -184,7 +184,7 @@ good initial transform. Judge with overlays -- an XY max projection and an XZ se
 for the estimate -- and with the report metrics against the unregistered pair.
 
 **Resources.** A job is sized at ~30 volumes of memory (32 GB for a 66 x 2048 x 2048 pair;
-the measured peak there was 14.5-22.6 GB) and 2 CPUs; ~10-30 min per estimate.
+the measured peak there was 14.5-22.6 GB) and 8 CPUs (`CPUS_PER_JOB`); ~10-30 min per estimate.
 
 **Repeatability.** ANTs runs with a fixed random seed and as many ITK threads as the task
 has CPUs (`ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS` overrides). One thread repeats exactly;

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import uuid
@@ -303,13 +304,18 @@ def _flags(output_dir: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _finite_or_none(value: float | None) -> float | None:
+    """Return `value` as a float, or None for none or a non-finite one (strict JSON)."""
+    return None if value is None or not math.isfinite(value) else float(value)
+
+
 @dataclass
 class Attempt:
     run_id: str
     t: int
     pass_name: str
-    before_score: float
-    after_score: float
+    before_score: float | None  # None: no score (e.g. the estimate failed)
+    after_score: float | None
     accepted: bool
     # candidate name -> "ExceptionType: message" for candidates that raised
     failures: dict[str, str] = field(default_factory=dict)
@@ -330,8 +336,8 @@ class RunJournal:
         self,
         t: int,
         pass_name: str,
-        before_score: float,
-        after_score: float,
+        before_score: float | None,
+        after_score: float | None,
         accepted: bool,
         failures: dict[str, str] | None = None,
     ) -> None:
@@ -340,8 +346,8 @@ class RunJournal:
                 self.current_run_id,
                 t,
                 pass_name,
-                before_score,
-                after_score,
+                _finite_or_none(before_score),
+                _finite_or_none(after_score),
                 accepted,
                 failures=dict(failures or {}),
             )

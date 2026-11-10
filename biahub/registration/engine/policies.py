@@ -218,10 +218,12 @@ class InitialTransformPolicy(Protocol):
     """Returns the initial transform guess for timepoint `t`.
 
     `keep_unless_beaten`: the initial transform is an earlier result, so the engine keeps
-    it unless the estimate from it scores strictly better.
+    it unless the estimate from it scores strictly better. `source`: how a stand-in it
+    gives is named in the records (`filled_from`).
     """
 
     keep_unless_beaten: bool
+    source: str
 
     def initial_for(self, t: int) -> Transform: ...
 
@@ -230,6 +232,7 @@ class FixedInitialTransform:
     """One initial transform for every t: the run's (a matrix, or identity), or a repair's."""
 
     keep_unless_beaten = False
+    source = "initial"
 
     def __init__(self, transform: Transform):
         self.transform = transform
@@ -247,6 +250,7 @@ class FileInitialTransform:
     """
 
     keep_unless_beaten = True
+    source = "file"
 
     def __init__(self, by_t: dict[int, Transform]):
         self.by_t = by_t
@@ -278,6 +282,7 @@ class ConsensusInitialTransform:
     """
 
     keep_unless_beaten = False
+    source = "consensus"
 
     def __init__(
         self,

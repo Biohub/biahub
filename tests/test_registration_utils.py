@@ -93,3 +93,30 @@ def test_transform_key_names_a_transform_by_its_matrix():
         Transform.from_translation([0.0, 0.0, 1.0])
     )
     assert transform_key(PREWARPED) == "as is"
+
+
+def test_remembered_is_safe_to_share_between_threads():
+    # positions run in threads under cluster=debug and share the run's score cache: an
+    # eviction between a lookup and its move_to_end raised KeyError (~10 in 160k calls)
+    import threading
+
+    import numpy as np
+
+    from biahub.registration.utils import Remembered
+
+    cache, errors = Remembered(16), []
+
+    def hammer(seed):
+        arrays = [np.zeros(1) for _ in range(8)]
+        for k in range(20000):
+            try:
+                cache((arrays[k % 8],), (seed, k % 8), lambda: 1)
+            except KeyError as e:
+                errors.append(e)
+
+    threads = [threading.Thread(target=hammer, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors

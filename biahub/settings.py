@@ -1925,7 +1925,10 @@ class ReferenceSettings(MyBaseModel):
 
     `frame: cross` -- `channel` of the reference store at the same timepoint
     (registration). `frame: first` / `previous` -- the moving channel's own first /
-    previous timepoint (stabilization); `channel` is then omitted. `frame: neighbours` --
+    previous timepoint (stabilization); `channel` is then omitted. `first` is the store's
+    frame 0 (the first with data after it), whatever `time_indices` selects, so runs over
+    parts of a series share one reference; `previous` starts at the run's first
+    timepoint. `frame: neighbours` --
     the median of the moving channel's frames within t +- `window` (t excluded): absolute
     transforms that measure single-frame jumps without a chain, while slow drift moves
     the median with it.

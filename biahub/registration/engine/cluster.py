@@ -119,22 +119,19 @@ def _report_metrics(
     click.echo(f"t={t}: report metrics {settings.score.report}, and the unregistered pair's")
     report = {}
     # one warp for every metric, for the result and for the unregistered pair
-    for prefix, candidate in (("", transform), ("unregistered_", Transform.identity(3))):
+    metrics = {metric: _metric_fn(settings, metric) for metric in settings.score.report}
+    for prefix, candidate in (("", transform), ("unregistered_", Transform.identity())):
         warped = candidate.apply(mov_t, reference=ref_t)
-        for metric in settings.score.report:
-            fn = _metric_fn(settings, metric)
+        for metric, fn in metrics.items():
             report[prefix + metric] = _finite_or_none(fn(PREWARPED, warped, ref_t))
-        if prefix:
-            report["unregistered_score"] = _finite_or_none(
-                _score_fn(settings)(PREWARPED, warped, ref_t)
-            )
-    unregistered = report["unregistered_score"]
+    # `warped` is the unregistered pair's now
+    unregistered = _finite_or_none(_score_fn(settings)(PREWARPED, warped, ref_t))
+    report["unregistered_score"] = unregistered
     if score is not None and unregistered is not None and np.isfinite(score):
         if unregistered >= score and not transform.is_identity:
             click.echo(
                 f"t={t}: the unregistered pair scores {unregistered:.4g}, at least the "
-                f"result's {score:.4g}: check that the score metric suits this pair",
-                err=False,
+                f"result's {score:.4g}: check that the score metric suits this pair"
             )
     return report
 
@@ -424,7 +421,7 @@ def _repair_timepoint_job(
     )
     repair_settings = settings.fallback.repair
 
-    # This run's estimate records (the driver cleared any earlier run's).
+    # This run's estimate records (or ones --resume checked against the manifest).
     series = _load_series(
         records_dir, time_indices, settings.transform.type, resumed=time_indices
     )
@@ -805,7 +802,7 @@ def estimate_transform_series(
     )
 
     to_repair = [
-        t for t in flags["repair"] if not (resume and (repairs_dir / f"{t}.json").exists())
+        t for t in flags["repair"] if not (resume and _finished(repairs_dir / f"{t}.json"))
     ]
     executor.update_parameters(slurm_job_name="estimate_transform_repair")
     if not user_set_time:
@@ -835,7 +832,7 @@ def estimate_transform_series(
     )
 
     to_sweep = [
-        t for t in flags["sweep"] if not (resume and (sweeps_dir / f"{t}.json").exists())
+        t for t in flags["sweep"] if not (resume and _finished(sweeps_dir / f"{t}.json"))
     ]
     executor.update_parameters(slurm_job_name="estimate_transform_sweep")
     if not user_set_time:

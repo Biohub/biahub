@@ -30,6 +30,7 @@ from biahub.registration.engine.disk import (
     INITIAL_FILENAME,
     RUN_PLAN_FILENAME,
     RunJournal,
+    _finite_or_none,
     _flags,
     _initial_transforms_from_file,
     _load_series,
@@ -307,10 +308,6 @@ def build_estimator(
     return estimator, score_fn
 
 
-def _finite_or_none(value: float | None) -> float | None:
-    return None if value is None or not np.isfinite(value) else float(value)
-
-
 # Default wall-clock budgets per phase, in minutes (an sbatch file's time wins).
 ESTIMATE_MINUTES = 30
 REPAIR_MINUTES = 60
@@ -358,7 +355,6 @@ def _one_transform_per_timepoint(
     """
     if isinstance(initial, Transform):
         initial = FixedInitialTransform(initial)
-    from_file = initial.keep_unless_beaten
     out = []
     for t in time_indices:
         if t in result.transforms:
@@ -368,7 +364,7 @@ def _one_transform_per_timepoint(
             result.filled_from[t] = source
             out.append(transform)
         else:
-            result.filled_from[t] = "file" if from_file else "initial"
+            result.filled_from[t] = initial.source
             out.append(initial.initial_for(t))
     return out
 
@@ -567,7 +563,8 @@ def init_run(
         click.echo(
             f"Computed the initial transform from the store shapes (forward):\n{shapes.matrix}"
         )
-    estimator, _score_fn = build_estimator(settings, (Z, Y, X), mov_voxel_size, ref_voxel_size)
+    # built once here so a config it cannot build fails at --init, not in every job
+    build_estimator(settings, (Z, Y, X), mov_voxel_size, ref_voxel_size)
     initial_transforms = (
         None
         if settings.transform.initial_file is None
@@ -581,7 +578,6 @@ def init_run(
         _write_json(output_dir / INITIAL_FILENAME, initial_transforms, indent=2)
 
     propagated = settings.transform.propagates
-    # a stack's jobs run every block: plan for the heaviest
     # a neighbour median holds 2 x window frames, the one being read and the median,
     # besides the method's volumes
     reference_volumes = (
@@ -590,6 +586,7 @@ def init_run(
     # each volume sized as the larger grid: the warped moving volume, the reference and
     # the scores' arrays live on the reference grid
     volume_zyx = max((Z, Y, X), tuple(ref_shape), key=np.prod)
+    # a stack's jobs run every block: plan for the heaviest
     num_cpus, gb_ram_per_cpu = max(
         (
             _estimate_job_resources(

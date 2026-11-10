@@ -31,3 +31,19 @@ def test_recorded_attempts_are_saved_with_the_run_id(tmp_path):
         (6, True, "run1"),
     ]
     assert attempts[1]["failures"] == {"t-1": "EstimationError: too few nodes"}
+
+
+def test_the_journal_writes_strict_json_for_a_timepoint_without_a_score(tmp_path):
+    # a repaired timepoint whose estimate failed had before_score nan: a NaN token, which
+    # strict JSON readers (jq, Groovy) reject
+    import json
+
+    journal = RunJournal()
+    journal.record(
+        t=2, pass_name="repair", before_score=float("nan"), after_score=0.9, accepted=True
+    )
+    journal.save(tmp_path / "run_journal.json")
+    (attempt,) = json.loads(
+        (tmp_path / "run_journal.json").read_text(), parse_constant=lambda c: 1 / 0
+    )["attempts"]
+    assert attempt["before_score"] is None and attempt["after_score"] == 0.9
