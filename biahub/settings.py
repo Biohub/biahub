@@ -827,7 +827,7 @@ class _Block(MyBaseModel):
 
     @field_validator("volumes")
     @classmethod
-    def _check_target(cls, v):
+    def _check_volumes(cls, v):
         if not v:
             raise ValueError("volumes needs at least one of moving, reference")
         if len(set(v)) != len(v):
@@ -904,7 +904,7 @@ class MaskBox(_Block):
 
     @field_validator("volumes")
     @classmethod
-    def _one_target(cls, v):
+    def _one_volume(cls, v):
         if len(v) != 1:
             raise ValueError(f"a box is in one volume's voxels: give one volume, not {v}")
         return v
@@ -937,6 +937,10 @@ def _named_block(item):
     if name not in _BLOCK_TYPES:
         raise ValueError(
             f"unknown preprocessing block {name!r}; known: {sorted(_BLOCK_TYPES)}"
+        )
+    if params is not None and not isinstance(params, dict):
+        raise ValueError(
+            f"{name}'s parameters are a mapping, `- {name}: {{...}}` (or empty); got {params!r}"
         )
     return {"kind": name, **(params or {})}
 
@@ -1719,6 +1723,16 @@ METHOD_TRANSFORM_TYPES: dict[str, tuple[str, ...]] = {
 }
 
 
+def _fitted_types(method: str, local: bool = False) -> tuple[str, ...] | None:
+    """Return the transform types `method` fits, or None for every type.
+
+    `local`: phase correlation with `local` set, which fits the type in yx.
+    """
+    if method == "phase_cross_corr" and local:
+        return None
+    return METHOD_TRANSFORM_TYPES.get(method)
+
+
 # The legacy pipeline's method names (estimation_method / stabilization_method).
 RENAMED_METHODS = {
     "beads": "bead_matching",
@@ -1732,6 +1746,20 @@ def _check_method_name(name):
         raise ValueError(f"method {name!r} is now {RENAMED_METHODS[name]!r}")
 
 
+def _plain_errors(error: ValidationError, blocks: bool) -> str:
+    """Return a ValidationError's messages alone; with `blocks`, each named by its block."""
+    messages = []
+    for e in error.errors():
+        msg = e["msg"].removeprefix("Value error, ")
+        where = (
+            f"block {e['loc'][0] + 1}: "
+            if blocks and e["loc"] and isinstance(e["loc"][0], int)
+            else ""
+        )
+        messages.append(where + msg)
+    return "; ".join(messages)
+
+
 def _named_method_block(item):
     """Turn `{<method>: {preprocess, transform: {type}, <settings>}}` into a block's fields."""
     if isinstance(item, MethodBlock):
@@ -1742,8 +1770,17 @@ def _named_method_block(item):
         )
     ((method, body),) = item.items()
     _check_method_name(method)
+    if body is not None and not isinstance(body, dict):
+        raise ValueError(
+            f"a block's settings are a mapping, `- {method}: {{...}}` (or empty); got {body!r}"
+        )
     body = dict(body or {})
     transform = body.pop("transform", None) or {}
+    if not isinstance(transform, dict):
+        raise ValueError(
+            f"a block's transform is a mapping, `transform: {{type: {transform}}}`; "
+            f"got {transform!r}"
+        )
     if set(transform) - {"type"}:
         raise ValueError(
             f"a block's transform sets only its type; {sorted(set(transform) - {'type'})} "
@@ -1991,7 +2028,7 @@ class EstimateTransformSettings(MyBaseModel):
         try:
             return adapter.validate_python(value)
         except ValidationError as error:
-            raise ValueError(str(error)) from None
+            raise ValueError(_plain_errors(error, blocks=isinstance(value, list))) from None
 
     @model_validator(mode="after")
     def check_only_the_methods_block_is_given(self) -> "EstimateTransformSettings":
@@ -2012,10 +2049,8 @@ class EstimateTransformSettings(MyBaseModel):
     def check_the_method_fits_the_transform_type(self) -> "EstimateTransformSettings":
         if self.is_stack:  # each block is checked as its own config (check_stack)
             return self
-        fits = METHOD_TRANSFORM_TYPES.get(self.method)
         pcc = self.phase_cross_corr
-        if self.method == "phase_cross_corr" and pcc is not None and pcc.local is not None:
-            fits = None  # local phase correlation fits the type in yx
+        fits = _fitted_types(self.method, pcc is not None and pcc.local is not None)
         if fits is not None and self.transform.type not in fits:
             raise ValueError(
                 f"method {self.method} fits {' or '.join(fits)} only; got transform.type "
@@ -2290,10 +2325,19 @@ class EstimateTransformSettings(MyBaseModel):
             data[METHOD_BLOCKS[block.method]] = block.settings
             if block.type is not None:
                 data["transform"]["type"] = block.type
+            fits = _fitted_types(block.method, (block.settings or {}).get("local") is not None)
+            if block.type is None and fits and data["transform"]["type"] not in fits:
+                raise ValueError(
+                    f"block {k} ({block.method}) fits {' or '.join(fits)} only and takes the "
+                    f"run's transform.type {data['transform']['type']}: set "
+                    f"`transform: {{type: {fits[0]}}}` in this block"
+                )
             try:
                 configs.append(EstimateTransformSettings.model_validate(data))
             except ValidationError as error:
-                raise ValueError(f"block {k} ({block.method}): {error}") from None
+                raise ValueError(
+                    f"block {k} ({block.method}): {_plain_errors(error, blocks=False)}"
+                ) from None
         return configs
 
     def sweep_trials(self) -> dict[str, "EstimateTransformSettings"]:

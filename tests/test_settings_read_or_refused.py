@@ -159,3 +159,37 @@ def test_an_old_ants_sobel_filter_names_both_blocks_and_the_converter():
     message = str(error.value)
     assert "- sobel: {}" in message and "score:, preprocess: [{sobel: {}}]" in message
     assert "biahub convert-settings" in message
+
+
+@pytest.mark.parametrize(
+    "method, preprocess, message",
+    [
+        ("ants", [{"sobel": True}], "sobel's parameters are a mapping"),
+        ([{"ants": True}], [], "block's settings are a mapping"),
+        ([{"ants": {"transform": "affine"}}], [], "block's transform is a mapping"),
+    ],
+)
+def test_a_malformed_block_is_refused_saying_how_to_write_it(method, preprocess, message):
+    # these raised TypeError tracebacks, or listed the characters of 'affine'
+    with pytest.raises(ValidationError, match=message):
+        _settings(method=method, preprocess=preprocess)
+
+
+def test_a_stacks_refusal_names_the_block_and_nothing_else():
+    # pydantic's nested type names, an index and two links buried the one useful line
+    with pytest.raises(ValidationError) as error:
+        _settings(method=[{"beads": {}}])
+    message = str(error.value)
+    assert "block 1: method 'beads' is now 'bead_matching'" in message
+    # pydantic's one wrapper line and link, nothing nested inside it
+    assert "function-before" not in message and message.count("errors.pydantic.dev") == 1
+
+
+def test_a_stack_block_that_cannot_fit_the_runs_type_is_told_to_set_its_own():
+    # it was refused naming transform.type, which the block never wrote
+    with pytest.raises(
+        ValidationError, match=r"set `transform: \{type: euclidean\}` in this block"
+    ):
+        _settings(
+            method=[{"phase_cross_corr": {}}, {"ants": {}}], transform={"type": "affine"}
+        )

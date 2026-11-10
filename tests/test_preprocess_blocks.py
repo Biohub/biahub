@@ -67,7 +67,7 @@ def test_blocks_refuse_what_cannot_work(text, message):
 # --- what the blocks do -------------------------------------------------------------------
 
 
-def test_image_blocks_apply_in_order_to_their_targets_only():
+def test_image_blocks_apply_in_order_to_their_volumes_only():
     rng = np.random.default_rng(0)
     volume = rng.normal(100, 10, size=(4, 16, 16)).astype(np.float32)
     volume[0, 0, 0] = 1e6  # a hot pixel
