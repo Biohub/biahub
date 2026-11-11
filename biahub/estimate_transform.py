@@ -161,10 +161,10 @@ def transform_spread(
         (p, {(p, t): estimates[p, t] for t in times if (p, t) in estimates}) for p in positions
     ]
     # each group with every pair's gap, computed once (every gap key reads the same table)
-    by_t = [
+    gaps_by_t = [
         (t, _pair_gaps(group, shape_zyx, voxel_um)) for t, group in by_t if len(group) >= 2
     ]
-    by_p = [
+    gaps_by_p = [
         (p, _pair_gaps(group, shape_zyx, voxel_um)) for p, group in by_p if len(group) >= 2
     ]
 
@@ -187,10 +187,10 @@ def transform_spread(
             (True, True): "per position and timepoint",
         }[by_position, by_time]
 
-    across_p, worst_p, worst_p_t = widest(by_t)
-    across_t, worst_t, _ = widest(by_p)
+    across_p, worst_p, worst_p_t = widest(gaps_by_t)
+    across_t, worst_t, _ = widest(gaps_by_p)
     axes = {
-        axis: (widest(by_t, f"max_{axis}_um")[0], widest(by_p, f"max_{axis}_um")[0])
+        axis: (widest(gaps_by_t, f"max_{axis}_um")[0], widest(gaps_by_p, f"max_{axis}_um")[0])
         for axis in ("yx", "z")
     }
     choices = {axis: choice(over(p), over(t)) for axis, (p, t) in axes.items()}
@@ -379,6 +379,8 @@ class _Run:
         self.folder = RunFolder(self.output_dir)
         self.movings = [Path(p) for p in moving_position_dirpaths]
         self.keys = [position_key(p) for p in self.movings]
+        # -r given to a stabilization: said once, by `start`, not by every step
+        self.unread_references = False
         if self.settings.reference.frame == "cross":
             if not reference_position_dirpaths:
                 raise click.UsageError(
@@ -388,12 +390,7 @@ class _Run:
                 self.keys, reference_position_dirpaths
             )
         else:
-            frame = self.settings.reference.frame
-            if reference_position_dirpaths:
-                click.echo(
-                    f"reference frame '{frame}' aligns the moving channel onto itself: the "
-                    "reference positions (-r) are not read"
-                )
+            self.unread_references = bool(reference_position_dirpaths)
             self.reference_for = dict(zip(self.keys, self.movings, strict=True))
 
     def start(self) -> None:
@@ -405,6 +402,11 @@ class _Run:
         if self.settings.pool is not None and len(self.keys) < 2:
             raise click.UsageError(
                 f"pool needs estimates on two or more positions; got {len(self.keys)}"
+            )
+        if self.unread_references:
+            click.echo(
+                f"reference frame '{self.settings.reference.frame}' aligns the moving "
+                "channel onto itself: the reference positions (-r) are not read"
             )
         self.folder.forget()
         self.run_positions = list(self.keys)
@@ -611,6 +613,19 @@ def estimate_transform_init(
     return plan
 
 
+def _timepoint_list(value: str | None) -> list[int] | None:
+    """Parse --timepoints: comma-separated whole numbers."""
+    if value is None:
+        return None
+    try:
+        return [int(t) for t in value.split(",") if t.strip()]
+    except ValueError:
+        raise click.BadParameter(
+            f"comma-separated timepoints (e.g. 5 or 5,6), got {value!r}",
+            param_hint="--timepoints",
+        ) from None
+
+
 def estimate_transform_step(
     step: str,
     moving_position_dirpaths: list[Path],
@@ -686,6 +701,7 @@ def estimate_transform_step(
 @click.option(
     "--timepoints",
     default=None,
+    callback=lambda ctx, param, value: _timepoint_list(value),
     help="Timepoints for --step estimate / repair / sweep, comma-separated (e.g. 5 or "
     "5,6); default: every timepoint the step has.",
 )
@@ -752,9 +768,7 @@ def estimate_transform_cli(
         result = estimate_transform_step(
             step,
             **common,
-            timepoints=None
-            if timepoints is None
-            else [int(t) for t in timepoints.split(",") if t.strip()],
+            timepoints=timepoints,
             resume=resume,
         )
         if result and result.get("failed"):

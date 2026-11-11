@@ -367,11 +367,15 @@ def num_processes() -> Callable:
 
 
 def refusals_as_usage_errors(command: Callable) -> Callable:
-    """Show the library's refusals (`RunError`) as usage errors: message, exit code 2.
+    """Show the library's refusals and a config that does not load as usage errors.
+
+    A `RunError` or a settings `ValidationError`: its message, exit code 2.
 
     Goes directly above the command's `def`, under its click decorators.
     """
     import functools
+
+    from pydantic import ValidationError
 
     from biahub.registration.utils import RunError
 
@@ -381,5 +385,7 @@ def refusals_as_usage_errors(command: Callable) -> Callable:
             return command(*args, **kwargs)
         except RunError as error:
             raise click.UsageError(str(error)) from error
+        except ValidationError as error:
+            raise click.UsageError(f"the settings do not load:\n{error}") from error
 
     return run

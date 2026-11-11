@@ -421,3 +421,34 @@ def test_a_refusal_on_several_positions_is_a_usage_error(three_positions, tmp_pa
         "-o", tmp_path / "t.yml", "--cluster", "debug",
     )  # fmt: skip
     assert result.exit_code == 2 and "3 of 3 positions refused" in result.output
+
+
+def test_a_config_that_does_not_load_and_bad_timepoints_are_usage_errors(
+    beads_plate_with_a_blank_timepoint, tmp_path
+):
+    # both ended in a traceback with exit 1
+    config = tmp_path / "bad.yml"
+    config.write_text("moving: {channel: GFP}\nmethod: no-such-method\n")
+    plate = beads_plate_with_a_blank_timepoint
+    common = ["-m", plate, "-o", tmp_path / "t.yml"]
+    result = _cli("-c", config, *common)
+    assert result.exit_code == 2 and "the settings do not load" in result.output
+    result = _cli("--step", "estimate", "--timepoints", "five", "-c", config, *common)
+    assert result.exit_code == 2 and "comma-separated timepoints" in result.output
+
+
+def test_a_pooled_run_by_steps_writes_what_one_call_writes(three_positions, tmp_path):  # noqa: F811
+    # Nextflow pools through --init and --step finalize, which no test ran
+    from tests.test_initial_transform_file_and_pool import _config
+
+    config = _config(tmp_path, pool={"z": "median"})
+    one_call = tmp_path / "one" / "transforms.yml"
+    estimate_transform(
+        three_positions, config, one_call, reference_position_dirpaths=three_positions,
+        cluster="debug",
+    )  # fmt: skip
+    by_steps = tmp_path / "steps" / "transforms.yml"
+    _by_steps(three_positions, config, by_steps, references=three_positions)
+    assert load_transform_settings(by_steps) == load_transform_settings(one_call)
+    assert not load_transform_settings(by_steps).per_position
+    assert (by_steps.with_suffix("") / "per_position.yml").exists()
