@@ -128,8 +128,9 @@ def overlap_mask(
     `downsample` in yx, one plane in z). The covered region is convex (the preimage of
     the moving volume's box), so a block is covered whole when its corner voxels are: each corner
     is tested with `Transform.coverage` (the warp's own edge, without warping) against
-    the moving volume's full-resolution bounds. Cheap for a 240-timepoint series; a crop from it
-    holds only covered voxels (a partial last block counts as uncovered).
+    the moving volume's full-resolution bounds. Cheap for a 240-timepoint series. A partial
+    block at the grid's far edge can count as covered (its corners past the edge are
+    tested too); `_mask_box` clamps the box to the grid, so a crop holds covered voxels.
     """
     factors = _factors(downsample)
     coarse_shape = _coarse(reference_shape_zyx, factors)
@@ -281,8 +282,9 @@ def estimate_crop_one_position(
         Path to the phase channel.
     ls_dir : Path
         Path to the fluorescence channel.
-    lf_mask_radius : float
-        Radius of the circular mask which will be applied to the phase channel. If None, no masking will be applied
+    lf_mask_radius : float | None
+        The circle on the phase channel, as a fraction of the half-width of the shorter yx
+        axis (see `estimate_crop`). None: no circle.
     output_dir : Path
         Path to save the output CSV file.
 
@@ -398,15 +400,21 @@ def estimate_crop(
         This file will be replicated in the output with modified XYZ slicing parametrs.
     output_filepath : str
         Path to save the output config file.
-    lf_mask_radius : float
-        Radius of the circular mask given as fraction of image width to apply to the phase channel.
-        A good value if 0.95.
+    lf_mask_radius : float | None
+        Also crop to a circle on the phase channel, of this radius as a fraction of the
+        half-width of the shorter yx axis (0 < radius <= 1; e.g. 0.95 leaves out a bright
+        well edge). None (the default): no circle.
     sbatch_filepath : str
         Path to a SLURM submission script.
     local : bool
         If True, run the jobs locally.
 
     """
+    if lf_mask_radius is not None and not 0 < lf_mask_radius <= 1:  # before any job
+        raise RunError(
+            "lf_mask_radius is a fraction of the half-width of the shorter yx axis "
+            f"(0 < lf_mask_radius <= 1), got {lf_mask_radius}"
+        )
     if config_filepath.suffix not in [".yml", ".yaml"]:
         raise ValueError("Config file must be a yaml file")
 

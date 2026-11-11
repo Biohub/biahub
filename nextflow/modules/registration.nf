@@ -3,16 +3,16 @@
 //
 // This module is PATH-AGNOSTIC, like every other step module: callers pass the
 // stores, the position glob, the config and the output paths explicitly. The
-// standalone entry point (registration.nf) owns the layout.
+// entry points (registration_wf.nf, registration_benchmark_wf.nf) own the layout.
 //
 // THE CLI OWNS THE LOGIC, NEXTFLOW OWNS THE FAN-OUT. `biahub estimate-transform
 // --init` checks the config, plans every position and prints a PLAN line: the
 // positions, the timepoints, whether they are estimated in one sequential task
 // (`transform.initial.propagate`), and each phase's resources. Each task then
-// runs one `--step` in-process (`--cluster debug`): estimate one timepoint (or one
-// position's whole series), flag one position (its PLAN line names the timepoints
-// to repair and sweep), repair / sweep one timepoint, and finalize, which writes
-// the transforms file. Every step writes a small record in the run folder (next to
+// runs one `--step` in its own process (a step submits no jobs): estimate one
+// timepoint (or one position's whole series), flag one position (its PLAN line names
+// the timepoints to repair and sweep), repair / sweep one timepoint, and finalize,
+// which writes the transforms file. Every step writes a small record in the run folder (next to
 // the transforms file, named after it), and `--resume` makes a retried task skip
 // the timepoints it already finished -- what matters for the sequential task on the
 // preemptible partition.
@@ -97,7 +97,7 @@ def reference_arg(reference_zarr, positions) {
 def step_command(step, position, t, moving_zarr, reference_zarr, positions, config, transforms) {
     def timepoints = t >= 0 ? "--timepoints ${t}" : ''
     return """
-    biahub estimate-transform --step ${step} ${timepoints} --cluster debug --resume \\
+    biahub estimate-transform --step ${step} ${timepoints} --resume \\
         -m "${moving_zarr}/${position}" ${reference_arg(reference_zarr, positions)} \\
         -c "${config}" \\
         -o "${transforms}"

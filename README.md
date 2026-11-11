@@ -117,6 +117,7 @@ Some steps include an `estimate-*` command that writes a YAML of parameters you 
 | | |
 | `estimate-transform` | Estimate a transform series: registration between arms or stabilization over time |
 | `apply-transform` | Apply a transform series to positions |
+| `evaluate-transform` | Evaluate a transforms file in µm on held-out positions, against the unregistered pair |
 | `estimate-crop` | Estimate the crop region for dual-channel alignment |
 | | |
 | `estimate-stitch` | Estimate stitching parameters for positions |

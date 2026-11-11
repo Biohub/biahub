@@ -27,3 +27,21 @@ def test_no_valid_data_keeps_the_whole_common_volume(tmp_path):
     phase = _position(tmp_path / "lf.zarr", np.zeros((2, 1, 4, 30, 30), np.float32))
     fluor = _position(tmp_path / "ls.zarr", np.zeros((2, 1, 4, 30, 30), np.float32))
     assert estimate_crop_one_position(phase, fluor) == ([0, 4], [0, 30], [0, 30])
+
+
+def test_without_a_radius_there_is_no_circle(tmp_path):
+    # the default was 0.95 on main; now leaving it out crops to the data only
+    shape = (2, 1, 4, 40, 80)
+    phase = _position(tmp_path / "lf.zarr", np.ones(shape, np.float32))
+    fluor = _position(tmp_path / "ls.zarr", np.ones(shape, np.float32))
+    assert estimate_crop_one_position(phase, fluor) == ([0, 4], [0, 40], [0, 80])
+
+
+def test_a_radius_out_of_range_is_refused_before_any_job(tmp_path):
+    import pytest
+
+    from biahub.estimate_crop import estimate_crop
+    from biahub.registration.utils import RunError
+
+    with pytest.raises(RunError, match="0 < lf_mask_radius <= 1"):
+        estimate_crop(tmp_path / "c.yml", tmp_path / "out.yml", lf_mask_radius=95)
