@@ -32,6 +32,19 @@ def _file_candidate(transforms, position_keys: list[str], t: int) -> dict:
     return {t: transforms.transform_for(t)}
 
 
+def _run_dir(transforms_filepath: Path) -> Path:
+    """Return the run folder of a transforms file: `<stem>/`, or the run folder it is in.
+
+    The second is a pooled run's `per_position.yml`, written inside its run folder.
+    """
+    from biahub.registration.engine.disk import RUN_FILENAME
+
+    beside = transforms_filepath.with_suffix("")
+    if not beside.is_dir() and (transforms_filepath.parent / RUN_FILENAME).exists():
+        return transforms_filepath.parent
+    return beside
+
+
 def _bead_detection(run_dir: Path, threshold: float | None) -> dict:
     """Return bead detection settings: `threshold` for both, else the estimate's own."""
     if threshold is not None:
@@ -42,10 +55,14 @@ def _bead_detection(run_dir: Path, threshold: float | None) -> dict:
     # every position of a run shares its settings: the first work folder that has them
     files = [w / ENGINE_SETTINGS_FILENAME for _, w in RunFolder(run_dir).work_dirs()]
     settings_file = next((f for f in files if f.exists()), None)
-    final = None
-    if settings_file is not None:
-        final = load_estimate_transform_settings(settings_file).stack_settings()[-1]
-    if final is None or final.bead_matching is None:
+    blocks = (
+        load_estimate_transform_settings(settings_file).stack_settings()
+        if settings_file is not None
+        else []
+    )
+    # the stack's beads block, wherever it is (the last, if several)
+    beads = next((b for b in reversed(blocks) if b.bead_matching is not None), None)
+    if beads is None:
         raise click.UsageError(
             "--landmarks beads needs --bead-threshold, or a run folder whose settings "
             "detected beads"
@@ -59,8 +76,8 @@ def _bead_detection(run_dir: Path, threshold: float | None) -> dict:
         }
 
     return {
-        "moving": peaks(final.bead_matching.moving_peaks_settings),
-        "reference": peaks(final.bead_matching.reference_peaks_settings),
+        "moving": peaks(beads.bead_matching.moving_peaks_settings),
+        "reference": peaks(beads.bead_matching.reference_peaks_settings),
     }
 
 
@@ -105,15 +122,19 @@ def evaluate_transform(
         }
     else:
         candidates = {"transforms": _file_candidate(transforms, keys, t)}
-    run_dir = Path(transforms_filepath).with_suffix("")
+    run_dir = _run_dir(Path(transforms_filepath))
+    # a per-position file on its own positions: each position's own blocks; otherwise
+    # (held out, or a pooled file) a run's per-position blocks are each a candidate,
+    # named after the position they were estimated on
+    own_blocks = transforms.per_position and not held_out
     if blocks and run_dir.is_dir():
         for name, by_key in block_candidates(run_dir).items():
-            if held_out:
-                for key, transform in by_key.items():
-                    if isinstance(key, tuple) and key[1] == t:
-                        candidates[f"{name} ({key[0]})"] = {t: transform}
-            else:
+            if own_blocks or not any(isinstance(key, tuple) for key in by_key):
                 candidates[name] = by_key
+                continue
+            for (position, at), transform in by_key.items():
+                if at == t:
+                    candidates[f"{name} ({position})"] = {t: transform}
     output_filepath = Path(output_filepath)
     detect_kwargs = _bead_detection(run_dir, bead_threshold) if landmarks == "beads" else None
     rows = evaluate_candidates(

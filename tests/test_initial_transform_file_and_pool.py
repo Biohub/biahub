@@ -248,3 +248,61 @@ def test_a_step_refuses_an_initial_transform_file_changed_since_init(
     _plate_file(tmp_path, SHIFTS["2"])  # same name, other content
     result = step("--step", "estimate")
     assert result.exit_code != 0 and "config changed since --init" in result.output
+
+
+def _stack_config(tmp_path, **changes):
+    """Phase correlation, then beads, pooled over the positions."""
+    import yaml
+
+    data = yaml.safe_load(_config(tmp_path, **changes).read_text())
+    data["method"] = [{"phase_cross_corr": {}}, {"bead_matching": data.pop("bead_matching")}]
+    out = tmp_path / "stack.yml"
+    out.write_text(yaml.safe_dump(data))
+    return out
+
+
+def test_a_pooled_stacks_blocks_are_evaluated_named_after_their_positions(
+    three_positions, tmp_path
+):
+    # a pooled file is one shared list: its run's blocks are per position, so on a held-out
+    # position every block row was dropped without a word
+    from biahub.evaluate_transform import evaluate_transform
+
+    estimated, held_out = three_positions[:2], three_positions[2]
+    output = tmp_path / "plate" / "transforms.yml"
+    estimate_transform(
+        estimated, _stack_config(tmp_path, pool={"z": "median"}), output,
+        reference_position_dirpaths=estimated, cluster="debug",
+    )  # fmt: skip
+    rows = evaluate_transform(
+        [held_out], [held_out], output, tmp_path / "eval.csv", "GFP", "Phase3D",
+        images=False,
+    )  # fmt: skip
+    candidates = {r["candidate"] for r in rows}
+    assert {
+        "transforms",
+        "1:phase_cross_corr (A/1/0)",
+        "2:bead_matching (A/1/1)",
+    } <= candidates
+    # each position's own estimate, beside the run: its run folder is found
+    per_position = output.with_suffix("") / "per_position.yml"
+    rows = evaluate_transform(
+        [held_out], [held_out], per_position, tmp_path / "own.csv", "GFP", "Phase3D",
+        images=False,
+    )  # fmt: skip
+    assert "2:bead_matching (A/1/0)" in {r["candidate"] for r in rows}
+
+
+def test_bead_landmarks_take_the_beads_block_of_a_stack_wherever_it_is(tmp_path):
+    # only the final block was read: a beads > other stack was refused
+    import yaml
+
+    from biahub.evaluate_transform import _bead_detection
+    from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME
+
+    data = yaml.safe_load(_config(tmp_path).read_text())
+    data["method"] = [{"bead_matching": data.pop("bead_matching")}, {"phase_cross_corr": {}}]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / ENGINE_SETTINGS_FILENAME).write_text(yaml.safe_dump(data))
+    assert _bead_detection(run_dir, None)["moving"]["threshold_abs"] == 100
