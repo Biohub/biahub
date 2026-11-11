@@ -660,3 +660,37 @@ def test_the_residuals_refuse_what_they_cannot_measure():
     pair = prepare_pair(identity, vol, vol, "intensity")
     with pytest.raises(ValueError, match="prepared for 'intensity', not 'edges'"):
         tile_residuals(identity, vol, vol, VOX3, compare="edges", pair=pair)
+
+
+# --- area 7 review --------------------------------------------------------------------------
+
+
+def test_evaluate_refuses_an_image_setting_it_does_not_read():
+    from biahub.registration.evaluate import evaluate
+
+    ref = _cells(8)
+    with pytest.raises(TypeError, match="tile_size"):
+        evaluate(Transform.identity(3), ref, ref, VOX3, VOX3, tile_size=16)
+
+
+def test_clicked_points_may_be_a_list_and_zero_matches_are_said():
+    from biahub.registration.evaluate import _z, detect_landmarks
+
+    points = np.zeros((4, 3))
+    assert detect_landmarks([points, points], None, None, VOX3, VOX3, None)["paired"]
+    crops = {"compare": "edges", "crops_um": {"c": [0.3, 0.0, 0.0]}}
+    assert _z({"stats": {"n": 0}}, crops, "nuclei") == (
+        0.3,
+        "z crops (edges); 0 matched points are too few",
+    )
+
+
+def test_evaluate_skips_the_projections_when_no_figure_needs_them(monkeypatch):
+    from biahub.registration import evaluate as module
+
+    monkeypatch.setattr(module, "display_projections", lambda *a: 1 / 0)
+    ref = _cells(8)
+    record = module.evaluate(
+        Transform.identity(3), ref, ref, VOX3, VOX3, images=False, projections=False
+    )
+    assert record.projections == {}

@@ -434,6 +434,8 @@ def evaluate_candidates(
     """
     from iohub import open_ome_zarr
 
+    if "unregistered" in candidates:
+        raise ValueError("'unregistered' is the identity every position is compared with")
     rows = []
     for mov_path, ref_path in position_pairs:
         key = position_key(mov_path)
@@ -453,7 +455,7 @@ def evaluate_candidates(
             rows.append(_empty_row(key, t, empty))
             continue
         marks = detect_landmarks(landmarks, mov, ref, mov_um, ref_um, detect_kwargs)
-        named = {"unregistered": Transform.identity(3), **candidates}
+        named = {"unregistered": Transform.identity(), **candidates}
         for name, candidate in named.items():
             transform = (
                 candidate
@@ -472,6 +474,7 @@ def evaluate_candidates(
                 images=images,
                 compare=compare,
                 baseline=False,
+                projections=figures_dir is not None,
                 **image_kwargs,
             )
             rows.append(_row(record, name, key, t))
@@ -481,16 +484,19 @@ def evaluate_candidates(
                     for k in ("points", "tiles", "z_crops", "z_um", "z_from")
                 }
             elif figures_dir is not None:
+                import matplotlib.pyplot as plt
+
                 from biahub.registration.view import plot_evaluation
 
                 record.baseline = unregistered  # measured once for the position
                 Path(figures_dir).mkdir(parents=True, exist_ok=True)
                 name_safe = f"{name}_{key}_t{t}".replace("/", "_").replace(":", "-")
-                plot_evaluation(
+                figure = plot_evaluation(
                     record,
                     path=Path(figures_dir) / f"{name_safe}.png",
                     title=f"{name} {key} t={t}",
                 )
+                plt.close(figure)  # saved: many candidates x positions would pile up
     return rows
 
 

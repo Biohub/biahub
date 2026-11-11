@@ -4,7 +4,7 @@
 unregistered pair: its geometry (`Transform.decompose`), residuals of landmarks (beads,
 nuclei, clicked points) and image-based residuals (tiles and z crops) for data without
 landmarks, and keeps them in one `Evaluation`. Distances are in µm from the stores' voxel
-sizes (z, y, x); voxel values are reported alongside where useful.
+sizes (z, y, x).
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def detect_landmarks(landmarks, mov, ref, mov_um, ref_um, detect_kwargs) -> dict
     """
     if landmarks is None or isinstance(landmarks, dict):
         return landmarks
-    if isinstance(landmarks, tuple):
+    if isinstance(landmarks, (tuple, list)) and len(landmarks) == 2:
         mov_points, ref_points = landmarks
         return {"mov": mov_points, "ref": ref_points, "source": "manual",
                 "radius_um": None, "axes": "zyx", "paired": True}  # fmt: skip
@@ -171,12 +171,17 @@ def _z(points: dict | None, z_crops: dict | None, points_source: str | None) -> 
     n = 0 if points is None else points["stats"]["n"]
     if n >= MIN_POINTS_FOR_Z:
         return points["stats"]["median_zyx_um"][0], f"points ({points_source})"
-    too_few = f"; {n} matched points are too few" if n else ""
+    # landmarks were measured but too few matched: say so, whatever z falls back to
+    too_few = f"; {n} matched points are too few" if points is not None else ""
     if z_crops is not None:
         dz = [v[0] for v in z_crops["crops_um"].values() if v is not None]
         if dz:
             return float(np.median(dz)), f"z crops ({z_crops['compare']}){too_few}"
     return None, (f"no z measure{too_few}" if too_few else None)
+
+
+# the image settings `evaluate` passes on: the tiles' and the z crops'
+IMAGE_SETTINGS = {"tile_px", "grid", "crop_px"}
 
 
 def _measures(transform, mov, ref, ref_um, marks, images, compare, image_kwargs) -> dict:
@@ -222,17 +227,23 @@ def evaluate(
     compare: str = "edges",
     detect_kwargs: dict | None = None,
     baseline: bool = True,
+    projections: bool = True,
     **image_kwargs,
 ) -> Evaluation:
     """Evaluate a forward transform on one moving / reference pair (ZYX volumes).
 
     `landmarks`: "nuclei" or "beads" (detected in both volumes; `detect_kwargs` go to the
     detector, e.g. beads' `threshold_abs`), a (moving, reference) pair of clicked points
-    (N x 3 voxel arrays, paired row by row), an earlier `detect_landmarks` result, or None. `images` adds layer 3 (`compare`: "edges" or
-    "intensity"; `tile_px`, `grid`, `crop_px` pass through), the slow part: one warp of
+    (N x 3 voxel arrays, paired row by row), an earlier `detect_landmarks` result, or
+    None. `images` adds layer 3 (`compare`: "edges" or "intensity"; `tile_px`, `grid`,
+    `crop_px` pass through; any other image setting raises), the slow part: one warp of
     the moving volume per transform. Thresholds for a verdict are left to the caller.
-    `baseline=False` skips the unregistered pair (one warp less).
+    `baseline=False` skips the unregistered pair (one warp less); `projections=False`
+    the views' small projections (no figure will be drawn).
     """
+    unknown = sorted(set(image_kwargs) - IMAGE_SETTINGS)
+    if unknown:
+        raise TypeError(f"evaluate reads {sorted(IMAGE_SETTINGS)}, not {unknown}")
     marks = detect_landmarks(landmarks, mov, ref, mov_um, ref_um, detect_kwargs)
     measures = _measures(transform, mov, ref, ref_um, marks, images, compare, image_kwargs)
     # the unregistered pair; `baseline=False` leaves it out (e.g. measured once, apart)
@@ -246,6 +257,10 @@ def evaluate(
     return Evaluation(
         geometry=transform.decompose(mov_um, ref_um),
         baseline=baseline,
-        projections={**display_projections(transform, mov, ref), "ref_um": tuple(ref_um)},
+        projections=(
+            {**display_projections(transform, mov, ref), "ref_um": tuple(ref_um)}
+            if projections
+            else {}
+        ),
         **measures,
     )
