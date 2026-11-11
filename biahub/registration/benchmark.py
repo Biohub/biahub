@@ -80,6 +80,7 @@ def select_pipeline(
     elif len(cases) > 1:
         raise ValueError(f"{benchmark_csv} holds cases {cases}: choose for one (case=...)")
     finals = [r for r in rows if _final(r["candidate"])]
+    refused = {r["pipeline"]: r.get("note") or "" for r in rows if r["candidate"] == REFUSED}
     measured = any(_float(r.get("points_median_um")) is not None for r in finals)
     enough = finals and all(
         _float(r.get("points_median_um")) is not None
@@ -87,7 +88,7 @@ def select_pipeline(
         for r in finals
     )
     metric = "points_median_um" if enough else "tiles_median_um"
-    positions = sorted({r["position"] for r in rows})
+    positions = sorted({r["position"] for r in rows if r["candidate"] != REFUSED})
 
     def median(values):
         values = [v for v in values if v is not None]
@@ -133,7 +134,7 @@ def select_pipeline(
     base = {"metric": metric, "unregistered_tiles_um": unregistered, "scores": scores}
     left_out = "".join(
         f"; {p} left out: no {metric} on {where}" for p, where in missing.items()
-    )
+    ) + "".join(f"; {p} refused: {why}".rstrip(": ") for p, why in refused.items())
     if not scores:
         reason = (
             "no pipeline was evaluated on every position"
@@ -386,6 +387,7 @@ def _row(record: Evaluation, candidate: str, position: str, t: int) -> dict:
         "transform_scale_zyx": record.geometry["scale_zyx"],
         "transform_rotation_yx_deg": record.geometry["rotation_yx_deg"],
         "empty": None,
+        "note": None,
     }
 
 
@@ -413,7 +415,30 @@ _MEASURED = (
 def _empty_row(position: str, t: int, empty: str) -> dict:
     """Return the one row of a position with nothing to compare: `_row`'s columns, empty."""
     row = {"candidate": "unregistered", "position": position, "t": t}
-    return {**row, **dict.fromkeys(_MEASURED), "empty": empty}
+    return {**row, **dict.fromkeys(_MEASURED), "empty": empty, "note": None}
+
+
+# the candidate of a pipeline whose estimate refused its config: one row, the reason in `note`
+REFUSED = "refused"
+
+
+def write_refused_table(path, case: str, pipeline: str, message: str) -> Path:
+    """Write a pipeline's evaluation table when its estimate was refused: one row saying why.
+
+    The columns are `evaluate-transform`'s, with the benchmark's tags first, so the row
+    joins `benchmark.csv` like the others.
+    """
+    row = {
+        "case": case,
+        "pipeline": pipeline,
+        **{**_empty_row("", None, None), "candidate": REFUSED, "note": message.strip()},
+    }
+    path = Path(path)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row))
+        writer.writeheader()
+        writer.writerow(row)
+    return path
 
 
 def evaluate_candidates(

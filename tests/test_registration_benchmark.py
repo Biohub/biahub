@@ -340,3 +340,23 @@ def test_the_benchmark_file_holds_what_the_workflow_needs(tmp_path):
     case = yaml.safe_load(write(evaluate_t=10, reference_frame="previous").read_text())
     assert case["cases"][0]["evaluate_t"] == 10
     assert case["cases"][0]["reference_frame"] == "previous"
+
+
+def test_a_refused_pipeline_has_a_row_saying_why_and_the_choice_names_it(tmp_path):
+    # a config the estimate refused left no row: the pipeline vanished from the table
+    import csv as _csv
+
+    from biahub.registration.benchmark import select_pipeline, write_refused_table
+
+    refused = write_refused_table(tmp_path / "refused.csv", "c", "broken", "method is unknown")
+    (row,) = list(_csv.DictReader(open(refused)))
+    assert (row["candidate"], row["note"]) == ("refused", "method is unknown")
+    rows = [
+        ("c", "ants", "unregistered", "A/1/0", 3.0, ""),
+        ("c", "ants", "transforms", "A/1/0", 0.4, ""),
+    ]
+    table = _table(tmp_path, rows)
+    with open(table, "a") as f:
+        f.write("c,broken,refused,,,,\n")
+    choice = select_pipeline(table)
+    assert choice["pipeline"] == "ants" and "broken refused" in choice["reason"]

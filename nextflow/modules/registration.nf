@@ -498,7 +498,8 @@ def position_args(store, positions) {
 }
 
 // A failed run is retried when that may help (a signal; exit 3, a crashed job), then left
-// out: the other runs finish, and its absence from benchmark.csv shows it.
+// out: the other runs finish, and its absence from benchmark.csv shows it. A refused config
+// (exit 2) is not a failure: its table holds one `refused` row with the reason.
 def benchmark_error_strategy(task) {
     if (task.exitStatus in (130..145) + [Integer.MAX_VALUE]) {
         return 'retry'
@@ -528,10 +529,21 @@ process benchmark_estimate {
     def ref = reference ? "-r ${position_args(reference, estimate_positions)}" : ''
     """
     mkdir -p "${slurm_log_dir('benchmark_estimate')}"
+    rm -f "${transforms}.refused"
+    status=0
     biahub estimate-transform --cluster debug \\
         -m ${position_args(moving, estimate_positions)} ${ref} \\
-        -c "${config}" -o "${transforms}"
-    TRANSFORMS_HASH=\$(md5sum "${transforms}" | cut -d' ' -f1)
+        -c "${config}" -o "${transforms}" 2> estimate.err || status=\$?
+    cat estimate.err >&2
+    if [ "\$status" -eq 2 ]; then
+        # refused (a usage error): the reason, for the table's `refused` row
+        grep -v '^Usage:\\|^Try ' estimate.err > "${transforms}.refused" || true
+        TRANSFORMS_HASH=refused
+    elif [ "\$status" -ne 0 ]; then
+        exit "\$status"
+    else
+        TRANSFORMS_HASH=\$(md5sum "${transforms}" | cut -d' ' -f1)
+    fi
     """
 }
 
@@ -554,6 +566,14 @@ process benchmark_evaluate {
     script:
     def ref_store = reference ?: moving
     def table = new File(transforms.toString()).parent + '/evaluation.csv'
+    if (transforms_hash == 'refused') {
+        // the estimate refused the config: one row saying why
+        """
+        python -c 'import sys; from biahub.registration.benchmark import write_refused_table; write_refused_table(*sys.argv[1:4], open(sys.argv[4]).read())' \\
+            "${table}" "${case_name}" "${pipeline}" "${transforms}.refused"
+        cp "${table}" evaluation.csv
+        """
+    } else {
     """
     mkdir -p "${slurm_log_dir('benchmark_evaluate')}"
     biahub evaluate-transform \\
@@ -563,4 +583,5 @@ process benchmark_evaluate {
         --tag 'case=${case_name}' --tag 'pipeline=${pipeline}'
     cp "${table}" evaluation.csv
     """
+    }
 }

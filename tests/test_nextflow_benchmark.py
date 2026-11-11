@@ -187,7 +187,11 @@ def test_one_failing_pipeline_does_not_stop_the_others(tmp_path):
     )
     output = tmp_path / "out"
     _workflow(tmp_path, output)
-    assert {r["pipeline"] for r in _rows(output)} == {"beads"}
+    rows = _rows(output)
+    assert {r["pipeline"] for r in rows if r["candidate"] != "refused"} == {"beads"}
+    # the refused config has one row saying why, not a silent absence
+    (refused,) = [r for r in rows if r["pipeline"] == "broken"]
+    assert refused["candidate"] == "refused" and "no-such-method" in refused["note"]
 
 
 def test_a_stabilization_case_needs_no_reference(tmp_path):
