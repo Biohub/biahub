@@ -234,3 +234,76 @@ def test_a_stabilization_case_needs_no_reference(tmp_path):
     assert float(rows["transforms"]["tiles_median_um"]) < float(
         rows["unregistered"]["tiles_median_um"]
     )
+
+
+def test_a_pipeline_starting_from_a_file_beside_its_config_runs(tmp_path):
+    # the copied estimate.yml resolved a relative transform.initial.file from the output
+    # folder: the file was not found and the pipeline left the table without a word
+    from biahub.core.transform import Transform
+    from biahub.settings import TransformEntry, TransformSettings
+
+    plate = _plate(tmp_path)
+    model_to_yaml(
+        TransformSettings(
+            direction="inverse",
+            moving_channels=["GFP"],
+            reference_channel="Phase3D",
+            transforms=[
+                TransformEntry(matrix=Transform.from_translation(APPLIED_SHIFT_ZYX).to_list())
+            ],
+        ),
+        tmp_path / "earlier.yml",
+    )
+    config = yaml.safe_load(
+        (tmp_path / _config(tmp_path / "beads.yml", "bead_matching")).read_text()
+    )
+    config["transform"]["initial"] = {"from": "file", "file": "earlier.yml"}
+    config["time_indices"] = 0
+    (tmp_path / "beads.yml").write_text(yaml.safe_dump(config))
+    _one_case_spec(tmp_path, plate, [{"name": "beads", "config": "beads.yml"}])
+    output = tmp_path / "out"
+    _workflow(tmp_path, output)
+    assert {r["pipeline"] for r in _rows(output)} == {"beads"}
+
+
+def test_a_stabilization_case_keeps_the_pipelines_reference_settings(tmp_path):
+    # the case replaced the whole reference section: a neighbours pipeline lost its
+    # window and ran as `first`
+    from tests.test_nextflow_registration import _drifting_plate
+
+    plate = _drifting_plate(tmp_path)
+    with open_ome_zarr(plate, mode="r") as position:
+        channel = position.channel_names[0]
+        n_t = position.data.shape[0]
+    (tmp_path / "pcc.yml").write_text(
+        yaml.safe_dump(
+            {
+                "moving": {"channel": "placeholder"},
+                "reference": {"frame": "neighbours", "window": 1},
+                "method": "phase_cross_corr",
+                "transform": {"type": "euclidean"},
+                "fallback": {"repair": None},
+            }
+        )
+    )
+    store, position_key = str(plate.parents[2]), "/".join(plate.parts[-3:])
+    spec = {
+        "cases": [
+            {
+                "name": "drift",
+                "moving": store,
+                "moving_channel": channel,
+                "estimate_positions": position_key,
+                "evaluate_positions": [position_key],
+                "evaluate_t": n_t - 1,
+                "tile_px": 32,
+            }
+        ],
+        "pipelines": [{"name": "pcc", "config": "pcc.yml"}],
+    }
+    (tmp_path / "benchmark.yml").write_text(yaml.safe_dump(spec))
+    output = tmp_path / "out"
+    _workflow(tmp_path, output)
+    written = yaml.safe_load((output / "drift" / "pcc" / "estimate.yml").read_text())
+    assert written["reference"] == {"frame": "neighbours", "window": 1}
+    assert {r["pipeline"] for r in _rows(output)} == {"pcc"}

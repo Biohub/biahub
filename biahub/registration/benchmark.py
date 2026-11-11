@@ -300,8 +300,10 @@ def write_benchmark_config(
         raise ValueError("a registration case needs the reference_channel")
     if not reference and evaluate_t is None:
         raise ValueError("a stabilization case (no reference) needs evaluate_t")
-    if not reference and reference_frame not in ("first", "previous"):
-        raise ValueError(f"reference_frame is first or previous, not {reference_frame!r}")
+    if not reference and reference_frame not in ("first", "previous", "neighbours"):
+        raise ValueError(
+            f"reference_frame is first, previous or neighbours, not {reference_frame!r}"
+        )
     if landmarks and landmarks not in LANDMARK_DETECTORS:
         raise ValueError(
             f"landmarks is one of {sorted(LANDMARK_DETECTORS)}, not {landmarks!r}"

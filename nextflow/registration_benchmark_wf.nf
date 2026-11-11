@@ -16,7 +16,8 @@
 //       reference: /path/2-VS/VS_Cells2.zarr      # omit to stabilize
 //       moving_channel: 2-Prime_DAPI
 //       reference_channel: nuclei_prediction      # omit with the reference
-//       reference_frame: first                      # a stabilization: first (default) or previous
+//       reference_frame: first                      # a stabilization: first, previous or neighbours
+//                                                   # (default: the pipeline's, else first)
 //       evaluate_t: 10                              # a stabilization: the timepoint evaluated against frame 0
 //       estimate_positions: 0/12/001001             # one, or a list
 //       evaluate_positions: [0/9/001001, 0/19/001001]
@@ -50,16 +51,26 @@ def resolve(path, base) {
 }
 
 // The pipeline's config with the case's channels (a case without a reference store is a
-// stabilization: frame first, or its reference_frame). Written only when its content
-// changes, so -resume reuses an unchanged run.
+// stabilization: the case's reference_frame, else the pipeline's own stabilization frame,
+// else first; the pipeline's other reference settings, e.g. a window, are kept). A
+// relative transform.initial.file is made absolute against the pipeline config's folder:
+// the copy is written elsewhere. Written only when its content changes, so -resume
+// reuses an unchanged run.
 def case_config(pipeline_config, the_case, target) {
     def yaml = new org.yaml.snakeyaml.Yaml()
     def config = yaml.load(new File(pipeline_config).text) as Map
     config.moving = (config.moving ?: [:]) + [channel: the_case.moving_channel]
+    def reference = (config.reference ?: [:]) as Map
     if (the_case.reference) {
-        config.reference = (config.reference ?: [frame: 'cross']) + [frame: 'cross', channel: the_case.reference_channel]
+        config.reference = reference + [frame: 'cross', channel: the_case.reference_channel]
     } else {
-        config.reference = [frame: the_case.reference_frame ?: 'first']
+        def own = reference.frame in ['first', 'previous', 'neighbours'] ? reference.frame : null
+        config.reference = reference.findAll { k, v -> k != 'channel' } +
+            [frame: the_case.reference_frame ?: own ?: 'first']
+    }
+    def initial = config.transform instanceof Map ? config.transform.initial : null
+    if (initial instanceof Map && initial.from == 'file' && initial.file) {
+        initial.file = resolve(initial.file, new File(pipeline_config).parent)
     }
     def out = new File(target)
     out.parentFile.mkdirs()
@@ -111,6 +122,8 @@ workflow {
         def options = []
         if (c.landmarks) options << "--landmarks ${c.landmarks}"
         if (c.tile_px) options << "--tile-px ${c.tile_px}"
+        // a stabilization's transforms are absolute (first and previous chain onto the
+        // first frame; neighbours move toward the series' median): evaluate against frame 0
         if (!c.reference) options << "--t ${c.evaluate_t} --reference-t 0"
         [(c.name): [as_list(c.evaluate_positions), options.join(' ')]]
     }
