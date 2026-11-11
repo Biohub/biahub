@@ -280,14 +280,14 @@ def write_benchmark_config(
     landmarks: str | None = None,
     tile_px: int | None = None,
     evaluate_t: int | None = None,
-    reference_frame: str = "first",
+    reference_frame: str | None = None,
 ):
     """Write the benchmark file `registration_benchmark_wf.nf` reads, checked first.
 
     One case (its stores, channels, estimate and held-out positions) and `pipelines`
     (name -> estimate config). A registration names its `reference` store and
-    `reference_channel`; a stabilization (no `reference`) its `reference_frame` and the
-    timepoint `evaluate_t` evaluated against frame 0. Every config must load, every
+    `reference_channel`; a stabilization (no `reference`) the timepoint `evaluate_t`
+    evaluated against frame 0, and `reference_frame` if not the pipelines' own. Every config must load, every
     position must exist in the stores, no position may be both estimated on and held
     out, and `landmarks` is a detector `evaluate` has.
     """
@@ -300,7 +300,7 @@ def write_benchmark_config(
         raise ValueError("a registration case needs the reference_channel")
     if not reference and evaluate_t is None:
         raise ValueError("a stabilization case (no reference) needs evaluate_t")
-    if not reference and reference_frame not in ("first", "previous", "neighbours"):
+    if reference_frame not in (None, "first", "previous", "neighbours"):
         raise ValueError(
             f"reference_frame is first, previous or neighbours, not {reference_frame!r}"
         )
@@ -338,7 +338,9 @@ def write_benchmark_config(
             reference=str(Path(reference).resolve()), reference_channel=reference_channel
         )
     else:
-        case.update(reference_frame=reference_frame, evaluate_t=evaluate_t)
+        case["evaluate_t"] = evaluate_t
+        if reference_frame is not None:
+            case["reference_frame"] = reference_frame
     if landmarks:
         case["landmarks"] = landmarks
     if tile_px:
