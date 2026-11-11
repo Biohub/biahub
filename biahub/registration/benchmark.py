@@ -35,75 +35,152 @@ def _float(value) -> float | None:
         return None
 
 
+def _final(candidate: str) -> bool:
+    """Whether a row is a pipeline's final transform (not one block of its stack).
+
+    "transforms", or "transforms (<position>)" for a per-position file: a held-out
+    position is evaluated with each estimated position's transform.
+    """
+    return candidate == "transforms" or candidate.startswith("transforms (")
+
+
+def _block(candidate: str) -> str:
+    """Return a block candidate's name without the estimated position it came from."""
+    return candidate.split(" (")[0]
+
+
 def select_pipeline(
     benchmark_csv,
     blocks: dict[str, int] | None = None,
     tie_um: float = 0.05,
     must_beat: float = 0.5,
     min_points: int = 10,
+    case: str | None = None,
 ) -> dict:
     """Return the pipeline to register with, and why, from a benchmark table.
 
-    Each pipeline's final transform ("transforms" rows; its blocks are not choices) is
-    scored by the median over held-out positions of `points_median_um` when every final
-    transform matched at least `min_points` landmarks on every position (fewer pairs make
-    a median that looks good), else of `tiles_median_um`. The lowest wins; within `tie_um`
-    of it, the pipeline with fewer `blocks` (simpler) does. No winner unless its tile
-    median is below `must_beat` times the unregistered pair's (judged on tiles: the
-    unregistered pair matches few landmarks).
+    One case at a time (`case`; needed when the table holds several). Each pipeline's
+    final transforms (its blocks are not choices) are scored per held-out position (the
+    median of its final rows there) and over positions by the median: of
+    `points_median_um` when every final row matched at least `min_points` landmarks
+    (fewer pairs make a median that looks good), else of `tiles_median_um`. A pipeline
+    without a value on some position (it failed there) cannot win, and the reason names
+    it. The lowest wins; within `tie_um` of it, the pipeline with fewer blocks (simpler)
+    does -- counted from its block rows unless `blocks` gives them. No winner unless
+    its tile median is below `must_beat` times the unregistered pair's (judged on
+    tiles: the unregistered pair matches few landmarks), and none without that baseline.
     """
     with open(benchmark_csv) as f:
         rows = list(csv.DictReader(f))
-    finals = [r for r in rows if r["candidate"] == "transforms"]
+    cases = sorted({r.get("case", "") for r in rows})
+    if case is not None:
+        rows = [r for r in rows if r.get("case", "") == case]
+        if not rows:
+            raise ValueError(f"no case {case!r} in {benchmark_csv} (it has {cases})")
+    elif len(cases) > 1:
+        raise ValueError(f"{benchmark_csv} holds cases {cases}: choose for one (case=...)")
+    finals = [r for r in rows if _final(r["candidate"])]
+    measured = any(_float(r.get("points_median_um")) is not None for r in finals)
     enough = finals and all(
         _float(r.get("points_median_um")) is not None
         and (_float(r.get("points_n")) or 0) >= min_points
         for r in finals
     )
     metric = "points_median_um" if enough else "tiles_median_um"
+    positions = sorted({r["position"] for r in rows})
 
-    def median(selected, column):
-        values = [_float(r.get(column)) for r in selected]
+    def median(values):
         values = [v for v in values if v is not None]
         return float(np.median(values)) if values else None
 
-    scores, tiles = {}, {}
+    def per_position(selected, column) -> dict[str, float | None]:
+        return {
+            position: median(
+                _float(r.get(column)) for r in selected if r["position"] == position
+            )
+            for position in positions
+        }
+
+    scores, tiles, missing, counts = {}, {}, {}, {}
     for pipeline in dict.fromkeys(r["pipeline"] for r in finals):
         selected = [r for r in finals if r["pipeline"] == pipeline]
-        score = median(selected, metric)
-        if score is not None:
-            scores[pipeline], tiles[pipeline] = score, median(selected, "tiles_median_um")
+        values = per_position(selected, metric)
+        missing_here = [p for p, v in values.items() if v is None]
+        if missing_here:
+            missing[pipeline] = missing_here
+            continue
+        scores[pipeline] = median(values.values())
+        tiles[pipeline] = median(per_position(selected, "tiles_median_um").values())
+        counts[pipeline] = (
+            len(
+                {
+                    _block(r["candidate"])
+                    for r in rows
+                    if r["pipeline"] == pipeline
+                    and r["candidate"] != "unregistered"
+                    and not _final(r["candidate"])
+                }
+            )
+            or 1
+        )
+    counts.update(blocks or {})
+    # one value per position: the unregistered rows repeat for every pipeline
     unregistered = median(
-        [r for r in rows if r["candidate"] == "unregistered"], "tiles_median_um"
+        per_position(
+            [r for r in rows if r["candidate"] == "unregistered"], "tiles_median_um"
+        ).values()
     )
     base = {"metric": metric, "unregistered_tiles_um": unregistered, "scores": scores}
+    left_out = "".join(
+        f"; {p} left out: no {metric} on {where}" for p, where in missing.items()
+    )
     if not scores:
-        return {
-            **base,
-            "pipeline": None,
-            "median_um": None,
-            "reason": "no pipeline was evaluated",
-        }
+        reason = (
+            "no pipeline was evaluated on every position"
+            if missing
+            else ("no pipeline was evaluated")
+        )
+        return {**base, "pipeline": None, "median_um": None, "reason": reason + left_out}
     best = min(scores.values())
     close = [p for p, v in scores.items() if v - best <= tie_um]
-    blocks = blocks or {}
-    winner = min(close, key=lambda p: (blocks.get(p, 1), scores[p]))
-    if unregistered is not None and (tiles[winner] or np.inf) >= must_beat * unregistered:
-        return {
-            **base,
-            "pipeline": None,
-            "median_um": scores[winner],
-            "reason": f"no pipeline clearly beats unregistered (tiles {unregistered:.2f} µm): "
-            f"the best, {winner}, reaches {tiles[winner]:.2f} µm",
-        }
-    reason = f"{winner}: {metric} median {scores[winner]:.2f} µm on held-out positions"
-    if unregistered is not None:
-        reason += f" (unregistered tiles {unregistered:.2f} µm)"
+    winner = min(close, key=lambda p: (counts[p], scores[p]))
+
+    def no_winner(reason: str) -> dict:
+        return {**base, "pipeline": None, "median_um": scores[winner], "reason": reason}
+
+    if unregistered is None:
+        return no_winner(
+            f"no unregistered tile median to compare {winner} against: an unregistered "
+            "row with measured tiles is needed" + left_out
+        )
+    if tiles[winner] is None:
+        return no_winner(
+            f"the best, {winner}, has no tile median to compare with unregistered "
+            f"({unregistered:.2f} µm)" + left_out
+        )
+    if tiles[winner] >= must_beat * unregistered:
+        return no_winner(
+            f"no pipeline clearly beats unregistered (tiles {unregistered:.2f} µm): the "
+            f"best, {winner}, reaches {tiles[winner]:.2f} µm" + left_out
+        )
+    reason = (
+        f"{winner}: {metric} median {scores[winner]:.2f} µm on held-out positions "
+        f"(unregistered tiles {unregistered:.2f} µm)"
+    )
     if not enough:
-        reason += f"; tiles decided: some pipeline matched fewer than {min_points} landmarks"
-    if len(close) > 1 and blocks.get(winner, 1) < max(blocks.get(p, 1) for p in close):
+        reason += (
+            f"; tiles decided: some pipeline matched fewer than {min_points} landmarks"
+            if measured
+            else "; tiles decided: no landmarks measured"
+        )
+    if len(close) > 1 and counts[winner] < max(counts[p] for p in close):
         reason += f"; within {tie_um} µm of the best, the simpler pipeline"
-    return {**base, "pipeline": winner, "median_um": scores[winner], "reason": reason}
+    return {
+        **base,
+        "pipeline": winner,
+        "median_um": scores[winner],
+        "reason": reason + left_out,
+    }
 
 
 # --- survey before registering ------------------------------------------------------------
@@ -196,24 +273,39 @@ def write_benchmark_config(
     moving,
     reference,
     moving_channel: str,
-    reference_channel: str,
+    reference_channel: str | None,
     estimate_positions,
     evaluate_positions: list[str],
     pipelines: dict,
     landmarks: str | None = None,
     tile_px: int | None = None,
+    evaluate_t: int | None = None,
+    reference_frame: str = "first",
 ):
     """Write the benchmark file `registration_benchmark_wf.nf` reads, checked first.
 
     One case (its stores, channels, estimate and held-out positions) and `pipelines`
-    (name -> estimate config). Every config must load, every position must exist in the
-    stores, and no position may be both estimated on and held out.
+    (name -> estimate config). A registration names its `reference` store and
+    `reference_channel`; a stabilization (no `reference`) its `reference_frame` and the
+    timepoint `evaluate_t` evaluated against frame 0. Every config must load, every
+    position must exist in the stores, no position may be both estimated on and held
+    out, and `landmarks` is a detector `evaluate` has.
     """
-    from pathlib import Path
-
     import yaml
 
+    from biahub.registration.evaluate import LANDMARK_DETECTORS
     from biahub.settings import EstimateTransformSettings
+
+    if reference and not reference_channel:
+        raise ValueError("a registration case needs the reference_channel")
+    if not reference and evaluate_t is None:
+        raise ValueError("a stabilization case (no reference) needs evaluate_t")
+    if not reference and reference_frame not in ("first", "previous"):
+        raise ValueError(f"reference_frame is first or previous, not {reference_frame!r}")
+    if landmarks and landmarks not in LANDMARK_DETECTORS:
+        raise ValueError(
+            f"landmarks is one of {sorted(LANDMARK_DETECTORS)}, not {landmarks!r}"
+        )
 
     estimate_positions = (
         [estimate_positions]
@@ -243,6 +335,8 @@ def write_benchmark_config(
         case.update(
             reference=str(Path(reference).resolve()), reference_channel=reference_channel
         )
+    else:
+        case.update(reference_frame=reference_frame, evaluate_t=evaluate_t)
     if landmarks:
         case["landmarks"] = landmarks
     if tile_px:
