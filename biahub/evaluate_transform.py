@@ -17,6 +17,7 @@ from biahub.cli.parsing import (
     config_filepath,
     moving_position_dirpaths,
     output_filepath,
+    pair_reference_positions,
     position_key,
     reference_position_dirpaths,
     refusals_as_usage_errors,
@@ -100,18 +101,26 @@ def evaluate_transform(
     """Evaluate a transforms file (and its stack's blocks) on positions; write the table.
 
     `tags` become constant columns, first (e.g. the case and pipeline of a benchmark), so
-    tables from several runs can be joined.
+    tables from several runs can be joined; a tag named like a column is refused. -r
+    positions are paired with the moving ones by position (one serves them all). A
+    stabilization (no reference channel) compares `t` with `reference_t`, by default
+    its reference frame: frame 0 for `first`, the run's first timepoint for `previous`.
     """
+    if bead_threshold is not None and landmarks != "beads":
+        raise click.UsageError("--bead-threshold goes with --landmarks beads")
     transforms = load_transform_settings(transforms_filepath)
-    if not reference_position_dirpaths:
-        if transforms.reference_channel is not None:
-            raise click.UsageError(
-                f"a registration onto {transforms.reference_channel!r} needs the reference "
-                "positions (-r)"
-            )
-        # a stabilization's reference is the moving positions themselves
-        reference_position_dirpaths = moving_position_dirpaths
     keys = [position_key(p) for p in moving_position_dirpaths]
+    if transforms.reference_channel is None and reference_t is None:
+        reference_t = _reference_frame_t(transforms)
+    if reference_position_dirpaths:
+        reference_for = pair_reference_positions(keys, reference_position_dirpaths)
+    elif transforms.reference_channel is not None:
+        raise click.UsageError(
+            f"a registration onto {transforms.reference_channel!r} needs the reference "
+            "positions (-r)"
+        )
+    else:  # a stabilization's reference is the moving positions themselves
+        reference_for = dict(zip(keys, moving_position_dirpaths, strict=True))
     # positions the file has no list for (held out from a per-position estimate): each
     # estimated position's transform is a candidate there, named after it
     held_out = transforms.per_position and not set(keys) <= set(transforms.positions)
@@ -139,7 +148,10 @@ def evaluate_transform(
     detect_kwargs = _bead_detection(run_dir, bead_threshold) if landmarks == "beads" else None
     rows = evaluate_candidates(
         candidates,
-        list(zip(moving_position_dirpaths, reference_position_dirpaths, strict=True)),
+        [
+            (path, reference_for[key])
+            for key, path in zip(keys, moving_position_dirpaths, strict=True)
+        ],
         moving_channel or transforms.moving_channels[0],
         # a stabilization has no reference channel: its reference is the moving channel
         reference_channel or transforms.reference_channel or transforms.moving_channels[0],
@@ -150,6 +162,9 @@ def evaluate_transform(
         figures_dir=output_filepath.with_suffix("") if figures else None,
         **image_kwargs,
     )
+    clash = sorted(set(tags or {}) & set(rows[0]))
+    if clash:
+        raise click.UsageError(f"--tag {clash} would overwrite the table's own columns")
     rows = [{**(tags or {}), **row} for row in rows]
     output_filepath.parent.mkdir(parents=True, exist_ok=True)
     with open(output_filepath, "w", newline="") as f:
@@ -157,6 +172,19 @@ def evaluate_transform(
         writer.writeheader()
         writer.writerows(rows)
     return rows
+
+
+def _reference_frame_t(transforms) -> int:
+    """Return the timepoint a stabilization file's transforms are measured against."""
+    entries = transforms.transforms or next(iter((transforms.positions or {}).values()), [])
+    if transforms.reference_frame == "first":
+        return 0
+    if transforms.reference_frame == "previous":  # chained onto the run's first timepoint
+        return min(e.t for e in entries if e.t is not None)
+    raise click.UsageError(
+        f"a stabilization with reference frame {transforms.reference_frame!r} needs "
+        "--reference-t: the frame its transforms are measured against"
+    )
 
 
 def _parse_tags(tags) -> dict:
@@ -190,7 +218,13 @@ def _parse_tags(tags) -> dict:
     help="Point-based residuals from detected nuclei or beads (z is read from points).",
 )
 @click.option(
-    "--t", "t", type=int, default=0, show_default=True, help="Timepoint to evaluate."
+    "--timepoint",
+    "--t",
+    "t",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Timepoint to evaluate.",
 )
 @click.option(
     "--reference-t",

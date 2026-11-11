@@ -2,7 +2,9 @@
 
 import csv
 
+import click
 import numpy as np
+import pytest
 
 from click.testing import CliRunner
 
@@ -247,3 +249,65 @@ def test_a_blank_position_is_reported_not_left_as_empty_rows(tmp_path):
     assert result.exit_code == 0, result.output
     assert "A/1/1: WARNING the moving image is blank, skipped" in result.output
     assert [r["empty"] for r in _rows(output) if r["position"] == "A/1/1"] == ["moving"]
+
+
+def _stabilization_file(tmp_path, reference_frame=None):
+    transforms = tmp_path / f"stab_{reference_frame}.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_frame=reference_frame,
+            transforms=[TransformEntry(t=t, matrix=np.eye(4).tolist()) for t in (2, 3)],
+        ),
+        transforms,
+    )
+    return transforms
+
+
+def test_without_reference_t_a_stabilization_reads_its_files_reference_frame(
+    tmp_path, monkeypatch
+):
+    # with no --reference-t, frame t was compared with itself: the unregistered pair
+    # looked perfect
+    from biahub import evaluate_transform as module
+
+    seen = []
+    monkeypatch.setattr(
+        module,
+        "evaluate_candidates",
+        lambda *a, **k: seen.append(k["reference_t"]) or [{"x": 1}],
+    )
+    positions = _plate(tmp_path)
+    for frame, expected in (("first", 0), ("previous", 2)):
+        module.evaluate_transform(
+            positions[:1], None, _stabilization_file(tmp_path, frame), tmp_path / "e.csv", t=3
+        )
+        assert seen[-1] == expected
+    with pytest.raises(click.UsageError, match="--reference-t"):
+        module.evaluate_transform(
+            positions[:1],
+            None,
+            _stabilization_file(tmp_path, "neighbours"),
+            tmp_path / "e.csv",
+        )
+
+
+def test_evaluate_transform_refuses_what_it_would_not_read(tmp_path):
+    from biahub.evaluate_transform import evaluate_transform
+
+    positions = _plate(tmp_path)
+    transforms = _stabilization_file(tmp_path, "first")
+    with pytest.raises(click.UsageError, match="--bead-threshold"):
+        evaluate_transform(
+            positions[:1], None, transforms, tmp_path / "e.csv", bead_threshold=50.0
+        )
+    with pytest.raises(click.UsageError, match="no reference position"):
+        evaluate_transform(  # paired by position, as the other commands do
+            positions, [positions[0], positions[0]], transforms, tmp_path / "e.csv"
+        )
+    with pytest.raises(click.UsageError, match="tiles_median_um"):
+        evaluate_transform(
+            positions[:1], None, transforms, tmp_path / "e.csv", reference_t=0,
+            tags={"tiles_median_um": "x"}, images=False,
+        )  # fmt: skip
