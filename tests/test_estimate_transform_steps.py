@@ -21,6 +21,7 @@ from tests.test_estimate_transform import (
     _write_config,
     _write_plate,
 )
+from tests.test_initial_transform_file_and_pool import three_positions  # noqa: F401, F811
 
 
 @pytest.fixture
@@ -410,3 +411,13 @@ def test_a_refused_init_leaves_the_earlier_run_as_it_was(
     for used in (refused, config):
         result = _cli("--step", "estimate", "-c", used, *common)
         assert result.exit_code != 0 and "run with --init first" in result.output
+
+
+def test_a_refusal_on_several_positions_is_a_usage_error(three_positions, tmp_path):  # noqa: F811
+    # raised in each position's thread, it ended as an exit-1 error listing them
+    config = _write_config(tmp_path, time_indices=[5])  # past the stores' last frame
+    result = _cli(
+        "-m", *three_positions, "-r", *three_positions, "-c", config,
+        "-o", tmp_path / "t.yml", "--cluster", "debug",
+    )  # fmt: skip
+    assert result.exit_code == 2 and "3 of 3 positions refused" in result.output

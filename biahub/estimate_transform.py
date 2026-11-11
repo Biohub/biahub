@@ -49,6 +49,7 @@ from biahub.registration.engine import (
     run_timepoint_jobs,
 )
 from biahub.registration.engine.disk import RunFolder, config_fingerprint
+from biahub.registration.utils import RunError
 from biahub.settings import (
     TransformEntry,
     TransformSettings,
@@ -288,7 +289,7 @@ def _pooled_entry(
         entries[key] = entry
         estimates[key] = source.transform_for(0 if t is None else t, key)
     if not estimates:
-        raise click.UsageError(f"{where}no accepted estimate to pool")
+        raise RunError(f"{where}no accepted estimate to pool")
     pooled = pool_transforms(estimates, shape_zyx, voxel_um, z=z, tolerance_um=tolerance_um)
     spread = pooled["spread"]
     yx, z_gap = spread["across_positions_yx_um"], spread["across_positions_z_um"]
@@ -523,13 +524,23 @@ def estimate_transform(
     workers = min(len(run.keys), MAX_CONCURRENT_POSITIONS)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {key: pool.submit(estimate_position, key) for key in run.keys}
-    failed = {}
+    failed, refused = {}, {}
     positions = {}
     for key, future in futures.items():
         try:
             positions[key] = future.result()
+        except RunError as e:  # the run refused for its data: a usage error, as for one
+            refused[key] = str(e)
         except Exception as e:  # noqa: BLE001 -- report every failed position at once
             failed[key] = f"{type(e).__name__}: {e}"
+    if refused and not failed:
+        raise RunError(
+            "\n".join(
+                [f"{len(refused)} of {len(run.keys)} positions refused:"]
+                + [f"  {k}: {v}" for k, v in refused.items()]
+            )
+        )
+    failed |= refused
     if failed:
         listing = "\n".join(f"  {k}: {v}" for k, v in failed.items())
         raise click.ClickException(
@@ -652,7 +663,7 @@ def estimate_transform_step(
 @click.command("estimate-transform")
 @moving_position_dirpaths()
 @reference_position_dirpaths(required=False)
-@config_filepath()
+@config_filepath(help="The estimate settings (EstimateTransformSettings YAML).")
 @output_filepath()
 @sbatch_filepath()
 @cluster()

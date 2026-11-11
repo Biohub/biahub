@@ -18,12 +18,14 @@ from biahub.cli.parsing import (
     config_filepath,
     local,
     output_filepath,
+    refusals_as_usage_errors,
     sbatch_filepath,
     sbatch_to_submitit,
 )
 from biahub.cli.slurm import wait_for_jobs_to_finish
 from biahub.core.transform import Transform
 from biahub.registration.preprocess import build_mask
+from biahub.registration.utils import RunError
 from biahub.settings import ConcatenateSettings, MaskCircle
 from biahub.utils.cluster import (
     apply_sbatch_overrides,
@@ -177,7 +179,7 @@ def _mask_box(
 ) -> Slices:
     """Largest box inside a coarse mask, back on the full-resolution grid."""
     if not mask.any():
-        raise click.UsageError(
+        raise RunError(
             "the transform leaves no overlapping region between moving and reference; "
             "drop --crop-to-overlap or check the transform"
         )
@@ -227,7 +229,7 @@ def shared_crop(
         current = overlap_mask(moving_shape_zyx, reference_shape_zyx, transform, downsample)
         mask = current if mask is None else mask & current
     if mask is None or not mask.any():
-        raise click.UsageError(
+        raise RunError(
             "the transforms share no overlapping region across timepoints; "
             "drop --crop-to-overlap or check the transforms"
         )
@@ -524,7 +526,9 @@ def estimate_crop(
 
 
 @click.command("estimate-crop")
-@config_filepath()
+@config_filepath(
+    help="The concatenate settings (ConcatenateSettings YAML, phase positions first)."
+)
 @output_filepath()
 @sbatch_filepath()
 @local()
@@ -538,6 +542,7 @@ def estimate_crop(
     ),
     required=False,
 )
+@refusals_as_usage_errors
 def estimate_crop_cli(
     config_filepath: str,
     output_filepath: str,
