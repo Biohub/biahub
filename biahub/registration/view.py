@@ -10,23 +10,30 @@ from pathlib import Path
 import numpy as np
 
 from biahub.core.transform import Transform
-from biahub.registration.evaluate import Evaluation
+from biahub.registration.evaluate import MIN_POINTS_FOR_Z, Evaluation
 
 # Arrows are drawn this many times longer than the residual, up to this share of the image.
 ARROW_SHARE = 0.08
 
 
-def _normalise(image: np.ndarray) -> np.ndarray:
+def _limits(volume: np.ndarray) -> tuple[float, float]:
     # the warp's empty padding is not background: leave it out of the limits
-    data = image[image != 0]
-    low, high = np.percentile(data if data.size else image, [1, 99.8])
-    return np.clip((image - low) / (high - low + 1e-9), 0, 1)
+    data = volume[volume != 0]
+    low, high = np.percentile(data if data.size else volume, [1, 99.8])
+    return float(low), float(high)
+
+
+def _rgb(moving, reference, mov_limits, ref_limits) -> np.ndarray:
+    def scale(image, limits):
+        return np.clip((image - limits[0]) / (limits[1] - limits[0] + 1e-9), 0, 1)
+
+    m, r = scale(moving, mov_limits), scale(reference, ref_limits)
+    return np.stack([m, r, m], axis=-1)
 
 
 def overlay(moving: np.ndarray, reference: np.ndarray) -> np.ndarray:
     """Return an RGB image: `moving` magenta, `reference` green (white where both)."""
-    m, r = _normalise(moving), _normalise(reference)
-    return np.stack([m, r, m], axis=-1)
+    return _rgb(moving, reference, _limits(moving), _limits(reference))
 
 
 def _arrows(measure: dict | None, views: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -102,7 +109,8 @@ def _z_panel(ax, record: Evaluation):
                     values.append(v[0])
                     colors.append(color)
         p = measures["points"]
-        if p is not None and p["stats"]["n"]:
+        # as the z rule (`evaluate._z`): fewer points do not measure z
+        if p is not None and p["stats"]["n"] >= MIN_POINTS_FOR_Z:
             labels.append(f"{name}\npoints")
             values.append(p["stats"]["median_zyx_um"][0])
             colors.append("tab:cyan" if name == "registered" else "0.3")
@@ -133,9 +141,15 @@ def plot_evaluation(record: Evaluation, path: str | Path | None = None, title: s
     import matplotlib.pyplot as plt
 
     views = record.projections
-    if views is None:
+    if not views:
         raise ValueError(
-            "the record has no projections (a stored record): run evaluate() to plot it"
+            "the record has no projections (a stored record, or projections=False): run "
+            "evaluate() to plot it"
+        )
+    if not record.baseline:
+        raise ValueError(
+            "the record has no unregistered pair (evaluate(baseline=False)): set "
+            "record.baseline to it, as evaluate_candidates does, or evaluate with it"
         )
     registered = _measures_of(record)
     scale = _arrow_scale(
@@ -199,20 +213,6 @@ def _corner_pair(transform, mov, ref, size: int, origin_yx: tuple = (0, 0)) -> t
     return warped, ref_crop
 
 
-def _limits(volume: np.ndarray) -> tuple[float, float]:
-    data = volume[volume != 0]
-    low, high = np.percentile(data if data.size else volume, [1, 99.8])
-    return float(low), float(high)
-
-
-def _rgb(moving, reference, mov_limits, ref_limits) -> np.ndarray:
-    def scale(image, limits):
-        return np.clip((image - limits[0]) / (limits[1] - limits[0] + 1e-9), 0, 1)
-
-    m, r = scale(moving, mov_limits), scale(reference, ref_limits)
-    return np.stack([m, r, m], axis=-1)
-
-
 def animate_evaluation(
     mov,
     ref,
@@ -270,26 +270,37 @@ def animate_evaluation(
         pad = [(0, -image.shape[0] % 16), (0, -image.shape[1] % 16), (0, 0)]
         return np.pad(image, pad)
 
-    try:
-        import imageio_ffmpeg
-
-        first = frame(*steps[0])
-        writer = imageio_ffmpeg.write_frames(
-            str(path), (first.shape[1], first.shape[0]), fps=fps, macro_block_size=16
-        )
-        writer.send(None)
-        writer.send(first.tobytes())
-        for label, z in steps[1:]:
-            writer.send(frame(label, z).tobytes())
-        writer.close()
-        return path
-    except (ImportError, RuntimeError) as error:
+    def as_frames(error) -> Path:
         frames_dir = path.with_suffix("")
         frames_dir.mkdir(parents=True, exist_ok=True)
         for k, (label, z) in enumerate(steps):
             plt.imsave(frames_dir / f"{k:04d}.png", frame(label, z))
         print(f"no video encoder ({error}): frames written to {frames_dir}")
         return frames_dir
+
+    first = frame(*steps[0])
+    # only a missing encoder falls back to frames: it shows at the import, or when the
+    # writer starts (no ffmpeg binary)
+    try:
+        import imageio_ffmpeg
+
+        writer = imageio_ffmpeg.write_frames(
+            str(path), (first.shape[1], first.shape[0]), fps=fps, macro_block_size=16
+        )
+        writer.send(None)
+    except (ImportError, RuntimeError) as error:
+        path.unlink(missing_ok=True)
+        return as_frames(error)
+    try:
+        writer.send(first.tobytes())
+        for label, z in steps[1:]:
+            writer.send(frame(label, z).tobytes())
+    except BaseException:
+        writer.close()
+        path.unlink(missing_ok=True)  # no half-written video
+        raise
+    writer.close()
+    return path
 
 
 # --- the visual check in napari --------------------------------------------------------
@@ -303,13 +314,18 @@ def _build_check(mov, ref, transform, ref_um, phase=None, full_resolution=False,
         raise ImportError(
             "the visual check needs napari: pip install 'biahub[gui]'"
         ) from error
-    from biahub.registration.evaluate import _shrink_yx, display_volumes
+    from biahub.registration.evaluate import display_volumes, shrink_yx
 
     if full_resolution:
         reference = np.nan_to_num(np.asarray(ref, np.float32))
         moving = np.nan_to_num(np.asarray(mov, np.float32))
         registered = transform.apply(moving, reference=reference)
-        original = Transform.identity(3).apply(moving, reference=reference)
+        # the moving volume as it is, on the reference grid: no warp when they match
+        original = (
+            moving
+            if moving.shape == reference.shape
+            else Transform.identity().apply(moving, reference=reference)
+        )
         downsample = 1
     else:
         (registered, original), reference, downsample = display_volumes(
@@ -320,7 +336,7 @@ def _build_check(mov, ref, transform, ref_um, phase=None, full_resolution=False,
     viewer = napari.Viewer(title="registration check", show=show)
     if phase is not None:
         phase = np.nan_to_num(np.asarray(phase, np.float32))
-        phase = phase if downsample == 1 else _shrink_yx(phase, downsample)
+        phase = phase if downsample == 1 else shrink_yx(phase, downsample)
         # auto contrast: a few bright or dark outliers would leave min-to-max flat grey
         limits = np.percentile(phase, [0.5, 99.5]).tolist()
         viewer.add_image(
@@ -356,7 +372,7 @@ def visual_check(mov, ref, transform, ref_um, phase=None, full_resolution=False)
     (the registration skill asks whether it is good). Views are averaged down in yx
     unless `full_resolution` (one full warp).
     """
+    _build_check(mov, ref, transform, ref_um, phase, full_resolution)  # says if no napari
     import napari
 
-    _build_check(mov, ref, transform, ref_um, phase, full_resolution)
     napari.run()

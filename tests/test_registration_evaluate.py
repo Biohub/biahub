@@ -694,3 +694,101 @@ def test_evaluate_skips_the_projections_when_no_figure_needs_them(monkeypatch):
         Transform.identity(3), ref, ref, VOX3, VOX3, images=False, projections=False
     )
     assert record.projections == {}
+
+
+def test_a_record_without_its_baseline_or_projections_says_why_it_cannot_be_plotted():
+    # baseline=False stored {}: plot_evaluation raised a bare KeyError
+    from biahub.registration.evaluate import evaluate
+    from biahub.registration.view import plot_evaluation
+
+    ref = _cells(11, shape=(24, 256, 256))
+    no_baseline = evaluate(
+        Transform.identity(3), ref, ref, VOX3, VOX3, images=False, baseline=False
+    )
+    with pytest.raises(ValueError, match="baseline=False"):
+        plot_evaluation(no_baseline)
+    no_views = evaluate(
+        Transform.identity(3), ref, ref, VOX3, VOX3, images=False, projections=False
+    )
+    with pytest.raises(ValueError, match="projections"):
+        plot_evaluation(no_views)
+
+
+def test_without_an_encoder_the_video_is_written_as_frames(tmp_path, monkeypatch):
+    import sys
+
+    from biahub.registration.view import HOLD_FRAMES, animate_evaluation
+
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)  # import raises ImportError
+    ref = _cells(12, shape=(20, 96, 96))
+    frames = animate_evaluation(
+        ref, ref, {"unregistered": Transform.identity(3)}, tmp_path / "check.mp4", zoom_px=32
+    )
+    assert len(list(frames.glob("*.png"))) == HOLD_FRAMES + 20
+    assert not (tmp_path / "check.mp4").exists()
+
+
+def test_a_video_that_fails_part_way_leaves_no_partial_file(tmp_path, monkeypatch):
+    # the fallback caught any RuntimeError mid-run and left the half-written mp4
+    from biahub.registration import view
+
+    ref = _cells(12, shape=(20, 96, 96))
+    calls = []
+    rgb = view._rgb
+
+    def failing(*args):
+        calls.append(1)
+        if len(calls) > 3:
+            raise RuntimeError("a frame failed")
+        return rgb(*args)
+
+    monkeypatch.setattr(view, "_rgb", failing)
+    with pytest.raises(RuntimeError, match="a frame failed"):
+        view.animate_evaluation(
+            ref,
+            ref,
+            {"unregistered": Transform.identity(3)},
+            tmp_path / "check.mp4",
+            zoom_px=32,
+        )
+    assert not (tmp_path / "check.mp4").exists()
+    assert not (tmp_path / "check").exists()
+
+
+def test_detector_settings_may_differ_per_side(monkeypatch):
+    from biahub.registration import evaluate as module
+
+    seen = []
+    monkeypatch.setitem(
+        module.LANDMARK_DETECTORS,
+        "beads",
+        (lambda volume, um, **kwargs: seen.append(kwargs) or np.zeros((0, 3)), (1.0, "zyx")),
+    )
+    sides = {"moving": {"threshold_abs": 1}, "reference": {"threshold_abs": 2}}
+    module.detect_landmarks("beads", None, None, VOX3, VOX3, sides)
+    assert seen == [{"threshold_abs": 1}, {"threshold_abs": 2}]
+
+
+def test_the_full_resolution_check_warps_once():
+    pytest.importorskip("napari")
+    from biahub.registration import view
+
+    ref = _cells(12, shape=(20, 64, 64))
+    warps = []
+    transform = Transform.from_translation([0.0, 1.0, 0.0])
+    apply = Transform.apply
+
+    def counted(self, *args, **kwargs):
+        warps.append(self)
+        return apply(self, *args, **kwargs)
+
+    Transform.apply = counted
+    try:
+        viewer = view._build_check(ref, ref, transform, VOX3, full_resolution=True, show=False)
+    finally:
+        Transform.apply = apply
+    assert (
+        len(warps) == 1
+        and [layer.name for layer in viewer.layers][-1] == "moving (registered)"
+    )
+    viewer.close()

@@ -75,7 +75,7 @@ class Evaluation:
 DISPLAY_PX = 512
 
 
-def _shrink_yx(volume: np.ndarray, factor: int) -> np.ndarray:
+def shrink_yx(volume: np.ndarray, factor: int) -> np.ndarray:
     """Return `volume` averaged over factor x factor blocks in yx (edges cropped)."""
     z, y, x = volume.shape
     y, x = y - y % factor, x - x % factor
@@ -94,7 +94,7 @@ def display_volumes(transforms: list[Transform], mov: ArrayLike, ref: ArrayLike)
     mov = np.nan_to_num(np.asarray(mov, dtype=np.float32))
     ref = np.nan_to_num(np.asarray(ref, dtype=np.float32))
     factor = max(1, int(np.ceil(max(ref.shape[1:]) / DISPLAY_PX)))
-    small_mov, small_ref = _shrink_yx(mov, factor), _shrink_yx(ref, factor)
+    small_mov, small_ref = shrink_yx(mov, factor), shrink_yx(ref, factor)
     warped = []
     for transform in transforms:
         if transform.is_identity and small_mov.shape == small_ref.shape:
