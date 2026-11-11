@@ -167,7 +167,7 @@ def apply_transform(
     With reference positions: the output lives on the reference grid and holds the
     reference channels copied plus the transformed moving channels (registration). Without:
     the moving channels are transformed onto their own grid (stabilization). Each timepoint
-    takes its own entry's matrix (`TransformSettings.matrix_for`); a series-wide entry
+    takes its own entry's matrix (`TransformSettings.transform_for`); a series-wide entry
     applies to all. The crop is the full reference grid (`keep_overhang`, the default),
     or else the largest box inside the overlap shared by every transform in the file at the
     chosen timepoints -- all positions, not only the ones applied, so each position can be
@@ -205,6 +205,11 @@ def apply_transform(
     }
     for key in position_keys if settings.per_position else position_keys[:1]:
         _say_which_timepoints_reuse_an_end_entry(settings, key, time_indices)
+    if settings.reference_channel is not None and not reference_position_dirpaths:
+        raise click.UsageError(
+            f"a registration onto {settings.reference_channel!r} needs the reference "
+            "positions (-r): its output is on the reference grid"
+        )
     reference_for = pair_reference_positions(position_keys, reference_position_dirpaths)
     # Timepoints written with a transform that is not `accepted`, per position.
     not_accepted = {}

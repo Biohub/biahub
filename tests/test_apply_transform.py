@@ -673,7 +673,7 @@ def test_init_then_one_position_per_task_writes_what_one_call_writes(
         np.testing.assert_array_equal(got[fov], expected[fov])
 
 
-def test_the_canvas_does_not_depend_on_the_positions_applied(
+def test_the_crop_does_not_depend_on_the_positions_applied(
     two_position_stabilization, tmp_path
 ):
     # The shared crop is the overlap of every transform in the file, so a task applying one
@@ -1135,3 +1135,20 @@ def test_timepoints_outside_the_files_range_are_named_with_the_entry_they_reuse(
     )
     out = capsys.readouterr().out
     assert "outside the transforms file's timepoints (0-1): t=[2] use the entry of t=1" in out
+
+
+def test_a_registration_file_needs_its_reference_positions(structured_plate, tmp_path):
+    # without -r it was written on the moving grid, labelled with the reference's voxels
+    position, _ = structured_plate
+    config = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["GFP"],
+            reference_channel="Phase3D",
+            transforms=[TransformEntry(matrix=_translation(0, 1, 1))],
+        ),
+        config,
+    )
+    with pytest.raises(click.UsageError, match="needs the reference positions"):
+        apply_transform([position], config, tmp_path / "out.zarr", cluster="debug")
