@@ -219,3 +219,18 @@ def test_a_transforms_file_without_a_method_does_not_claim_bead_matching():
         transforms=[TransformEntry(matrix=np.eye(4).tolist())],
     )
     assert settings.method is None
+
+
+def test_a_substitute_with_no_recorded_method_is_not_credited_to_the_base():
+    # an unrecorded method stored None, which reads as the base's (bead_matching); and
+    # initialized_from was dropped
+    sub = _single(2, 9.0, method=None)
+    sub.transforms[0].initialized_from = "file+refined"
+    out, log = substitute_transforms(_beads(), [("hand.yml", sub)])
+    entry = out.transforms[2]
+    assert entry.method == "not recorded" and entry.initialized_from == "file+refined"
+    assert "method not recorded" in log[0]
+    same = substitute_transforms(
+        _beads(), [("b.yml", _single(1, 5.0, method="bead_matching"))]
+    )[0]
+    assert same.transforms[1].method is None  # the base's own method: not repeated
