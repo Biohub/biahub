@@ -792,3 +792,45 @@ def test_the_full_resolution_check_warps_once():
         and [layer.name for layer in viewer.layers][-1] == "moving (registered)"
     )
     viewer.close()
+
+
+def test_without_landmarks_the_tables_residual_scale_comes_from_the_tiles():
+    # the scale and rotation columns read the points' affine only: always empty without
+    from biahub.registration.benchmark import _row
+
+    tiles_only = _row(_record(images=True, landmarks=False), "transforms", "A/1/0", 0)
+    assert tiles_only["scale_from"] == "tiles" and tiles_only["scale_yx"] is not None
+    both = _row(_record(images=True, landmarks=True), "transforms", "A/1/0", 0)
+    assert both["scale_from"] == "points"
+
+
+def test_nuclei_landmarks_measure_a_known_shift_end_to_end():
+    # the path the real-data tables rest on: detect nuclei in both, pair, measure z
+    from biahub.registration.evaluate import MIN_POINTS_FOR_Z, evaluate
+
+    ref = _disk_nuclei()
+    shift_zyx = (1.0, 6.0, -4.0)
+    mov = _ndi_shift(ref, shift_zyx, order=1, mode="nearest")
+    exact = Transform.from_translation([-s for s in shift_zyx])
+    record = evaluate(exact, mov, ref, VOX3, VOX3, landmarks="nuclei", images=False)
+    assert record.points["n_matched"] >= MIN_POINTS_FOR_Z
+    assert record.z_from == "points (nuclei)"
+    assert record.points["stats"]["median_um"] < 0.1
+    shift_um = np.linalg.norm(np.multiply(shift_zyx, VOX3))
+    assert record.baseline["points"]["stats"]["median_um"] == pytest.approx(shift_um, rel=0.1)
+
+
+def test_the_survey_counts_nuclei_when_asked(tmp_path):
+    from iohub import open_ome_zarr
+    from iohub.ngff.models import TransformationMeta
+
+    from biahub.registration.benchmark import survey_positions
+
+    path = tmp_path / "nuclei.zarr"
+    volume = _disk_nuclei()
+    with open_ome_zarr(path, layout="hcs", mode="w", channel_names=["DAPI"]) as plate:
+        position = plate.create_position("A", "1", "0")
+        scale = TransformationMeta(type="scale", scale=[1.0, 1.0, *VOX3])
+        position.create_image("0", volume[None, None], transform=[scale])
+    (row,) = survey_positions([path / "A" / "1" / "0"], ["DAPI"], nuclei=True)
+    assert row["n_nuclei"] > 5

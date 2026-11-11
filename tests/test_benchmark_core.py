@@ -98,3 +98,7 @@ def test_a_blank_position_gets_one_row_saying_which_side_is_empty(tmp_path):
     assert (blank[0]["candidate"], blank[0]["empty"]) == ("unregistered", "moving")
     assert blank[0]["tiles_median_um"] is None
     assert {r["empty"] for r in rows if r["position"] == "A/1/0"} == {None}
+    with open_ome_zarr(positions[1], mode="r+") as position:
+        position.data[0] = 0  # both channels blank
+    rows = evaluate_candidates({}, [(positions[1], positions[1])], "DAPI", "VS")
+    assert [r["empty"] for r in rows] == ["both"]

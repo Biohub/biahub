@@ -357,9 +357,14 @@ def write_benchmark_config(
 
 
 def _row(record: Evaluation, candidate: str, position: str, t: int) -> dict:
-    """Flatten one evaluation into a table row."""
+    """Flatten one evaluation into a table row.
+
+    The residual scale and rotation come from the points' fit, else the tiles'
+    (`scale_from` says which).
+    """
     points, tiles = record.points or {}, record.tiles or {}
-    affine = points.get("affine") or {}
+    scale_from = "points" if points.get("affine") else "tiles" if tiles.get("affine") else None
+    affine = (points.get("affine") if scale_from == "points" else tiles.get("affine")) or {}
     scale = affine.get("scale_zyx")
     return {
         "candidate": candidate,
@@ -371,6 +376,7 @@ def _row(record: Evaluation, candidate: str, position: str, t: int) -> dict:
         "points_median_um": (points.get("stats") or {}).get("median_um"),
         "scale_yx": None if scale is None else list(scale[1:]),
         "rotation_yx_deg": affine.get("rotation_yx_deg"),
+        "scale_from": scale_from,
         "z_um": record.z_um,
         "z_from": record.z_from,
         "transform_scale_zyx": record.geometry["scale_zyx"],
@@ -392,6 +398,7 @@ _MEASURED = (
     "points_median_um",
     "scale_yx",
     "rotation_yx_deg",
+    "scale_from",
     "z_um",
     "z_from",
     "transform_scale_zyx",

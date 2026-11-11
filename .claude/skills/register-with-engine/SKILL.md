@@ -118,6 +118,32 @@ set:
   setting for any correlation-scored method).
 - `fallback.repair: null` when there is one timepoint.
 
+## 4b. Choose a pipeline when no method is clearly right
+
+Without beads, compare a few pipelines (`templates/pipelines/`: single methods and stacks)
+on held-out positions instead of guessing, with `biahub.registration.benchmark`:
+
+```python
+from biahub.registration.benchmark import (
+    select_pipeline, select_positions, survey_positions, write_benchmark_config,
+)
+rows = survey_positions(positions, [moving_channel, reference_channel], nuclei=True)
+estimate_on, held_out = select_positions(rows)  # most spread-out structure; other wells
+write_benchmark_config(
+    "benchmark.yml", "<case>", moving_store, reference_store, moving_channel,
+    reference_channel, estimate_on, held_out,
+    {"ants": "pipelines/ants.yml", "local_pcc_ants": "pipelines/local_pcc_ants.yml"},
+    landmarks="nuclei",  # or "beads", or None; a stabilization: reference None, evaluate_t
+)
+```
+
+Run `nextflow run nextflow/registration_benchmark_wf.nf -profile slurm --benchmark
+benchmark.yml --output $(realpath runs/benchmark) -resume`, then
+`select_pipeline("runs/benchmark/benchmark.csv", case="<case>")`: it returns the pipeline
+(or None) and the reason -- landmark residuals when every pipeline matched enough, else
+the tiles; a pipeline that failed on a position cannot win; a tie goes to fewer blocks;
+nothing wins unless it clearly beats the unregistered pair. Show the reason with the plan.
+
 ## 5. Present the plan
 
 Show: dataset, beads well, moving/reference stores and channels, T and volume shape, the
