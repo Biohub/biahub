@@ -16,8 +16,8 @@
 #                                estimate of the offset and scale; {from: shapes, rotate90: -1,
 #                                fliplr: false} builds it from the store shapes (the mantis
 #                                light-sheet rotation; only for mantis data)
-#   fallback.repair           -- for a single timepoint, set it to null: there is nothing to
-#                                repair from, and each repair is another full ANTs run
+#   fallback.repair           -- off (null, the default) for a single timepoint: there is
+#                                nothing to repair from, and each repair is another full ANTs run
 # The score is a correlation: a correct transform often scores 0.1-0.3. The absolute
 # fallback.flag thresholds are the bead overlap's (off for correlation), so only the run's
 # own line flags it, and `unreliable` here means "check", not "wrong"; check the result with

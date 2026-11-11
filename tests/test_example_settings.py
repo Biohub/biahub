@@ -235,8 +235,10 @@ def test_skill_config_templates_load():
     from biahub.settings import load_estimate_transform_settings
 
     root = Path(__file__).resolve().parents[1] / ".claude" / "skills"
+    # the method templates and the benchmark's pipelines
     templates = sorted(root.glob("*/templates/estimate-transform*.yml"))
-    assert templates
+    templates += sorted(root.glob("*/templates/pipelines/*.yml"))
+    assert any(t.parent.name == "pipelines" for t in templates)
     for template in templates:
         load_estimate_transform_settings(template)
 

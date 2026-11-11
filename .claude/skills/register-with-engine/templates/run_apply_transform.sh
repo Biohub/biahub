@@ -22,7 +22,7 @@ CHANNELS=()                                    # e.g. ("GFP EX488 EM525-45"); em
                                                #    (DragonFly: the BF is on the reference camera)
 CROP_TO_OVERLAP=false                          # true: crop to the box every transform covers
 SBATCH=""                                      # optional sbatch file (time, partition -- default
-                                               # preempted); --mem-per-cpu is per CPU, x up to 8
+                                               # preempted); --mem-per-cpu is per CPU, x up to 32
 VENV=""                           # empty: $BIAHUB/.venv; or another biahub venv (runs BIAHUB's code)
 
 # Relative paths are next to this script, wherever it is launched from.

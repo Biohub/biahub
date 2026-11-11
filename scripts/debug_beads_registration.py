@@ -124,18 +124,14 @@ ref_data_ants = ants.from_numpy(ref_data)
 
 # %% Compute approximate transform from voxel sizes (if not provided in config)
 if config.affine_transform_settings.compute_approx_transform:
-    from biahub.registration.seed import get_aprox_transform
+    from biahub.registration.methods.manual.shapes import ShapesEstimator
 
-    approx_transform = get_aprox_transform(
-        mov_shape=mov_data.shape[-3:],
-        ref_shape=ref_data.shape[-3:],
-        pre_affine_90degree_rotation=-1,
-        pre_affine_fliplr=False,
-        verbose=True,
-        ref_voxel_size=ref_scale,
-        mov_voxel_size=mov_scale,
+    # the shapes method: the stores' grids with the mantis light-sheet turn (forward)
+    forward = ShapesEstimator(mov_scale, ref_scale, rotate90=-1, fliplr=False).transform_for(
+        mov_data.shape[-3:], ref_data.shape[-3:]
     )
-    config.affine_transform_settings.approx_transform = approx_transform.to_list()
+    # the legacy config holds the inverse (reference -> moving) matrix
+    config.affine_transform_settings.approx_transform = forward.invert().to_list()
 # %% Apply approximate transform to moving volume and visualize overlay
 initial_transform = Transform(
     matrix=np.asarray(config.affine_transform_settings.approx_transform)
@@ -250,7 +246,11 @@ composed_transform
 estimator = build_beads_estimator(
     config.beads_match_settings, config.affine_transform_settings.transform_type
 )
-optimized_transform = estimator.estimate(mov_data, ref_data, seed=initial_transform)
+# the engine starts from a forward (moving -> reference) transform; the legacy matrix is
+# the inverse
+optimized_transform = estimator.estimate(
+    mov_data, ref_data, initial_transform=initial_transform.invert()
+)
 quality_score_optimized = metric_fn("overlap", config.beads_match_settings)(
     optimized_transform, mov_data, ref_data
 )

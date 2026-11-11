@@ -9,6 +9,8 @@ manual:
   affine_fliplr: false
 transform:
   type: euclidean
+  # the start pre-aligns the moving volume shown for clicking (without one, the manual
+  # block's turn and flip do); the clicked fit is composed with it
   initial:
     from: matrix
     matrix:

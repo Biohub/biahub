@@ -15,7 +15,7 @@
 | a timepoint `unreliable` with note `job failed: <error>` (e.g. `RuntimeError: blosc encoded value is invalid`) | that timepoint's job raised (unreadable chunk, I/O fault); the run carried on with a stand-in (Nextflow retried the task twice first) | check the data at that timepoint; after fixing it, relaunch with resume (`-resume` / `--resume`): the failed timepoint is redone, finished ones are kept |
 | a timepoint `unreliable` with note `empty frame (no data)` | the raw acquisition is empty there | expected; nothing moves at that timepoint |
 | a timepoint `unreliable` with `too few matches` / `too few nodes` | too few beads detected | check the bead thresholds on that timepoint; or substitute another method's result for it |
-| every timepoint `unreliable` with a correlation-based method | thresholds tuned for the bead-overlap score | read `methods.md`; check a few timepoints visually |
+| several timepoints `unreliable` with a correlation-based method | with an intensity metric the absolute thresholds are off: only the run's own line flags, so these score well below the rest of this run (a single-timepoint run never flags) | check them visually; `references/methods.md`, "Judging the result" |
 
 ## Rules
 

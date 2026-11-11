@@ -6,7 +6,8 @@ description: >-
   estimate-transform` then `biahub apply-transform`) on the Bruno HPC cluster, through the
   Nextflow workflow `nextflow/registration_wf.nf` (or the plain CLI for quick or
   interactive runs). Finds the moving and reference stores, picks the method (beads on a
-  beads well, ants on the cells when there are no beads), builds the config from a
+  beads well; on cells without beads, nuclei_matching, ants or a stack such as local phase
+  correlation then ANTs, chosen by a benchmark on held-out positions), builds the config from a
   template, scaffolds a run script, launches it in tmux, monitors it, reads the report,
   checks the result, compares against a previous registration if one exists, and
   optionally applies it. Also moves an old estimate-registration / register / stabilize
@@ -22,13 +23,16 @@ request to estimate, run or apply registration or stabilization for a dataset.
 
 Registration is estimated per timepoint on the **beads well** (both optical arms or
 cameras see the beads) and applied to every sample well; without beads, it is estimated on
-cells with `ants` (one FOV with good structure). Stabilization is estimated per position
-on the sample wells themselves.
+cells (nuclei, or the images themselves: step 4b chooses how). Stabilization is estimated
+per position on the sample wells themselves.
 
 Which positions are estimated is always the user's choice (the positions passed): one
-position gives one transform list shared by every position (registration, whatever the
-method -- for ants, pick one FOV with good structure); several give one list each
-(stabilization, or a registration that varies across the plate).
+position gives one transform list shared by every position; several give one list each
+(stabilization, or a registration that varies across the plate), or, with `pool:`, one
+shared list pooled from them (the medoid; `pool: {z: median}` keeps its yx and takes the
+positions' median z, for a plate whose z differs by well). `transform_spread`
+(`biahub.estimate_transform`) says from estimates on a sample whether the plate needs one
+transform, one per position or one per timepoint.
 
 **Two ways to run it** (same code, same results):
 
@@ -101,6 +105,9 @@ so):
 - `estimate-transform-shapes.yml`: the registration the stores' metadata implies (a geometry check,
   or a first block).
 - `estimate-transform-focus_finding.yml`, `estimate-transform-phase_cross_corr.yml`: stabilization.
+- `pipelines/`: the candidates step 4b compares -- single methods and stacks (e.g.
+  `local_pcc_ants.yml`: local phase correlation for the coarse yx scale, rotation and shift,
+  then ANTs).
 
 If the project has an old `estimate-registration` / `estimate-stabilization` config,
 convert it instead: `biahub convert-settings -c <old>.yml -o <new>.yml` (it keeps the initial transform,
@@ -113,10 +120,9 @@ set:
   every timepoint independently.
 - `time_indices`: `all` for production, a short contiguous range for a smoke run.
 - `preprocess`: what to do to the volumes before the method, chosen from what you see
-  (`references/methods.md`: a symptom -> block table); empty for beads.
+  (`references/methods.md`: a block per situation); empty for beads.
 - `score`: the metric, its own blocks, and `report` metrics to read next to it (worth
   setting for any correlation-scored method).
-- `fallback.repair: null` when there is one timepoint.
 
 ## 4b. Choose a pipeline when no method is clearly right
 
@@ -181,7 +187,8 @@ timed-out tasks itself (doubling the time after a time limit); for the plain CLI
 volumes set a time limit in an sbatch file (`-sb`), which wins over every default
 (`references/recovery.md`). The plain CLI submits to the `preempted` partition unless the
 sbatch file sets `#SBATCH --partition=...`; set only what you need there -- a
-`--mem-per-cpu` applies per CPU, and apply-transform asks for up to 8 CPUs per task.
+`--mem-per-cpu` applies per CPU, and apply-transform asks for up to 32 CPUs per task (one
+per timepoint x channel; it prints what it asks for).
 
 ## 8. Monitor
 
@@ -221,19 +228,28 @@ the per-timepoint records `<run>/timepoints/<t>.json`:
 ## 9b. Evaluate
 
 Scores rank candidates; they do not say how far off a registration is. Measure it in µm,
-independently of the score, with `biahub evaluate-transform` (or
-`biahub.registration.evaluate` in Python), on
-one timepoint of the position it was estimated on and of one or two held-out positions
-(for a beads registration, sample wells: real structure, as the data will be used):
+independently of the score, on one timepoint of the position it was estimated on and of
+one or two held-out positions (for a beads registration, sample wells: real structure, as
+the data will be used). From the command line, one row per candidate (the file's
+transform, each block of its stack, the unregistered pair):
+
+```bash
+biahub evaluate-transform -m <store>/<fov> [<store>/<fov> ...] -r <reference store>/<fov> ... \
+    -c <out>/transforms.yml -o <out>/evaluation.csv --timepoint <t> \
+    [--landmarks nuclei|beads] [--figures]
+```
+
+A stabilization takes no `-r` and is compared with its reference frame (`--reference-t`
+to choose another). Or in Python, with `biahub.registration.evaluate`:
 
 ```python
 import json
-from biahub.core.transform import Transform
 from biahub.registration.evaluate import evaluate
 from biahub.registration.view import plot_evaluation
 from biahub.settings import load_transform_settings
 
-transform = Transform(load_transform_settings("<out>/transforms.yml").matrix_for(t, "forward"))
+# position: the moving position's key (e.g. "A/1/0") for a per-position file, else None
+transform = load_transform_settings("<out>/transforms.yml").transform_for(t, position)
 # mov_zyx, ref_zyx: the moving and reference channels at t; *_um: each store's voxel size
 record = evaluate(transform, mov_zyx, ref_zyx, mov_um, ref_um, landmarks="nuclei")
 plot_evaluation(record, path="<out>/evaluation/<fov>_t<t>.png", title="<dataset> <fov> t=<t>")

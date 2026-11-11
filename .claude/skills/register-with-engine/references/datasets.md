@@ -11,12 +11,12 @@
 
 **DragonFly.** The two cameras differ in magnification by a few percent in y/x, although both
 stores claim the same pixel size, and the ratio changes between setups: measure it for each
-dataset rather than reuse one. So the transform is a camera-to-camera geometry and needs a
+dataset rather than reuse one. So the transform is a camera-to-camera geometry and needs an
 initial transform that carries that scale (measured, or an earlier registration of the same setup:
 `references/methods.md`, "ANTs"). Expect a z offset of several slices between the cameras,
 which can differ between wells by a couple of slices -- and between fluorescence channels:
 beads in one colour register that colour only, so check other channels' z (e.g. their z
-profiles against phase in a few cells). Often T=1 (set `fallback.repair: null`). Applying:
+profiles against phase in a few cells). Often T=1 (nothing to repair: repair is off by default). Applying:
 pass `--channels` with the fluorescence channels only -- the moving store also holds the BF
 channel, which is already on the reference camera.
 

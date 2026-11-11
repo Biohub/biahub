@@ -8,13 +8,15 @@
 | fluorescence -> label-free registration on cells, nuclei in both (e.g. DAPI onto virtual-stained nuclei) | `nuclei_matching` | detects and matches nuclei; needs a start within a few µm (an earlier result, or a coarse block first); `templates/estimate-transform-nuclei_matching.yml` |
 | registration without usable beads (e.g. fluorescence onto virtual staining) | `ants` | intensity-based; see "ANTs" below; `templates/estimate-transform-ants.yml` |
 | a single hand-picked registration | `manual` | napari point annotation on one timepoint (`time_indices: <t>`), applied to all; `templates/estimate-transform-manual.yml` |
-| stabilization of a channel over time (drift) | `phase_cross_corr` | translation only; crop with `center_crop_xy`; `templates/estimate-transform-phase_cross_corr.yml` |
+| stabilization of a channel over time (drift) | `phase_cross_corr` | a translation; crop with `center_crop_xy`; `templates/estimate-transform-phase_cross_corr.yml`. With `local: {}` it phase-correlates tiles of the max projections and fits yx scale, rotation and shift (z kept from its start): a coarse first block for a registration between cameras (`templates/pipelines/local_pcc*.yml`) |
 | stabilization of phase (focus z + stackreg yx) | `focus_finding` | what the A549 projects used (`label-free/2-stabilize`); `templates/estimate-transform-focus_finding.yml` |
 | the registration the two stores' metadata implies (voxel sizes, camera turn and flip) | `shapes` | reads no pixels: `shapes: {rotate90: -1, fliplr: false}` (mantis light-sheet); a first block before a fine method, or a quick check of the geometry; `templates/estimate-transform-shapes.yml` |
 | a coarse method, then a fine one (each block starts from the one before) | a stack: `method: [<block>, <block>]` | `templates/pipelines/` (e.g. `local_pcc_ants.yml`: local phase correlation then ANTs; `local_pcc_nuclei_matching.yml`); the benchmark compares them |
 
 `reference.frame`: `cross` (another channel at the same timepoint: registration), `first`
-or `previous` (the channel's own first / previous frame with data: stabilization).
+or `previous` (the channel's own first / previous frame with data: stabilization), or
+`neighbours` with a `window` (the median of the frames within t +- window: absolute
+transforms that measure single-frame jumps without a chain).
 
 ## Preprocessing blocks: `preprocess`
 
@@ -25,11 +27,13 @@ blocks default to both; a mask names its volume), and runs in that volume's own 
 | Block | Kind | Use it when |
 |---|---|---|
 | `clip_percentiles: {low: 1, high: 99.5}` | image | hot pixels, saturated spots or bright debris dominate; each volume clipped to its own percentiles |
+| `log1p: {}` | image | a few bright structures dominate the intensities and dim ones should count (log(1 + v)) |
+| `gaussian_blur: {sigma: 1.0}` | image | noise makes the comparison unsteady; sigma in voxels, every axis |
 | `sobel: {}` | image | the two channels show the same structures with different intensities (fluorescence vs phase / virtual staining): compare edges |
 | `mask_circle: {volumes: [reference], radius: 0.9}` | mask | a bright ring at the field edge (mantis v1 well edge); radius is a fraction of the half-width of the shorter yx axis |
 | `mask_box: {volumes: [reference], box: [all, [y0, y1], [x0, x1]]}` | mask | only part of the field is informative (cells in one region, a damaged corner); keep it large and spread out -- scale and rotation are poorly constrained from a small region |
 
-Image blocks apply to every method; mask blocks only to methods that can use them (`ants`;
+Image blocks apply to every method that reads pixels (not `shapes`); mask blocks only to methods that can use them (`ants`;
 the config refuses them for the others). Sobel before `bead_matching` would break bead detection:
 image blocks are for intensity methods unless there is a reason.
 
@@ -38,8 +42,8 @@ image blocks are for intensity methods unless there is a reason.
 Every decision -- accept or flag, repair, the competitions -- uses one score per transform.
 
 - `score.metric`: `overlap` / `residual` (beads), `correlation`, `mutual_information`,
-  `gradient_correlation`; unset = the method's default (beads `overlap`, ants and the
-  stabilizations `correlation`, manual `gradient_correlation`).
+  `gradient_correlation`; unset = the method's default (beads `overlap`, manual
+  `gradient_correlation`, every other method `correlation`).
 - `score.preprocess`: image blocks applied to the warped moving volume and the reference
   just before comparing (after the overlap is found on the raw volumes), e.g. `sobel` to
   compare edges. Intensity metrics only. The method's own `preprocess` never changes the
@@ -165,8 +169,8 @@ searches near where it starts, so **the initial transform decides which answer i
   outliers; masks as in the table above.
 - `score.preprocess: [{sobel: {}}]` to score edges like the estimate; `score.report:
   [correlation, mutual_information]` to see raw-pair metrics next to it.
-- `fallback.repair: null` for a single timepoint: there is nothing to repair from, and each
-  repair is another full ANTs run.
+- `fallback.repair` stays off (the default) for a single timepoint: there is nothing to
+  repair from, and each repair is another full ANTs run.
 
 **The initial transform.** A similarity transform has one scale for all axes, so an anisotropic
 difference (two cameras: y/x scaled, z not) must come from the initial transform, with ANTs refining on

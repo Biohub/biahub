@@ -2,8 +2,8 @@
 # onto label-free Phase3D). Production beads settings of 2025_09_18_72hpf_cldnb-she-myo6b reduced
 # to the fields EstimateTransformSettings accepts, plus:
 #   spectral: always          -- acquire-then-refine second candidate; measured better than hungarian-only
-#   initial_transform_correction vote_fit -- corrects a drifted initial transform by bead
-#                                displacement voting
+#   initial_transform_correction_settings.mode: vote_fit -- corrects a drifted initial
+#                                transform by bead displacement voting
 # Replace transform.initial with the dataset's previous result when one exists. Same instrument
 # geometry -> same linear part; only the translation moves between acquisitions.
 moving:

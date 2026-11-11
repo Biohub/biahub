@@ -5,7 +5,9 @@
 #                                 transform type in yx and a z shift
 #   transform.initial          -- nuclei must start within the matcher's reach (a few µm):
 #                                 the previous result of the same setup, or a coarse block
-#                                 (e.g. phase_cross_corr) before this one
+#                                 (e.g. phase_cross_corr) before this one. The matrix below
+#                                 is 2025_04_18's: replace it, the camera ratio differs
+#                                 between setups (references/datasets.md)
 #   score: correlation         -- intensity score; the bead metrics need beads
 moving:
   channel: 2-Prime_DAPI

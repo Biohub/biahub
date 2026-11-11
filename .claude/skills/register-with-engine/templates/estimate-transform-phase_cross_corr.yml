@@ -1,3 +1,11 @@
+# biahub estimate-transform -- stabilization of one channel over time by phase
+# cross-correlation (a translation per timepoint). Decide:
+#   reference.frame         -- first (every timepoint onto the first frame with data),
+#                              previous (a chain: errors accumulate on long series) or
+#                              neighbours with a window (absolute; single-frame jumps)
+#   phase_cross_corr.center_crop_xy / maximum_shift -- where to correlate, and how far
+#                              a timepoint may move
+# See references/methods.md, "Which method".
 moving:
   channel: Phase3D
 reference:
