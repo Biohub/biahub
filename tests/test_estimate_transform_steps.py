@@ -378,7 +378,7 @@ def test_a_half_written_record_is_redone_not_fatal(
 def test_the_engine_refuses_with_a_library_error_not_a_command_line_one(tmp_path):
     import click
 
-    from biahub.registration.engine.disk import _flags, _run_plan, _run_settings
+    from biahub.registration.engine.disk import read_flags, read_run_plan, read_run_settings
     from biahub.registration.utils import RunError, resolve_time_indices
 
     assert not issubclass(RunError, click.ClickException)
@@ -386,11 +386,11 @@ def test_the_engine_refuses_with_a_library_error_not_a_command_line_one(tmp_path
         resolve_time_indices([5], 3)
     with pytest.raises(RunError, match="selects no timepoints"):
         resolve_time_indices([], 3)
-    for read in (_run_settings, _run_plan):
+    for read in (read_run_settings, read_run_plan):
         with pytest.raises(RunError, match="run with --init first"):
             read(tmp_path)
     with pytest.raises(RunError, match="run --step flag first"):
-        _flags(tmp_path)
+        read_flags(tmp_path)
 
 
 def test_a_refused_init_leaves_the_earlier_run_as_it_was(

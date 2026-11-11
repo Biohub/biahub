@@ -66,7 +66,7 @@ def test_select_flagged_returns_empty_when_nothing_flagged():
     assert stats["median"] == pytest.approx(0.9)
 
 
-def _run_settings(metric, **fallback):
+def read_run_settings(metric, **fallback):
     from biahub.settings import EstimateTransformSettings
 
     return EstimateTransformSettings(
@@ -81,15 +81,15 @@ def _run_settings(metric, **fallback):
 def test_the_absolute_thresholds_are_the_bead_overlaps_and_off_for_other_metrics():
     # floor 0.80 / hard_fail 0.40 / consensus 0.75 are bead-overlap values: on a
     # correlation (a correct cross-modal pair scores ~0.1) they flagged whole runs
-    overlap = _run_settings("overlap").fallback_thresholds()
+    overlap = read_run_settings("overlap").fallback_thresholds()
     assert (overlap.floor, overlap.hard_fail, overlap.consensus) == (0.80, 0.40, 0.75)
-    correlation = _run_settings("correlation").fallback_thresholds()
+    correlation = read_run_settings("correlation").fallback_thresholds()
     assert (correlation.floor, correlation.hard_fail, correlation.consensus) == (
         None,
         None,
         None,
     )
-    given = _run_settings(
+    given = read_run_settings(
         "correlation",
         flag={"floor": 0.2, "hard_fail": 0.05},
         repair={"consensus_threshold": 0.3},
@@ -141,7 +141,7 @@ def test_a_correlation_run_scoring_about_0_1_is_not_unreliable_as_a_whole():
     scores = 0.1 + rng.permutation(np.linspace(-0.003, 0.003, 40))  # a run's spread
     scores[17] = 0.01  # one timepoint that really failed
     result = SeriesResult(scores=dict(enumerate(scores)))
-    thresholds = _run_settings("correlation").fallback_thresholds()
+    thresholds = read_run_settings("correlation").fallback_thresholds()
     flagged = flag_series(result, floor=thresholds.floor, hard_fail=thresholds.hard_fail)
     entries = transform_entries(
         result, list(range(40)), [Transform.identity(3)] * 40, thresholds.hard_fail

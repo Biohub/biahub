@@ -22,32 +22,32 @@ from biahub.cli.monitor import monitor_jobs
 from biahub.cli.parsing import sbatch_to_submitit
 from biahub.core.transform import Transform
 from biahub.registration.engine.core import (
-    _final,
-    _finite_or_none,
-    _initial_policy,
-    _metric_fn,
-    _reference_policy,
-    _score_fn,
-    _static_initial,
     build_estimator,
+    build_initial_policy,
+    build_reference_policy,
     estimate_minutes,
+    final_block,
     finalize_run,
+    finite_or_none,
     flag_run,
     init_run,
+    run_metric_fn,
+    run_score_fn,
+    static_initial,
 )
 from biahub.registration.engine.disk import (
     ENGINE_SETTINGS_FILENAME,
     JOB_FAILED_PREFIX,
-    _failed_record,
-    _finished,
-    _flags,
-    _job_failure,
-    _load_series,
-    _open_series,
-    _read_record,
-    _record_dirs,
-    _run_plan,
-    _write_json,
+    failed_record,
+    is_finished,
+    job_failure,
+    load_series,
+    open_series,
+    read_flags,
+    read_record,
+    read_run_plan,
+    run_record_dirs,
+    write_json,
 )
 from biahub.registration.engine.fallback import (
     PassRecord,
@@ -90,10 +90,10 @@ from biahub.utils.config import yaml_to_model
 
 def _bead_metrics(settings, result, t, mov, ref, reference_policy=None) -> dict | None:
     """Continuous bead residuals next to the score, for the beads method."""
-    final = _final(settings)
+    final = final_block(settings)
     if final.method != "bead_matching" or t not in result.transforms:
         return None
-    policy = reference_policy or _reference_policy(settings, ref)
+    policy = reference_policy or build_reference_policy(settings, ref)
     ref_t = np.asarray(policy.reference_for(mov, t))
     metrics = bead_alignment_metrics(
         result.transforms[t], np.asarray(mov[t]), ref_t, final.bead_matching
@@ -113,19 +113,19 @@ def _report_metrics(
     """
     if not settings.score.report or transform is None:
         return None
-    policy = reference_policy or _reference_policy(settings, ref)
+    policy = reference_policy or build_reference_policy(settings, ref)
     ref_t = np.asarray(policy.reference_for(mov, t))
     mov_t = np.asarray(mov[t])
     click.echo(f"t={t}: report metrics {settings.score.report}, and the unregistered pair's")
     report = {}
     # one warp for every metric, for the result and for the unregistered pair
-    metrics = {metric: _metric_fn(settings, metric) for metric in settings.score.report}
+    metrics = {metric: run_metric_fn(settings, metric) for metric in settings.score.report}
     for prefix, candidate in (("", transform), ("unregistered_", Transform.identity())):
         warped = candidate.apply(mov_t, reference=ref_t)
         for metric, fn in metrics.items():
-            report[prefix + metric] = _finite_or_none(fn(PREWARPED, warped, ref_t))
+            report[prefix + metric] = finite_or_none(fn(PREWARPED, warped, ref_t))
     # `warped` is the unregistered pair's now
-    unregistered = _finite_or_none(_score_fn(settings)(PREWARPED, warped, ref_t))
+    unregistered = finite_or_none(run_score_fn(settings)(PREWARPED, warped, ref_t))
     report["unregistered_score"] = unregistered
     if score is not None and unregistered is not None and np.isfinite(score):
         if unregistered >= score and not transform.is_identity:
@@ -234,13 +234,13 @@ def _job_inputs(
     """Return what every job starts from: settings, series, estimator, initial transform."""
     use_task_threads()  # a fresh job process: before any ITK operation
     settings = yaml_to_model(settings_path, EstimateTransformSettings)
-    mov, mov_voxel_size = _open_series(moving_position_dirpath, settings.moving.channel)
-    ref, ref_voxel_size = _open_series(reference_position_dirpath, settings.reference_channel)
+    mov, mov_voxel_size = open_series(moving_position_dirpath, settings.moving.channel)
+    ref, ref_voxel_size = open_series(reference_position_dirpath, settings.reference_channel)
     mov, ref = _JobFrames(mov), _JobFrames(ref)
     estimator, score_fn = build_estimator(
         settings, tuple(mov.shape[-3:]), mov_voxel_size, ref_voxel_size
     )
-    initial = _initial_policy(settings, Path(settings_path).parent)
+    initial = build_initial_policy(settings, Path(settings_path).parent)
     return _JobInputs(
         settings,
         mov,
@@ -250,7 +250,7 @@ def _job_inputs(
         estimator,
         score_fn,
         initial,
-        _reference_policy(settings, ref),
+        build_reference_policy(settings, ref),
     )
 
 
@@ -290,7 +290,7 @@ def _estimate_timepoint_job(
     record = TimepointRecord(
         t=t,
         matrix=result.transforms[t].to_list() if t in result.transforms else None,
-        score=_finite_or_none(result.scores.get(t)),
+        score=finite_or_none(result.scores.get(t)),
         error=result.errors.get(t),
         initialized_from=result.initialized_from.get(t),
         best_candidate=result.best_candidate.get(t),
@@ -311,7 +311,7 @@ def _estimate_timepoint_job(
         raw_shift=_leftover_raw_shift(settings, mov, t),
     ).to_dict()
     record_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(record_path, record)
+    write_json(record_path, record)
     return record
 
 
@@ -331,12 +331,12 @@ def _estimate_propagated_job(
     job = _job_inputs(moving_position_dirpath, reference_position_dirpath, settings_path)
     settings, mov, ref = job.settings, job.mov, job.ref
     estimator, score_fn = job.estimator, job.score_fn
-    initial_transform = _static_initial(settings)
+    initial_transform = static_initial(settings)
     done = {}
     if resume:
         for t in time_indices:
             path = records_dir / f"{t}.json"
-            if _finished(path):  # a failed record is redone
+            if is_finished(path):  # a failed record is redone
                 done[t] = json.loads(path.read_text())
     records = dict(done)
     records_dir.mkdir(parents=True, exist_ok=True)
@@ -361,7 +361,7 @@ def _estimate_propagated_job(
         record = TimepointRecord(
             t=t,
             matrix=result.transforms[t].to_list() if t in result.transforms else None,
-            score=_finite_or_none(result.scores.get(t)),
+            score=finite_or_none(result.scores.get(t)),
             error=result.errors.get(t),
             stand_in=stand_in[0].to_list() if stand_in else None,
             filled_from=stand_in[1] if stand_in else None,
@@ -381,7 +381,7 @@ def _estimate_propagated_job(
             centroid=_anchor_centroid(settings, mov, t),
             raw_shift=_leftover_raw_shift(settings, mov, t),
         ).to_dict()
-        _write_json(records_dir / f"{t}.json", record)
+        write_json(records_dir / f"{t}.json", record)
         records[t] = record
         keep_for(t)
 
@@ -422,7 +422,7 @@ def _repair_timepoint_job(
     repair_settings = settings.fallback.repair
 
     # This run's estimate records (or ones --resume checked against the manifest).
-    series = _load_series(
+    series = load_series(
         records_dir, time_indices, settings.transform.type, resumed=time_indices
     )
     series.flagged = list(flagged)
@@ -445,12 +445,12 @@ def _repair_timepoint_job(
         t=t,
         accepted=outcome.accepted,
         repaired_from=outcome.repaired_from,
-        score=_finite_or_none(outcome.score),
+        score=finite_or_none(outcome.score),
         matrix=outcome.transform.to_list() if outcome.accepted else None,
-        candidate_scores={k: _finite_or_none(v) for k, v in outcome.scores.items()},
+        candidate_scores={k: finite_or_none(v) for k, v in outcome.scores.items()},
         candidate_failures=outcome.failures,
         polish_rounds=outcome.polish_rounds,
-        repair_transform_score=_finite_or_none(outcome.repair_transform_score),
+        repair_transform_score=finite_or_none(outcome.repair_transform_score),
         report=_report_metrics(
             settings,
             outcome.transform if outcome.accepted else None,
@@ -462,7 +462,7 @@ def _repair_timepoint_job(
         ),
     ).to_dict()
     record_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(record_path, record)
+    write_json(record_path, record)
     return record
 
 
@@ -487,7 +487,7 @@ def _sweep_timepoint_job(
         for name, trial in settings.sweep_trials().items()
     }
 
-    series = _load_series(records_dir, [t], settings.transform.type, resumed=[t])
+    series = load_series(records_dir, [t], settings.transform.type, resumed=[t])
     outcome = sweep_timepoint(
         t, mov, job.reference_policy, trials, initial_transform, score_fn, series
     )
@@ -495,9 +495,9 @@ def _sweep_timepoint_job(
         t=t,
         accepted=outcome.accepted,
         repaired_from=outcome.repaired_from,
-        score=_finite_or_none(outcome.score),
+        score=finite_or_none(outcome.score),
         matrix=outcome.transform.to_list() if outcome.accepted else None,
-        candidate_scores={k: _finite_or_none(v) for k, v in outcome.scores.items()},
+        candidate_scores={k: finite_or_none(v) for k, v in outcome.scores.items()},
         candidate_failures=outcome.failures,
         report=_report_metrics(
             settings,
@@ -510,7 +510,7 @@ def _sweep_timepoint_job(
         ),
     ).to_dict()
     record_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(record_path, record)
+    write_json(record_path, record)
     return record
 
 
@@ -546,7 +546,7 @@ def _run_jobs(
         try:
             records[t] = job.result()
         except Exception as e:  # noqa: BLE001 -- one job's infrastructure failure must not abort the run
-            failures[t] = _job_failure(e)
+            failures[t] = job_failure(e)
             click.echo(f"{label} t={t}: {failures[t]}")
     return records, failures
 
@@ -573,7 +573,7 @@ def _run_propagated(
         return {int(t): r for t, r in by_job[-1].items()}, {}
     records = {}
     for t in to_estimate:
-        record = _read_record(records_dir / f"{t}.json")
+        record = read_record(records_dir / f"{t}.json")
         if record is not None:
             records[t] = record
     error = failures.get(-1, f"{JOB_FAILED_PREFIX}: the sequential job did not finish")
@@ -599,11 +599,11 @@ def run_timepoint_jobs(
     `resume`, timepoints that already have a record are skipped.
     """
     work_dir = Path(work_dir)
-    plan = _run_plan(work_dir)
+    plan = read_run_plan(work_dir)
     settings_path = work_dir / ENGINE_SETTINGS_FILENAME
     moving, reference = Path(moving_position_dirpath), Path(reference_position_dirpath)
     time_indices = plan["time_indices"]
-    timepoints_dir, repairs_dir, sweeps_dir = _record_dirs(work_dir)
+    timepoints_dir, repairs_dir, sweeps_dir = run_record_dirs(work_dir)
 
     if step == "estimate" and plan["propagated"]:
         if timepoints is not None:
@@ -620,13 +620,13 @@ def run_timepoint_jobs(
             )
         except Exception as e:  # noqa: BLE001 -- recorded per timepoint, as the driver does
             # The timepoints it reached keep their records; the rest failed with it.
-            click.echo(f"estimate: {_job_failure(e)}")
+            click.echo(f"estimate: {job_failure(e)}")
             timepoints_dir.mkdir(parents=True, exist_ok=True)
             records, failed = {}, []
             for t in time_indices:
                 path = timepoints_dir / f"{t}.json"
-                if not _finished(path):
-                    _write_json(path, _failed_record(t, e))
+                if not is_finished(path):
+                    write_json(path, failed_record(t, e))
                     failed.append(t)
                 records[t] = json.loads(path.read_text())
             return records, failed
@@ -634,7 +634,7 @@ def run_timepoint_jobs(
     if step == "estimate":
         available, records_dir = time_indices, timepoints_dir
     elif step in ("repair", "sweep"):
-        available = _flags(work_dir)[step]
+        available = read_flags(work_dir)[step]
         records_dir = repairs_dir if step == "repair" else sweeps_dir
     else:
         raise ValueError(f"unknown step {step!r}")
@@ -644,11 +644,11 @@ def run_timepoint_jobs(
         raise RunError(
             f"{step}: timepoints {unknown} are not in this run's {step} list {available}"
         )
-    flagged = _flags(work_dir)["flagged"] if step == "repair" else None
+    flagged = read_flags(work_dir)["flagged"] if step == "repair" else None
     records, failed = {}, []
     for t in wanted:
         record_path = records_dir / f"{t}.json"
-        if resume and _finished(record_path):
+        if resume and is_finished(record_path):
             continue
         try:
             records[t] = _run_timepoint_job(
@@ -666,10 +666,10 @@ def run_timepoint_jobs(
             # As the driver records a job that raised: an estimate becomes a failed record
             # (the timepoint gets a stand-in, the error in its note); a repair / sweep
             # leaves no record, so the timepoint keeps its estimate.
-            click.echo(f"{step} t={t}: {_job_failure(e)}")
+            click.echo(f"{step} t={t}: {job_failure(e)}")
             if step == "estimate":
                 record_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_json(record_path, _failed_record(t, e))
+                write_json(record_path, failed_record(t, e))
             failed.append(t)
             continue
         click.echo(f"{step} t={t}: score={records[t].get('score')}")
@@ -730,7 +730,7 @@ def estimate_transform_series(
     plan = init_run(moving, reference, settings, work_dir, resume)
     settings_path = work_dir / ENGINE_SETTINGS_FILENAME
     time_indices = plan["time_indices"]
-    timepoints_dir, repairs_dir, sweeps_dir = _record_dirs(work_dir)
+    timepoints_dir, repairs_dir, sweeps_dir = run_record_dirs(work_dir)
     slurm_out_path = work_dir / "slurm_output"
     slurm_out_path.mkdir(exist_ok=True)
 
@@ -755,7 +755,7 @@ def estimate_transform_series(
     executor.update_parameters(**slurm_args)
 
     to_estimate = [
-        t for t in time_indices if not (resume and _finished(timepoints_dir / f"{t}.json"))
+        t for t in time_indices if not (resume and is_finished(timepoints_dir / f"{t}.json"))
     ]
     if resume:
         click.echo(
@@ -802,7 +802,7 @@ def estimate_transform_series(
     )
 
     to_repair = [
-        t for t in flags["repair"] if not (resume and _finished(repairs_dir / f"{t}.json"))
+        t for t in flags["repair"] if not (resume and is_finished(repairs_dir / f"{t}.json"))
     ]
     executor.update_parameters(slurm_job_name="estimate_transform_repair")
     if not user_set_time:
@@ -832,7 +832,7 @@ def estimate_transform_series(
     )
 
     to_sweep = [
-        t for t in flags["sweep"] if not (resume and _finished(sweeps_dir / f"{t}.json"))
+        t for t in flags["sweep"] if not (resume and is_finished(sweeps_dir / f"{t}.json"))
     ]
     executor.update_parameters(slurm_job_name="estimate_transform_sweep")
     sweep = plan["resources"]["sweep"]  # sized for its heaviest trial

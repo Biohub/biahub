@@ -235,7 +235,7 @@ def test_a_methods_own_score_judges_the_raw_volumes(monkeypatch):
         seen.append((np.asarray(mov), np.asarray(ref)))
         return 1.0
 
-    monkeypatch.setattr(engine, "_score_fn", lambda settings: recording_score)
+    monkeypatch.setattr(engine, "run_score_fn", lambda settings: recording_score)
     peaks = DetectPeaksSettings(
         threshold_abs=100, nms_distance=4, min_distance=0, block_size=[8, 8, 8]
     )

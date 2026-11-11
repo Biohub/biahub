@@ -311,7 +311,9 @@ def test_bead_landmarks_take_the_beads_block_of_a_stack_wherever_it_is(tmp_path)
 def test_pooling_refuses_a_timepoint_with_no_accepted_estimate():
     from biahub.estimate_transform import pool_positions
 
-    entry = TransformEntry(t=0, matrix=np.eye(4).tolist(), status="unreliable", note="stand-in")
+    entry = TransformEntry(
+        t=0, matrix=np.eye(4).tolist(), status="unreliable", note="stand-in"
+    )
     source = TransformSettings(
         direction="forward",
         moving_channels=["GFP"],

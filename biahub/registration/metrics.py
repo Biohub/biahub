@@ -146,7 +146,7 @@ PREWARPED = Prewarped()
 def _footprint(prepare, *, sobel: bool = False) -> int:
     """Return how far the score's blocks (and any built-in Sobel) reach, in voxels.
 
-    A `prepare` says its reach as a `footprint` attribute (`engine.core._score_fn` sets it
+    A `prepare` says its reach as a `footprint` attribute (`engine.core.run_score_fn` sets it
     from the blocks); without one it reaches nothing, and the score keeps no margin from
     the padding edge.
     """

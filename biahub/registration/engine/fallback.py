@@ -466,13 +466,13 @@ def repair_timepoint(
             outcome.repaired_from += f"+polish{outcome.polish_rounds}"
     result.repairs[t] = outcome
     if outcome.accepted:
-        _accept(
+        accept_result(
             result, t, outcome.transform, outcome.score, outcome.repaired_from, outcome.report
         )
     return outcome
 
 
-def _accept(
+def accept_result(
     result: SeriesResult,
     t: int,
     transform: Transform,
@@ -523,15 +523,15 @@ def sweep_timepoint(
         current_score=-np.inf if not np.isfinite(baseline_score) else baseline_score,
         score_fn=lambda transform, m=mov_t, r=ref_t: score_fn(transform, m, r),
     )
-    _fold_sweep(result, t, outcome)
+    fold_sweep(result, t, outcome)
     return outcome
 
 
-def _fold_sweep(result: SeriesResult, t: int, outcome: PassResult) -> None:
+def fold_sweep(result: SeriesResult, t: int, outcome: PassResult) -> None:
     result.sweeps[t] = outcome
     current_score = result.scores.get(t, float("nan"))
     if outcome.accepted and is_higher(outcome.score, current_score):
-        _accept(
+        accept_result(
             result,
             t,
             outcome.transform,

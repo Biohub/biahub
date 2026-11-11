@@ -193,7 +193,7 @@ def test_a_repair_candidate_with_a_bug_is_not_hidden_as_a_failed_candidate():
 
 def test_a_sweep_outcome_scoring_nan_is_not_folded_over_a_finite_estimate():
     # `not score <= current` let a NaN outcome replace a finite estimate
-    from biahub.registration.engine.fallback import PassResult, _fold_sweep
+    from biahub.registration.engine.fallback import PassResult, fold_sweep
     from biahub.registration.engine.series import SeriesResult
 
     kept = Transform.from_translation([1.0, 0.0, 0.0])
@@ -206,7 +206,7 @@ def test_a_sweep_outcome_scoring_nan_is_not_folded_over_a_finite_estimate():
         scores={},
         failures={},
     )
-    _fold_sweep(result, 0, nan_outcome)
+    fold_sweep(result, 0, nan_outcome)
     assert result.transforms[0] is kept and result.scores[0] == 0.8
 
 

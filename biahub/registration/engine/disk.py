@@ -44,7 +44,7 @@ RUN_MANIFEST_FILENAME = "run_manifest.json"
 RUN_FILENAME = "run.json"
 
 
-def _open_series(position_dirpath: Path, channel_name: str):
+def open_series(position_dirpath: Path, channel_name: str):
     """Open one channel as a (T, Z, Y, X) dask series, with its ZYX voxel size."""
     with open_ome_zarr(position_dirpath, mode="r") as position:
         series = position.data.dask_array()[:, position.channel_names.index(channel_name)]
@@ -147,7 +147,7 @@ class RunFolder:
         return [(key, self.work_dir(key, positions)) for key in positions]
 
 
-def _start_run(
+def start_run(
     work_dir: Path,
     settings: EstimateTransformSettings,
     moving: Path,
@@ -184,10 +184,10 @@ def _start_run(
         shutil.rmtree(work_dir / name, ignore_errors=True)
     # the flags were the earlier run's verdict on its own records
     (work_dir / FLAGS_FILENAME).unlink(missing_ok=True)
-    _write_json(manifest_path, fingerprint, indent=2)
+    write_json(manifest_path, fingerprint, indent=2)
 
 
-def _load_series(
+def load_series(
     records_dir: Path,
     time_indices: list[int],
     transform_type: str,
@@ -207,7 +207,7 @@ def _load_series(
         record = records.get(t)
         if record is None:
             path = records_dir / f"{t}.json"
-            record = _read_record(path) if t in resumed else None
+            record = read_record(path) if t in resumed else None
             if record is None:  # missing, unreadable, or not this run's to reuse
                 result.scores[t] = float("nan")
                 result.errors[t] = "no record: job did not finish"
@@ -216,7 +216,7 @@ def _load_series(
     return result
 
 
-def _write_json(path: Path, obj, indent: int | None = None) -> None:
+def write_json(path: Path, obj, indent: int | None = None) -> None:
     """Write JSON atomically: a job killed mid-write leaves the old file or none, never half."""
     path = Path(path)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -224,7 +224,7 @@ def _write_json(path: Path, obj, indent: int | None = None) -> None:
     os.replace(tmp, path)
 
 
-def _read_record(path: Path) -> dict | None:
+def read_record(path: Path) -> dict | None:
     """Return a record, or None if it is missing or unreadable (e.g. half-written before)."""
     try:
         return json.loads(Path(path).read_text())
@@ -236,23 +236,23 @@ def _read_record(path: Path) -> dict | None:
 JOB_FAILED_PREFIX = "job failed"
 
 
-def _job_failure(error: Exception) -> str:
+def job_failure(error: Exception) -> str:
     """Return how a job that raised is recorded: 'job failed: <type>: <last line>'."""
     message = str(error).splitlines()[-1][:200] if str(error) else ""
     return f"{JOB_FAILED_PREFIX}: {type(error).__name__}: {message}"
 
 
-def _failed_record(t: int, error: Exception) -> dict:
+def failed_record(t: int, error: Exception) -> dict:
     """Return an estimate record for a timepoint whose job raised (as the driver records it).
 
     `failed` marks it as not finished, so a retry with resume does it again.
     """
-    return TimepointRecord(t=t, error=_job_failure(error), failed=True).to_dict()
+    return TimepointRecord(t=t, error=job_failure(error), failed=True).to_dict()
 
 
-def _finished(record_path: Path) -> bool:
+def is_finished(record_path: Path) -> bool:
     """Whether a record exists for a timepoint that did not fail (what resume skips)."""
-    record = _read_record(record_path)
+    record = read_record(record_path)
     return record is not None and not record.get("failed")
 
 
@@ -262,12 +262,12 @@ RUN_PLAN_FILENAME = "run_plan.json"
 FLAGS_FILENAME = "flags.json"
 
 
-def _record_dirs(work_dir: Path) -> tuple[Path, Path, Path]:
+def run_record_dirs(work_dir: Path) -> tuple[Path, Path, Path]:
     """Return the run's per-timepoint record dirs: estimates, repairs, sweeps."""
     return work_dir / "timepoints", work_dir / "repairs", work_dir / "sweeps"
 
 
-def _initial_transforms_from_file(
+def initial_transforms_from_file(
     initial_transform_file, key: str, time_indices: list[int]
 ) -> dict[str, list]:
     """Return the `from: file` forward transform at each timepoint of position `key`."""
@@ -282,7 +282,7 @@ def _initial_transforms_from_file(
     return {str(t): transforms.transform_for(t, key).to_list() for t in time_indices}
 
 
-def _run_settings(work_dir: Path) -> EstimateTransformSettings:
+def read_run_settings(work_dir: Path) -> EstimateTransformSettings:
     """Return the settings `init_run` resolved for this run."""
     path = Path(work_dir) / ENGINE_SETTINGS_FILENAME
     if not path.exists():
@@ -290,21 +290,21 @@ def _run_settings(work_dir: Path) -> EstimateTransformSettings:
     return yaml_to_model(path, EstimateTransformSettings)
 
 
-def _run_plan(work_dir: Path) -> dict:
+def read_run_plan(work_dir: Path) -> dict:
     path = Path(work_dir) / RUN_PLAN_FILENAME
     if not path.exists():
         raise RunError(f"no run in {work_dir}: run with --init first")
     return json.loads(path.read_text())
 
 
-def _flags(work_dir: Path) -> dict:
+def read_flags(work_dir: Path) -> dict:
     path = Path(work_dir) / FLAGS_FILENAME
     if not path.exists():
         raise RunError(f"no flags in {work_dir}: run --step flag first")
     return json.loads(path.read_text())
 
 
-def _finite_or_none(value: float | None) -> float | None:
+def finite_or_none(value: float | None) -> float | None:
     """Return `value` as a float, or None for none or a non-finite one (strict JSON)."""
     return None if value is None or not math.isfinite(value) else float(value)
 
@@ -346,8 +346,8 @@ class RunJournal:
                 self.current_run_id,
                 t,
                 pass_name,
-                _finite_or_none(before_score),
-                _finite_or_none(after_score),
+                finite_or_none(before_score),
+                finite_or_none(after_score),
                 accepted,
                 failures=dict(failures or {}),
             )
@@ -357,4 +357,4 @@ class RunJournal:
         return {"attempts": [asdict(a) for a in self.attempts]}
 
     def save(self, path: Path) -> None:
-        _write_json(path, self.to_dict(), indent=2)
+        write_json(path, self.to_dict(), indent=2)

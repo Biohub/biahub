@@ -171,7 +171,7 @@ def test_a_run_from_shapes_records_the_methods_forward_answer_once(tmp_path):
     # forward answer as it is (it once wrote the inverse, which each job inverted back)
     from scipy.ndimage import shift as ndi_shift
 
-    from biahub.registration.engine.core import _static_initial
+    from biahub.registration.engine.core import static_initial
     from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME
     from biahub.registration.methods.manual.shapes import ShapesEstimator
     from biahub.utils.config import model_to_yaml, yaml_to_model
@@ -207,4 +207,4 @@ def test_a_run_from_shapes_records_the_methods_forward_answer_once(tmp_path):
     )
     assert (initial.from_, initial.direction) == ("matrix", "forward")
     np.testing.assert_array_equal(initial.matrix, expected.matrix)
-    np.testing.assert_array_equal(_static_initial(resolved).matrix, expected.matrix)
+    np.testing.assert_array_equal(static_initial(resolved).matrix, expected.matrix)

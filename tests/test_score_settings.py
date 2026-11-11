@@ -61,13 +61,13 @@ def _pair():
 def test_score_blocks_run_after_the_warp_inside_the_raw_overlap():
     # correlation with a sobel block is exactly the Sobel correlation ANTs scored with:
     # warp, find the overlap on the raw volumes, filter, compare.
-    from biahub.registration.engine.core import _score_fn
+    from biahub.registration.engine.core import run_score_fn
     from biahub.registration.metrics import correlation_score
 
     mov, ref = _pair()
     transform = Transform.from_translation([-1.0, 2.0, -3.0])
-    with_sobel = _score_fn(_settings("ants", score={"preprocess": [{"sobel": {}}]}))
-    plain = _score_fn(_settings("ants"))
+    with_sobel = run_score_fn(_settings("ants", score={"preprocess": [{"sobel": {}}]}))
+    plain = run_score_fn(_settings("ants"))
 
     assert with_sobel(transform, mov, ref) == correlation_score(
         transform, mov, ref, sobel_filter=True
@@ -80,12 +80,12 @@ def test_score_blocks_run_after_the_warp_inside_the_raw_overlap():
 
 
 def test_the_methods_blocks_do_not_change_the_score():
-    from biahub.registration.engine.core import _score_fn
+    from biahub.registration.engine.core import run_score_fn
 
     mov, ref = _pair()
     transform = Transform.from_translation([-1.0, 2.0, -3.0])
-    plain = _score_fn(_settings("ants"))
-    method_blocks = _score_fn(_settings("ants", preprocess=[{"sobel": {}}]))
+    plain = run_score_fn(_settings("ants"))
+    method_blocks = run_score_fn(_settings("ants", preprocess=[{"sobel": {}}]))
     assert method_blocks(transform, mov, ref) == plain(transform, mov, ref)
 
 
@@ -100,7 +100,7 @@ def test_score_blocks_do_not_see_the_edge_of_the_empty_padding():
     # Shifting the moving volume back in z leaves an empty slab in the warped volume. Its
     # edge is not content: with a sobel block the exact transform must still score like a
     # perfect match (DragonFly: the edge made every z-shifted transform score below identity).
-    from biahub.registration.engine.core import _score_fn
+    from biahub.registration.engine.core import run_score_fn
     from tests.test_registration_estimators import _synthetic_blob_volume
 
     rng = np.random.default_rng(6)
@@ -109,8 +109,8 @@ def test_score_blocks_do_not_see_the_edge_of_the_empty_padding():
     ref = 0.02 * _synthetic_blob_volume(rng, (24, 40, 40)) + 250.0
     mov = ndi_shift(ref, (3, 0, 0), order=0, mode="constant", cval=0.0)
     exact = Transform.from_translation([-3.0, 0.0, 0.0])
-    plain = _score_fn(_settings("ants"))(exact, mov, ref)
-    edges = _score_fn(_settings("ants", score={"preprocess": [{"sobel": {}}]}))(
+    plain = run_score_fn(_settings("ants"))(exact, mov, ref)
+    edges = run_score_fn(_settings("ants", score={"preprocess": [{"sobel": {}}]}))(
         exact, mov, ref
     )
     assert plain > 0.99
@@ -120,12 +120,12 @@ def test_score_blocks_do_not_see_the_edge_of_the_empty_padding():
 def test_a_clip_score_block_takes_its_percentiles_inside_the_overlap():
     # Percentiles over the whole warped volume counted its empty padding, so the exact
     # transform scored lower the more padding it left.
-    from biahub.registration.engine.core import _score_fn
+    from biahub.registration.engine.core import run_score_fn
     from tests.test_registration_estimators import _synthetic_blob_volume
 
     rng = np.random.default_rng(7)
     ref = _synthetic_blob_volume(rng, (24, 40, 40)) + 100.0
-    score = _score_fn(
+    score = run_score_fn(
         _settings(
             "ants", score={"preprocess": [{"clip_percentiles": {"low": 20, "high": 80}}]}
         )
@@ -190,7 +190,7 @@ def test_the_report_compares_with_the_unregistered_pair_and_warns_when_it_scores
     report = cluster._report_metrics(settings, good, 0, mov[None], ref[None], score=0.99)
     identity = Transform.identity(3)
     assert report["unregistered_correlation"] == correlation_score(identity, mov, ref)
-    assert report["unregistered_score"] == engine._score_fn(settings)(identity, mov, ref)
+    assert report["unregistered_score"] == engine.run_score_fn(settings)(identity, mov, ref)
     assert "unregistered pair scores" not in capsys.readouterr().out
 
     cluster._report_metrics(settings, good, 0, mov[None], ref[None], score=-1.0)
@@ -239,12 +239,12 @@ def test_the_score_margin_is_the_reach_on_the_most_filtered_volume(blocks, footp
 def test_a_clip_after_a_filter_does_not_sample_the_filters_padding_edge():
     # After a sobel block the voxels by the padding hold an artificial edge; clip
     # percentiles taken over them clipped the warped volume differently from the reference.
-    from biahub.registration.engine.core import _score_fn
+    from biahub.registration.engine.core import run_score_fn
     from tests.test_registration_estimators import _synthetic_blob_volume
 
     rng = np.random.default_rng(9)
     ref = 0.02 * _synthetic_blob_volume(rng, (24, 40, 40)) + 250.0
-    score = _score_fn(
+    score = run_score_fn(
         _settings(
             "ants",
             score={
@@ -260,10 +260,10 @@ def test_a_clip_after_a_filter_does_not_sample_the_filters_padding_edge():
 def test_the_run_scores_each_transform_of_a_pair_once(monkeypatch):
     # a stack scored its winner, then the series scored it again; so did a propagated
     # run for the start that won (an intensity score: 4-22 s on a 60 x 1024 x 1024 pair)
-    from biahub.registration.engine.core import _score_fn
+    from biahub.registration.engine.core import run_score_fn
 
     mov, ref = _pair()
-    score = _score_fn(_settings("ants", score={"metric": "correlation"}))
+    score = run_score_fn(_settings("ants", score={"metric": "correlation"}))
     near, far = Transform.identity(3), Transform.from_translation([0.0, 0.0, 1.0])
     first = [score(near, mov, ref), score(far, mov, ref)]
     warps = []
@@ -284,10 +284,10 @@ def test_a_method_tunes_with_the_runs_score_unless_its_own_metric_is_set(monkeyp
     from biahub.registration.engine import core
 
     asked = []
-    real = core._metric_fn
+    real = core.run_metric_fn
     monkeypatch.setattr(
         core,
-        "_metric_fn",
+        "run_metric_fn",
         lambda s, metric, prepare=None: asked.append(metric) or real(s, metric, prepare),
     )
     shape, um = (8, 32, 32), (1.0, 1.0, 1.0)

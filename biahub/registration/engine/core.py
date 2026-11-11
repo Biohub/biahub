@@ -30,24 +30,24 @@ from biahub.registration.engine.disk import (
     INITIAL_FILENAME,
     RUN_PLAN_FILENAME,
     RunJournal,
-    _finite_or_none,
-    _flags,
-    _initial_transforms_from_file,
-    _load_series,
-    _read_record,
-    _record_dirs,
-    _run_plan,
-    _run_settings,
-    _start_run,
-    _write_json,
+    finite_or_none,
+    initial_transforms_from_file,
+    load_series,
+    read_flags,
+    read_record,
+    read_run_plan,
+    read_run_settings,
+    run_record_dirs,
+    start_run,
+    write_json,
 )
 from biahub.registration.engine.fallback import (
     PassRecord,
     PassResult,
-    _accept,
-    _fold_sweep,
+    accept_result,
     cap_worst,
     flag_series,
+    fold_sweep,
 )
 from biahub.registration.engine.policies import (
     CrossChannel,
@@ -111,7 +111,7 @@ from biahub.utils.cluster import (
 from biahub.utils.config import model_to_yaml
 
 
-def _reference_policy(settings: EstimateTransformSettings, ref) -> ReferencePolicy:
+def build_reference_policy(settings: EstimateTransformSettings, ref) -> ReferencePolicy:
     if settings.reference.frame == "cross":
         return CrossChannel(ref)
     if settings.reference.frame == "first":
@@ -123,11 +123,11 @@ def _reference_policy(settings: EstimateTransformSettings, ref) -> ReferencePoli
     return PreviousFrame(first=min(run))
 
 
-def _static_initial(settings: EstimateTransformSettings) -> Transform:
+def static_initial(settings: EstimateTransformSettings) -> Transform:
     """Return the run's one initial transform: `transform.initial.matrix`, else identity.
 
     `init_run` makes a `from: shapes` initial a matrix; a file's per-timepoint transforms
-    are `_initial_policy`'s.
+    are `build_initial_policy`'s.
     """
     fit, init = settings.transform, settings.transform.initial
     if init is None or init.from_ != "matrix":
@@ -137,7 +137,7 @@ def _static_initial(settings: EstimateTransformSettings) -> Transform:
     return Transform.from_inverse(init.matrix, fit.type)
 
 
-def _initial_policy(
+def build_initial_policy(
     settings: EstimateTransformSettings, run_dir: Path
 ) -> InitialTransformPolicy:
     """Return where each timepoint starts: the run's file, else the one initial transform.
@@ -152,10 +152,10 @@ def _initial_policy(
                 for t, m in by_t.items()
             }
         )
-    return FixedInitialTransform(_static_initial(settings))
+    return FixedInitialTransform(static_initial(settings))
 
 
-def _score_fn(settings: EstimateTransformSettings) -> ScoreFn:
+def run_score_fn(settings: EstimateTransformSettings) -> ScoreFn:
     """Return the score every decision uses: `settings.score`, never the method's blocks."""
     blocks = settings.score.preprocess
     prepare = None
@@ -169,7 +169,7 @@ def _score_fn(settings: EstimateTransformSettings) -> ScoreFn:
 
         # how far the blocks reach: the score leaves that margin by the empty padding
         prepare.footprint = blocks_footprint(blocks)
-    return _scored_once(_metric_fn(settings, settings.effective_score_metric, prepare))
+    return _scored_once(run_metric_fn(settings, settings.effective_score_metric, prepare))
 
 
 # The run's recent scores: a stack's winner, a propagated run's winning start and a kept
@@ -209,18 +209,18 @@ def _tuning_score(
         tuning = run_score
     else:
         default = DEFAULT_SCORE_METRIC[settings.method]
-        tuning = _scored_once(_metric_fn(settings, metric or default))
+        tuning = _scored_once(run_metric_fn(settings, metric or default))
     return RawVolumeScore(tuning) if settings.preprocess else tuning
 
 
-def _final(settings: EstimateTransformSettings) -> EstimateTransformSettings:
+def final_block(settings: EstimateTransformSettings) -> EstimateTransformSettings:
     """Return the config of the method with the last word (a stack's final block)."""
     return settings.stack_settings()[-1] if settings.is_stack else settings
 
 
-def _metric_fn(settings: EstimateTransformSettings, metric: str, prepare=None) -> ScoreFn:
+def run_metric_fn(settings: EstimateTransformSettings, metric: str, prepare=None) -> ScoreFn:
     """Return one metric as a score function, with the bead settings of a stack's final block."""
-    return metric_fn(metric, _final(settings).bead_matching, prepare)
+    return metric_fn(metric, final_block(settings).bead_matching, prepare)
 
 
 def build_estimator(
@@ -232,7 +232,7 @@ def build_estimator(
 ) -> tuple[TransformEstimator, ScoreFn]:
     """Return the estimator and score function for the settings' method.
 
-    Where it starts is the initial-transform policy's (`_initial_policy`). `run`: the
+    Where it starts is the initial-transform policy's (`build_initial_policy`). `run`: the
     run's settings when `settings` is one block of its stack (a method that tunes
     without a `tuning_metric` of its own tunes with the run's score).
     """
@@ -243,12 +243,14 @@ def build_estimator(
             build_estimator(block, shape_zyx, mov_voxel_size, ref_voxel_size, run=settings)[0]
             for block in settings.stack_settings()
         ]
-        score_fn = _score_fn(settings)
+        score_fn = run_score_fn(settings)
         names = [f"{k}:{m}" for k, m in enumerate(settings.method_names, start=1)]
         chain = ChainedEstimator(blocks, score_fn=score_fn, names=names)
         return chain, score_fn
-    score_fn = _score_fn(settings)
-    run_score = score_fn if run is None else _score_fn(run)  # one object: its memo is shared
+    score_fn = run_score_fn(settings)
+    run_score = (
+        score_fn if run is None else run_score_fn(run)
+    )  # one object: its memo is shared
     run = run or settings
     method_score = None  # a method that scores its own choices: its tuning_metric
     if settings.method == "bead_matching":
@@ -373,8 +375,8 @@ def _pass_report(outcome: PassResult) -> dict:
     return {
         "accepted": outcome.accepted,
         "repaired_from": outcome.repaired_from,
-        "score": _finite_or_none(outcome.score),
-        "candidate_scores": {k: _finite_or_none(v) for k, v in outcome.scores.items()},
+        "score": finite_or_none(outcome.score),
+        "candidate_scores": {k: finite_or_none(v) for k, v in outcome.scores.items()},
         "candidate_failures": outcome.failures,
     }
 
@@ -384,7 +386,7 @@ def _report(result: SeriesResult, time_indices: list[int], run_id: str) -> dict:
         "run_id": run_id,
         "time_indices": time_indices,
         "scores": {
-            str(t): _finite_or_none(result.scores[t])
+            str(t): finite_or_none(result.scores[t])
             for t in time_indices
             if t in result.scores
         },
@@ -394,7 +396,7 @@ def _report(result: SeriesResult, time_indices: list[int], run_id: str) -> dict:
             str(t): {
                 **_pass_report(r),
                 "polish_rounds": r.polish_rounds,
-                "repair_transform_score": _finite_or_none(r.repair_transform_score),
+                "repair_transform_score": finite_or_none(r.repair_transform_score),
             }
             for t, r in result.repairs.items()
         },
@@ -568,14 +570,14 @@ def init_run(
     initial_transforms = (
         None
         if settings.transform.initial_file is None
-        else _initial_transforms_from_file(
+        else initial_transforms_from_file(
             settings.transform.initial_file, position_key(moving), time_indices
         )
     )
-    _start_run(work_dir, settings, moving, reference, resume)
+    start_run(work_dir, settings, moving, reference, resume)
     model_to_yaml(settings, work_dir / ENGINE_SETTINGS_FILENAME)
     if initial_transforms is not None:
-        _write_json(work_dir / INITIAL_FILENAME, initial_transforms, indent=2)
+        write_json(work_dir / INITIAL_FILENAME, initial_transforms, indent=2)
 
     propagated = settings.transform.propagates
     # a neighbour median holds 2 x window frames, the one being read and the median,
@@ -637,7 +639,7 @@ def init_run(
             "sweep": resources(_sweep_minutes(len(trials)), sweep_size),
         },
     }
-    _write_json(work_dir / RUN_PLAN_FILENAME, plan, indent=2)
+    write_json(work_dir / RUN_PLAN_FILENAME, plan, indent=2)
     return plan
 
 
@@ -655,10 +657,10 @@ def flag_run(
     were decided on.
     """
     work_dir = Path(work_dir)
-    settings, plan = _run_settings(work_dir), _run_plan(work_dir)
+    settings, plan = read_run_settings(work_dir), read_run_plan(work_dir)
     time_indices = plan["time_indices"]
-    timepoints_dir, _, _ = _record_dirs(work_dir)
-    result = _load_series(
+    timepoints_dir, _, _ = run_record_dirs(work_dir)
+    result = load_series(
         timepoints_dir,
         time_indices,
         settings.transform.type,
@@ -704,10 +706,10 @@ def flag_run(
         "flagged": flagged,
         "repair": repair_ts,
         "sweep": sweep_ts,
-        "base_scores": {str(t): _finite_or_none(v) for t, v in base_scores.items()},
-        "line": _finite_or_none(result.flag_line),
+        "base_scores": {str(t): finite_or_none(v) for t, v in base_scores.items()},
+        "line": finite_or_none(result.flag_line),
     }
-    _write_json(work_dir / FLAGS_FILENAME, flags, indent=2)
+    write_json(work_dir / FLAGS_FILENAME, flags, indent=2)
     return result, flags
 
 
@@ -729,18 +731,18 @@ def finalize_run(
     timepoints and one forward transform per timepoint.
     """
     work_dir = Path(work_dir)
-    settings, plan = _run_settings(work_dir), _run_plan(work_dir)
+    settings, plan = read_run_settings(work_dir), read_run_plan(work_dir)
     time_indices = plan["time_indices"]
     transform_type = settings.transform.type
     # a timepoint without a transform of its own falls back to where it started: the
     # initial transform file's transform for it, else the config initial transform
-    initial = _initial_policy(settings, work_dir)
-    _, repairs_dir, sweeps_dir = _record_dirs(work_dir)
+    initial = build_initial_policy(settings, work_dir)
+    _, repairs_dir, sweeps_dir = run_record_dirs(work_dir)
     if flags is None:
-        flags = _flags(work_dir)
+        flags = read_flags(work_dir)
     if result is None:
-        timepoints_dir, _, _ = _record_dirs(work_dir)
-        result = _load_series(
+        timepoints_dir, _, _ = run_record_dirs(work_dir)
+        result = load_series(
             timepoints_dir, time_indices, transform_type, resumed=time_indices
         )
         result.flagged = list(flags["flagged"])
@@ -754,7 +756,7 @@ def finalize_run(
         if record is None:
             if t in ran:  # failed this call
                 return None
-            record = _read_record(records_dir / f"{t}.json")
+            record = read_record(records_dir / f"{t}.json")
             if record is None:  # never ran (or unreadable)
                 return None
         return PassRecord.from_dict(record).to_result(
@@ -791,7 +793,7 @@ def finalize_run(
         # As a fresh repair is judged (and as the sweep fold does): only if it beats the
         # current estimate -- a repair kept by resume may predate a redone, better one.
         if outcome.accepted and is_higher(outcome.score, result.scores.get(t)):
-            _accept(
+            accept_result(
                 result,
                 t,
                 outcome.transform,
@@ -815,7 +817,7 @@ def finalize_run(
             accepted=outcome.accepted,
             failures=outcome.failures,
         )
-        _fold_sweep(result, t, outcome)
+        fold_sweep(result, t, outcome)
         click.echo(
             f"sweep t={t}: {outcome.repaired_from} -> {outcome.score:.4f}"
             + ("" if result.repaired_from.get(t, "").startswith("sweep:") else " (not kept)")
@@ -832,7 +834,7 @@ def finalize_run(
             result, time_indices, transforms, plan["voxel_um"]
         )
     journal.save(work_dir / "run_journal.json")
-    _write_json(
+    write_json(
         work_dir / "estimate_transform_report.json",
         _report(result, time_indices, journal.current_run_id),
         indent=2,

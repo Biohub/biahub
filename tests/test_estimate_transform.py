@@ -216,16 +216,16 @@ def test_resume_accepts_the_same_inputs_written_another_way(
 
 
 def test_a_failed_job_is_never_filled_from_a_record_on_disk(tmp_path):
-    from biahub.registration.engine.disk import _load_series
+    from biahub.registration.engine.disk import load_series
 
     stale = {"t": 1, "matrix": np.eye(4).tolist(), "score": 0.9, "error": None}
     (tmp_path / "1.json").write_text(json.dumps(stale))
     fresh = {0: {"t": 0, "matrix": np.eye(4).tolist(), "score": 0.8, "error": None}}
 
-    failed = _load_series(tmp_path, [0, 1], "affine", records=fresh)
+    failed = load_series(tmp_path, [0, 1], "affine", records=fresh)
     assert 1 not in failed.transforms and "did not finish" in failed.errors[1]
 
-    resumed = _load_series(tmp_path, [0, 1], "affine", records=fresh, resumed=[1])
+    resumed = load_series(tmp_path, [0, 1], "affine", records=fresh, resumed=[1])
     assert resumed.scores[1] == 0.9 and 1 in resumed.transforms
 
 
@@ -950,14 +950,14 @@ def test_a_repaired_timepoint_reports_the_repairs_transform(
         repaired, data[1, gfp], data[1, phase]
     )
 
-    series = engine._load_series(run / "timepoints", [0, 1], "euclidean", resumed=[0, 1])
+    series = engine.load_series(run / "timepoints", [0, 1], "euclidean", resumed=[0, 1])
     estimate_report = series.reports[1]
     from biahub.registration.engine.fallback import PassRecord
 
     outcome = PassRecord.from_dict(record).to_result(
         "euclidean", fallback=series.transforms[1]
     )
-    engine._accept(
+    engine.accept_result(
         series, 1, outcome.transform, outcome.score, outcome.repaired_from, outcome.report
     )
     assert series.reports[1] == record["report"] != estimate_report
@@ -1315,7 +1315,7 @@ def test_a_job_reads_each_frame_once_and_computes_the_neighbour_median_once(
     ]
     plate = _write_plate(tmp_path / "frames.zarr", [(f, f) for f in frames])
     reads, medians = Counter(), Counter()
-    real_open = cluster._open_series
+    real_open = cluster.open_series
 
     class _Counting:
         def __init__(self, series):
@@ -1330,7 +1330,7 @@ def test_a_job_reads_each_frame_once_and_computes_the_neighbour_median_once(
             return self.series[t]
 
     monkeypatch.setattr(
-        cluster, "_open_series", lambda *a: (lambda s, um: (_Counting(s), um))(*real_open(*a))
+        cluster, "open_series", lambda *a: (lambda s, um: (_Counting(s), um))(*real_open(*a))
     )
     real_gather = policies.NeighbourMedian._gather
 
