@@ -148,42 +148,42 @@ class RunFolder:
 
 
 def _start_run(
-    output_dir: Path,
+    work_dir: Path,
     settings: EstimateTransformSettings,
     moving: Path,
     reference: Path,
     resume: bool,
 ) -> None:
-    """Begin a run in `output_dir`: clear earlier records, or check a resume is compatible.
+    """Begin a run in `work_dir`: clear earlier records, or check a resume is compatible.
 
     Without `resume`, the record dirs of any earlier run are removed so none of their
     files can stand in for a job of this run. With `resume`, the settings and inputs must
     match the manifest of the run being resumed; records with no manifest to check them
     against are refused, and with no records at all the run simply starts fresh.
     """
-    manifest_path = output_dir / RUN_MANIFEST_FILENAME
+    manifest_path = work_dir / RUN_MANIFEST_FILENAME
     fingerprint = _run_fingerprint(settings, moving, reference)
     if resume and manifest_path.exists():
         previous = json.loads(manifest_path.read_text())
         changed = sorted(k for k in fingerprint if previous.get(k) != fingerprint[k])
         if changed:
             raise RunError(
-                f"--resume: {', '.join(changed)} changed since the run in {output_dir}; "
+                f"--resume: {', '.join(changed)} changed since the run in {work_dir}; "
                 "rerun without --resume"
             )
         return
     if resume and any(
-        (output_dir / name).is_dir() and any((output_dir / name).iterdir())
+        (work_dir / name).is_dir() and any((work_dir / name).iterdir())
         for name in ("timepoints", "repairs", "sweeps")
     ):
         raise RunError(
-            f"--resume: no {RUN_MANIFEST_FILENAME} in {output_dir}, so its records cannot be "
+            f"--resume: no {RUN_MANIFEST_FILENAME} in {work_dir}, so its records cannot be "
             "checked against these settings and inputs; rerun without --resume"
         )
     for name in ("timepoints", "repairs", "sweeps"):
-        shutil.rmtree(output_dir / name, ignore_errors=True)
+        shutil.rmtree(work_dir / name, ignore_errors=True)
     # the flags were the earlier run's verdict on its own records
-    (output_dir / FLAGS_FILENAME).unlink(missing_ok=True)
+    (work_dir / FLAGS_FILENAME).unlink(missing_ok=True)
     _write_json(manifest_path, fingerprint, indent=2)
 
 
@@ -262,9 +262,9 @@ RUN_PLAN_FILENAME = "run_plan.json"
 FLAGS_FILENAME = "flags.json"
 
 
-def _record_dirs(output_dir: Path) -> tuple[Path, Path, Path]:
+def _record_dirs(work_dir: Path) -> tuple[Path, Path, Path]:
     """Return the run's per-timepoint record dirs: estimates, repairs, sweeps."""
-    return output_dir / "timepoints", output_dir / "repairs", output_dir / "sweeps"
+    return work_dir / "timepoints", work_dir / "repairs", work_dir / "sweeps"
 
 
 def _initial_transforms_from_file(
@@ -282,25 +282,25 @@ def _initial_transforms_from_file(
     return {str(t): transforms.transform_for(t, key).to_list() for t in time_indices}
 
 
-def _run_settings(output_dir: Path) -> EstimateTransformSettings:
+def _run_settings(work_dir: Path) -> EstimateTransformSettings:
     """Return the settings `init_run` resolved for this run."""
-    path = Path(output_dir) / ENGINE_SETTINGS_FILENAME
+    path = Path(work_dir) / ENGINE_SETTINGS_FILENAME
     if not path.exists():
-        raise RunError(f"no run in {output_dir}: run with --init first")
+        raise RunError(f"no run in {work_dir}: run with --init first")
     return yaml_to_model(path, EstimateTransformSettings)
 
 
-def _run_plan(output_dir: Path) -> dict:
-    path = Path(output_dir) / RUN_PLAN_FILENAME
+def _run_plan(work_dir: Path) -> dict:
+    path = Path(work_dir) / RUN_PLAN_FILENAME
     if not path.exists():
-        raise RunError(f"no run in {output_dir}: run with --init first")
+        raise RunError(f"no run in {work_dir}: run with --init first")
     return json.loads(path.read_text())
 
 
-def _flags(output_dir: Path) -> dict:
-    path = Path(output_dir) / FLAGS_FILENAME
+def _flags(work_dir: Path) -> dict:
+    path = Path(work_dir) / FLAGS_FILENAME
     if not path.exists():
-        raise RunError(f"no flags in {output_dir}: run --step flag first")
+        raise RunError(f"no flags in {work_dir}: run --step flag first")
     return json.loads(path.read_text())
 
 

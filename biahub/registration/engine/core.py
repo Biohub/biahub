@@ -504,10 +504,10 @@ def init_run(
     moving_position_dirpath: Path,
     reference_position_dirpath: Path,
     settings: EstimateTransformSettings,
-    output_dir: Path,
+    work_dir: Path,
     resume: bool = False,
 ) -> dict:
-    """Start a run in `output_dir` and return its plan (also written as `run_plan.json`).
+    """Start a run in `work_dir` and return its plan (also written as `run_plan.json`).
 
     Resolves the settings the jobs read (an initial transform from the store shapes is
     computed once, here), writes them with the run manifest -- clearing an earlier run's
@@ -516,8 +516,8 @@ def init_run(
     uses an initial transform (repair needs one), and each phase's resources. Reads only
     store metadata.
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
     moving, reference = Path(moving_position_dirpath), Path(reference_position_dirpath)
     with open_ome_zarr(moving, mode="r") as position:
         T, _C, Z, Y, X = position.data.shape
@@ -572,10 +572,10 @@ def init_run(
             settings.transform.initial_file, position_key(moving), time_indices
         )
     )
-    _start_run(output_dir, settings, moving, reference, resume)
-    model_to_yaml(settings, output_dir / ENGINE_SETTINGS_FILENAME)
+    _start_run(work_dir, settings, moving, reference, resume)
+    model_to_yaml(settings, work_dir / ENGINE_SETTINGS_FILENAME)
     if initial_transforms is not None:
-        _write_json(output_dir / INITIAL_FILENAME, initial_transforms, indent=2)
+        _write_json(work_dir / INITIAL_FILENAME, initial_transforms, indent=2)
 
     propagated = settings.transform.propagates
     # a neighbour median holds 2 x window frames, the one being read and the median,
@@ -637,12 +637,12 @@ def init_run(
             "sweep": resources(_sweep_minutes(len(trials)), sweep_size),
         },
     }
-    _write_json(output_dir / RUN_PLAN_FILENAME, plan, indent=2)
+    _write_json(work_dir / RUN_PLAN_FILENAME, plan, indent=2)
     return plan
 
 
 def flag_run(
-    output_dir: Path,
+    work_dir: Path,
     records: dict[int, dict] | None = None,
     failures: dict[int, str] | None = None,
     from_disk: Iterable[int] | None = None,
@@ -654,10 +654,10 @@ def flag_run(
     the flags (`flags.json`): flagged, repair and sweep timepoints, and the scores they
     were decided on.
     """
-    output_dir = Path(output_dir)
-    settings, plan = _run_settings(output_dir), _run_plan(output_dir)
+    work_dir = Path(work_dir)
+    settings, plan = _run_settings(work_dir), _run_plan(work_dir)
     time_indices = plan["time_indices"]
-    timepoints_dir, _, _ = _record_dirs(output_dir)
+    timepoints_dir, _, _ = _record_dirs(work_dir)
     result = _load_series(
         timepoints_dir,
         time_indices,
@@ -707,12 +707,12 @@ def flag_run(
         "base_scores": {str(t): _finite_or_none(v) for t, v in base_scores.items()},
         "line": _finite_or_none(result.flag_line),
     }
-    _write_json(output_dir / FLAGS_FILENAME, flags, indent=2)
+    _write_json(work_dir / FLAGS_FILENAME, flags, indent=2)
     return result, flags
 
 
 def finalize_run(
-    output_dir: Path,
+    work_dir: Path,
     result: SeriesResult | None = None,
     flags: dict | None = None,
     repair_records: dict[int, dict] | None = None,
@@ -728,18 +728,18 @@ def finalize_run(
     call is never filled from an earlier record. Returns the series, its
     timepoints and one forward transform per timepoint.
     """
-    output_dir = Path(output_dir)
-    settings, plan = _run_settings(output_dir), _run_plan(output_dir)
+    work_dir = Path(work_dir)
+    settings, plan = _run_settings(work_dir), _run_plan(work_dir)
     time_indices = plan["time_indices"]
     transform_type = settings.transform.type
     # a timepoint without a transform of its own falls back to where it started: the
     # initial transform file's transform for it, else the config initial transform
-    initial = _initial_policy(settings, output_dir)
-    _, repairs_dir, sweeps_dir = _record_dirs(output_dir)
+    initial = _initial_policy(settings, work_dir)
+    _, repairs_dir, sweeps_dir = _record_dirs(work_dir)
     if flags is None:
-        flags = _flags(output_dir)
+        flags = _flags(work_dir)
     if result is None:
-        timepoints_dir, _, _ = _record_dirs(output_dir)
+        timepoints_dir, _, _ = _record_dirs(work_dir)
         result = _load_series(
             timepoints_dir, time_indices, transform_type, resumed=time_indices
         )
@@ -831,9 +831,9 @@ def finalize_run(
         result.leftover_motion = leftover_motion_report(
             result, time_indices, transforms, plan["voxel_um"]
         )
-    journal.save(output_dir / "run_journal.json")
+    journal.save(work_dir / "run_journal.json")
     _write_json(
-        output_dir / "estimate_transform_report.json",
+        work_dir / "estimate_transform_report.json",
         _report(result, time_indices, journal.current_run_id),
         indent=2,
     )

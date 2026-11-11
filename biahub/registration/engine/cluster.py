@@ -584,7 +584,7 @@ def run_timepoint_jobs(
     step: str,
     moving_position_dirpath: Path,
     reference_position_dirpath: Path,
-    output_dir: Path,
+    work_dir: Path,
     timepoints: list[int] | None = None,
     resume: bool = False,
 ) -> tuple[dict[int, dict], list[int]]:
@@ -598,12 +598,12 @@ def run_timepoint_jobs(
     estimate (`transform.initial.propagate`) is one job over the whole series. With
     `resume`, timepoints that already have a record are skipped.
     """
-    output_dir = Path(output_dir)
-    plan = _run_plan(output_dir)
-    settings_path = output_dir / ENGINE_SETTINGS_FILENAME
+    work_dir = Path(work_dir)
+    plan = _run_plan(work_dir)
+    settings_path = work_dir / ENGINE_SETTINGS_FILENAME
     moving, reference = Path(moving_position_dirpath), Path(reference_position_dirpath)
     time_indices = plan["time_indices"]
-    timepoints_dir, repairs_dir, sweeps_dir = _record_dirs(output_dir)
+    timepoints_dir, repairs_dir, sweeps_dir = _record_dirs(work_dir)
 
     if step == "estimate" and plan["propagated"]:
         if timepoints is not None:
@@ -634,7 +634,7 @@ def run_timepoint_jobs(
     if step == "estimate":
         available, records_dir = time_indices, timepoints_dir
     elif step in ("repair", "sweep"):
-        available = _flags(output_dir)[step]
+        available = _flags(work_dir)[step]
         records_dir = repairs_dir if step == "repair" else sweeps_dir
     else:
         raise ValueError(f"unknown step {step!r}")
@@ -644,7 +644,7 @@ def run_timepoint_jobs(
         raise RunError(
             f"{step}: timepoints {unknown} are not in this run's {step} list {available}"
         )
-    flagged = _flags(output_dir)["flagged"] if step == "repair" else None
+    flagged = _flags(work_dir)["flagged"] if step == "repair" else None
     records, failed = {}, []
     for t in wanted:
         record_path = records_dir / f"{t}.json"
@@ -710,7 +710,7 @@ def estimate_transform_series(
     moving_position_dirpath: Path,
     reference_position_dirpath: Path,
     settings: EstimateTransformSettings,
-    output_dir: Path,
+    work_dir: Path,
     sbatch_filepath: str | None = None,
     cluster: str = "slurm",
     monitor: bool = False,
@@ -723,15 +723,15 @@ def estimate_transform_series(
     `estimate-transform --init / --step` runs one at a time. Writes the resolved settings
     (`estimate_transform_settings.yml`), the per-timepoint records (`timepoints/`,
     `repairs/`, `sweeps/`), `run_journal.json` and `estimate_transform_report.json` under
-    `output_dir`.
+    `work_dir`.
     """
-    output_dir = Path(output_dir)
+    work_dir = Path(work_dir)
     moving, reference = Path(moving_position_dirpath), Path(reference_position_dirpath)
-    plan = init_run(moving, reference, settings, output_dir, resume)
-    settings_path = output_dir / ENGINE_SETTINGS_FILENAME
+    plan = init_run(moving, reference, settings, work_dir, resume)
+    settings_path = work_dir / ENGINE_SETTINGS_FILENAME
     time_indices = plan["time_indices"]
-    timepoints_dir, repairs_dir, sweeps_dir = _record_dirs(output_dir)
-    slurm_out_path = output_dir / "slurm_output"
+    timepoints_dir, repairs_dir, sweeps_dir = _record_dirs(work_dir)
+    slurm_out_path = work_dir / "slurm_output"
     slurm_out_path.mkdir(exist_ok=True)
 
     estimate = plan["resources"]["estimate"]
@@ -795,7 +795,7 @@ def estimate_transform_series(
         )
 
     result, flags = flag_run(
-        output_dir,
+        work_dir,
         records=estimate_records,
         failures=job_failures,
         from_disk=set(time_indices) - set(to_estimate),
@@ -868,7 +868,7 @@ def estimate_transform_series(
     )
 
     return finalize_run(
-        output_dir,
+        work_dir,
         result,
         flags,
         repair_records=repair_records,
