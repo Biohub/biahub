@@ -562,12 +562,13 @@ def verify_apply_transform(
     """Check what apply-transform wrote for one position at timepoint `t`.
 
     Each transformed channel is compared with the moving channel warped by
-    `Transform.apply` (the resampler estimation and evaluation use), inside the area the
-    warp covers: `relative_error` is the RMS difference over the RMS signal (a misplaced
-    structure dominates it). Copied channels are compared with the reference's
-    (`copied`). Also the output's `coverage` (non-zero share of the first transformed
-    channel) and `input_empty`, as recorded. A cropped output (`--crop-to-overlap`) is not
-    warp-compared.
+    `Transform.apply` (the resampler estimation and evaluation use) as the jobs warp it
+    (the recorded interpolation, NaN as 0), inside the area the warp covers:
+    `relative_error` is the RMS difference over the RMS signal (a misplaced structure
+    dominates it). Copied channels are compared with the reference's (`copied`). Also
+    the output's `coverage` (non-zero share of the first transformed channel) and
+    `input_empty`, as recorded. A cropped output (`--crop-to-overlap`) is not compared:
+    its errors and copies are None, with a note.
     """
     settings = load_transform_settings(transforms_filepath)
     key = position_key(moving_position)
@@ -587,7 +588,11 @@ def verify_apply_transform(
                 result["transformed"][c] = {"relative_error": None, "note": "cropped output"}
                 continue
             volume = np.asarray(moving.data[t, moving.channel_names.index(c)], np.float32)
-            expected = transform.apply(volume, reference=written[c])
+            expected = transform.apply(
+                np.nan_to_num(volume, nan=0),
+                reference=written[c],
+                interpolation=record["interpolation"],
+            )
             inside = transform.coverage(volume.shape, written[c].shape)
             gap = (written[c] - expected)[inside]
             signal = np.sqrt(np.mean(expected[inside] ** 2)) if inside.any() else 0.0
@@ -597,6 +602,9 @@ def verify_apply_transform(
     if record["channels_copied"] and reference_position is not None:
         with open_ome_zarr(reference_position, mode="r") as reference:
             for c in record["channels_copied"]:
+                if not record["keep_overhang"]:  # copied cropped, as the output
+                    result["copied"][c] = None
+                    continue
                 original = np.asarray(
                     reference.data[t, reference.channel_names.index(c)], np.float32
                 )

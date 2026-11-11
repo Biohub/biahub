@@ -978,7 +978,7 @@ def test_an_empty_input_position_is_named_and_recorded(tmp_path, capsys):
             assert out.zattrs["biahub-apply-transform"]["input_empty"] is empty
 
 
-def _registered(structured_plate, tmp_path, shift=(0, 2, -3)):
+def _registered(structured_plate, tmp_path, shift=(0, 2, -3), **options):
     position, data = structured_plate
     reference_store = tmp_path / "reference.zarr"
     with open_ome_zarr(
@@ -1002,9 +1002,9 @@ def _registered(structured_plate, tmp_path, shift=(0, 2, -3)):
         config,
         output,
         reference_position_dirpaths=[reference],
-        keep_overhang=True,
         cluster="debug",
         channels=["GFP"],
+        **{"keep_overhang": True, **options},
     )
     return output / "A" / "1" / "0", position, config, reference
 
@@ -1032,6 +1032,41 @@ def test_a_wrong_output_is_caught(structured_plate, tmp_path):
         position.data[0, gfp] = np.roll(np.asarray(position.data[0, gfp]), 5, axis=-1)
     check = verify_apply_transform(out, moving, config, reference)
     assert check["transformed"]["GFP"]["relative_error"] > 0.1
+
+
+def test_verify_warps_as_the_output_was_written(structured_plate, tmp_path):
+    # verify warped linearly whatever the output's interpolation (a correct nearest output
+    # read ~0.3 wrong) and kept NaN (an error of NaN)
+    from biahub.apply_transform import verify_apply_transform
+
+    out, moving, config, reference = _registered(
+        structured_plate, tmp_path, shift=(0, 2.5, -3.5), interpolation="nearest"
+    )
+    check = verify_apply_transform(out, moving, config, reference)
+    assert check["transformed"]["GFP"]["relative_error"] < 0.01
+    with open_ome_zarr(moving, mode="r+") as position:
+        gfp = position.channel_names.index("GFP")
+        volume = np.asarray(position.data[0, gfp])
+        volume[0, :4, :4] = np.nan
+        position.data[0, gfp] = volume
+    assert np.isfinite(
+        verify_apply_transform(out, moving, config, reference)["transformed"]["GFP"][
+            "relative_error"
+        ]
+    )
+
+
+def test_verify_says_a_cropped_outputs_copied_channel_is_not_compared(
+    structured_plate, tmp_path
+):
+    # the copy is cropped with the output: compared with the whole reference, it read False
+    from biahub.apply_transform import verify_apply_transform
+
+    out, moving, config, reference = _registered(
+        structured_plate, tmp_path, keep_overhang=False
+    )
+    check = verify_apply_transform(out, moving, config, reference)
+    assert check["copied"] == {"Phase3D": None}
 
 
 def test_nearest_interpolation_writes_only_input_values(structured_plate, tmp_path):
