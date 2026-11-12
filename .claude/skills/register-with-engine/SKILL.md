@@ -48,6 +48,28 @@ results are computed) is not a run: follow `docs/registration/contributing.md`. 
 skill changes with the engine -- a method gets a row in `references/methods.md` and a
 template here (`tests/test_registration_rules.py` checks both).
 
+## Tools: use these before writing your own
+
+Every step below has a command or helper. Write a script only for what this table does not
+cover, and say in the wrap-up which one you wrote and why (it is a gap to report).
+
+| Task | Tool |
+|---|---|
+| estimate a transform | `biahub estimate-transform` (`templates/run_estimate_transform.sh`; Nextflow: `templates/run_registration_nf.sh`) |
+| apply it | `biahub apply-transform` (`templates/run_apply_transform.sh`; `--timepoints` for a subset) |
+| measure it in µm (tiles, points, z) | `biahub evaluate-transform` (`--landmarks beads\|nuclei`, `--figures`); Python `biahub.registration.evaluate.evaluate` |
+| figures without a display (overlays, residual arrows, z) | `evaluate-transform --figures`; `biahub.registration.view.plot_evaluation(record, path=...)`; `view.overlay(moving, reference)` for an RGB image; `view.animate_evaluation` for a video |
+| look in napari | `biahub.registration.view.visual_check(mov, ref, transform, ref_um)` |
+| how far apart two transforms are | `Transform.displacement_to(other, shape_zyx, voxel_um)` (`max_um`, `mean_um`, `max_z_um`, `max_yx_um`); `Transform.decompose(mov_um, ref_um)` for scale, rotation, shear |
+| read a transforms file | `biahub.settings.load_transform_settings(path).transform_for(t, position)` (forward) |
+| an old `estimate-registration` / register config, or a previous registration to compare with | `biahub convert-settings` (a registration written in the stabilize schema, as the 2025 mantis `1-register/registration_settings.yml`: add `--reference-channel Phase3D`) |
+| how many beads or nuclei a FOV has | `biahub.registration.methods.landmark.bead_matching.detect_beads(volume, voxel_um, threshold_abs)`; `...nuclei_matching.detect_nuclei(volume, voxel_um)` |
+| which positions to use | `biahub.registration.benchmark.survey_positions`, `select_positions` |
+| choose a pipeline for new data | step 4b: `write_benchmark_config`, `nextflow/registration_benchmark_wf.nf`, `select_pipeline` |
+| one transform for a plate, or one per position | `biahub.estimate_transform.transform_spread`; `pool:` in the config |
+| replace some timepoints with another run's | `biahub substitute-transforms` |
+| the geometry the stores imply (mantis turn, voxel sizes) | the `shapes` method (`templates/estimate-transform-shapes.yml`) |
+
 ## 0. Load context
 
 - `references/methods.md`: which method for which job, the `preprocess` blocks, the
@@ -58,6 +80,9 @@ template here (`tests/test_registration_rules.py` checks both).
   per-position lists.
 - `references/datasets.md`: where the stores live and the known beads wells.
 - `references/recovery.md`: read before acting on any failure.
+
+Read all four before step 2: `datasets.md` holds what this dataset's stores look like and
+what was cleaned; `methods.md` what each method needs.
 
 ## 1. Confirm the environment
 
@@ -78,11 +103,18 @@ template here (`tests/test_registration_rules.py` checks both).
 - reference: the reconstructed phase store (`Phase3D`), or, registering on cells, a virtual
   staining store (`nuclei_prediction` against a nuclear label).
 
-Locations differ per project family (`references/datasets.md`). Check both stores exist for
-the beads well and read one chunk. If the project's `1-preprocess` intermediates were
-cleaned, regenerate just the beads FOV first (deskew and reconstruct that position with the
-project's own `deskew_settings.yml` / `phase_config.yaml`, into a separate folder; give each
-reconstruct its own folder, since they share the transfer-function file name).
+Locations differ per project family: read `references/datasets.md` now, before building
+anything. Check both stores exist for the positions and timepoints you need and read one
+chunk of each. Intermediates are often cleaned:
+
+- mantis `1-preprocess/label-free/0-reconstruct` gone: use the Phase3D (and the virtual
+  stains) of `2-assemble/<DATASET>.zarr`, on the same grid; a recovered copy may sit in
+  `/hpc/projects/tlg2_mantis02` (same dataset name). Only if neither exists, reconstruct just
+  the positions and timepoints you need (`biahub reconstruct` takes a timepoint list) with the
+  project's own `phase_config.yaml`, into a separate folder per reconstruct (they share the
+  transfer-function file name), with a time limit: a whole FOV's sbatch can ask for 350 GB.
+- DragonFly `0-convert/beads.zarr` holds the BF and the fluorescence only: reconstruct its
+  phase first (references/datasets.md, "DragonFly beads"), on the plate's z step.
 
 ## 3. Identify the beads well (or decide there are none)
 
@@ -91,6 +123,27 @@ previous `1-register/estimate-registration*.sh` names it, or run bead detection 
 timepoint of the candidate with the template's `moving_peaks_settings` and confirm tens of
 peaks (a sample well gives none or a few). Without beads, pick one FOV with clear structure
 in both channels for `ants`, and plan the initial transform (`references/methods.md`, "ANTs").
+
+## 3b. Known project families: run their pipeline
+
+For the families below, do not design a pipeline: run the one in the table, as it is, and
+evaluate it (step 9b). A new pipeline is chosen (step 4b) only for data outside the table,
+or after the user agrees, when the family's pipeline failed.
+
+| Family | Case | Pipeline |
+|---|---|---|
+| mantis (tlg2_mantis, A549 mantis v1) | a beads well | `templates/estimate-transform-bead_matching.yml` on the beads well, every timepoint, onto Phase3D; applied to the sample wells |
+| mantis | no beads well | `templates/pipelines/mantis_shapes_ants_vs.yml`: shapes (the light-sheet turn), then ANTs similarity, a membrane fluorescence channel onto the virtual-stained `membrane_prediction` -- never Phase3D itself (it fails on cells) |
+| DragonFly (organelle_box) | a beads store | `templates/estimate-transform-bead_matching.yml` on the beads FOV (its phase reconstructed first), yx and z from the beads; one transform for every `*-Prime_*` channel (one camera) |
+| DragonFly | no beads | `templates/pipelines/local_pcc_ants.yml`, DAPI onto the virtual-stained `nuclei_prediction`, on one FOV with many nuclei; checked with `--landmarks nuclei` on 2-3 held-out FOVs; one transform for every `*-Prime_*` channel |
+
+**When the family's pipeline fails** -- the estimate never leaves its start, scores sit at
+noise level (correlation ~0, or the unregistered pair scores as high), the held-out
+evaluation is no better than the project's previous registration, or the user rejects it in
+the visual check: stop. Tell the user what failed and how (numbers, figures), and ask
+whether to search for another pipeline (step 4b). Either way, draft a GitHub issue on
+biahub (`gh issue create` only after the user approves the text): dataset, family, the
+pipeline and config, what failed, the evaluation, and what was tried next.
 
 ## 4. Build the config
 
@@ -124,9 +177,10 @@ set:
 - `score`: the metric, its own blocks, and `report` metrics to read next to it (worth
   setting for any correlation-scored method).
 
-## 4b. Choose a pipeline when no method is clearly right
+## 4b. Choose a pipeline for new data
 
-Without beads, compare a few pipelines (`templates/pipelines/`: single methods and stacks)
+For data outside step 3b's families (or when the user agreed to search after a family's
+pipeline failed), compare a few pipelines (`templates/pipelines/`: single methods and stacks)
 on held-out positions instead of guessing, with `biahub.registration.benchmark`:
 
 ```python
@@ -148,7 +202,11 @@ benchmark.yml --output $(realpath runs/benchmark) -resume`, then
 `select_pipeline("runs/benchmark/benchmark.csv", case="<case>")`: it returns the pipeline
 (or None) and the reason -- landmark residuals when every pipeline matched enough, else
 the tiles; a pipeline that failed on a position cannot win; a tie goes to fewer blocks;
-nothing wins unless it clearly beats the unregistered pair. Show the reason with the plan.
+nothing wins unless it clearly beats the unregistered pair. Show the reason with the plan,
+and check the winner is plausible before taking it (z scale ~1, the expected camera scale):
+it ranks by residuals, not by geometry (ANTs alone can put a camera's yx scale into z).
+On a 2048 x 2048 plate expect ~1 h: ANTs ~45-55 min per estimate at the workflow's 4 CPUs,
+~6 min per candidate x position to evaluate.
 
 ## 5. Present the plan
 
@@ -211,8 +269,9 @@ the per-timepoint records `<run>/timepoints/<t>.json`:
 
 - score distribution (median, min), `flagged`, `repairs` (accepted, repaired_from, before ->
   after), `filled_from` (the stand-ins), and the `unreliable` entries with their notes.
-- per-timepoint `metrics`, in the records (`median_residual` in voxels should sit well under 1 on good
-  timepoints; `n_matched` close to the detected bead count).
+- per-timepoint `metrics`, in the records (`n_matched` close to the detected bead count;
+  `median_residual` is in voxels of integer bead peaks, 1.5-2.5 on good timepoints: judge
+  the registration in µm with step 9b, where good beads residuals are ~0.3-0.5 µm).
 - `report` metrics next to each score (the config's `score.report`), compared with the
   unregistered pair.
 - Correlation-scored methods (ants): do not trust the score or the `unreliable` status
@@ -259,17 +318,26 @@ json.dump(record.to_dict(), open("<out>/evaluation/<fov>_t<t>.json", "w"), inden
 Clicked landmarks are two N x 3 arrays of voxel z, y, x, one per channel, paired row by
 row: `evaluate(..., landmarks=(moving_points, reference_points))`.
 
-- `landmarks`: `"beads"` on a beads well (`detect_kwargs={"threshold_abs": ...}`, from the
-  config's peak settings), `"nuclei"` when the moving channel shows nuclei (DAPI, H2B onto
-  virtual-stained nuclei), `None` otherwise (images only).
-- Run it as a SLURM job (`cpu` partition, 4 CPUs, ~48 GB for a 2048 x 2048 stack): one warp
-  per position, a few minutes.
+- `landmarks`: `"beads"` on a beads well -- leave out `--bead-threshold`: the command then
+  reads each channel's own detection from the run (one threshold for both channels matches
+  no beads on fluorescence against phase) -- `"nuclei"` when the moving channel shows nuclei
+  (DAPI, H2B onto virtual-stained nuclei), `None` otherwise (images only).
+- A sample FOV with sparse fluorescence (one neuromast, few cells) gives few or no tiles at
+  the default `--tile-px 256`: try 128; if still none, z comes only from the image crops,
+  the weakest measure. Then the overlays and the user's look decide.
+- On mantis the unregistered pair (identity) is not a baseline -- the light-sheet is turned
+  onto the phase grid; compare against the `shapes` transform or the previous registration.
+- Run it as a SLURM job (`cpu` partition, 4 CPUs, ~8-16 GB for a 2048 x 2048 stack): one
+  warp per position, a few minutes. `evaluate-transform` has no `--cluster`: wrap it in an
+  sbatch script.
 
 Read every number against `record.baseline` (the unregistered pair) and across positions;
 these are not pass/fail thresholds:
 
 - `tiles` (yx, from max projections) and `points` medians: what is left. Well registered
-  cell data sits around a few tenths of a µm, against microns unregistered.
+  data sits around a few tenths of a µm (beads 0.3-0.5 µm, nuclei ~0.5-1 µm), against
+  microns unregistered; cross-modal tiles (organelles against phase) bottom out at ~1-2 µm
+  and cannot tell two good transforms apart.
 - `points["affine"]`: a yx scale (`scale_zyx[1:]`) away from 1 or a `rotation_yx_deg`
   away from 0 is a scale or rotation the transform did not take out (e.g. `euclidean`
   cannot hold a camera scale: try `similarity` or `affine`). Reported only with enough
@@ -306,7 +374,9 @@ transforms (e.g. unregistered, a previous registration, this one):
 CLI, copy `templates/run_apply_transform.sh` next to the transforms file, fill it in and
 run it in tmux. The output keeps the full reference grid by default (one wrong transform
 cannot shrink every timepoint's field of view); `--crop-to-overlap` crops to the box every
-transform covers. With `-r` it registers every moving position onto the reference grid
+transform covers. `--timepoints` applies a subset: the output then holds only those, in
+order (t = 0, 40, 80 stored as 0, 1, 2), with the original indices in the output's
+`biahub-apply-transform` metadata. With `-r` it registers every moving position onto the reference grid
 (reference channels copied, every moving channel transformed -- but a channel the
 reference store also has is copied unless it is in the file's `moving_channels`, so with
 both arms in one store only the estimated channel moves; `--channels` to pick -- and

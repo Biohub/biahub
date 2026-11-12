@@ -91,6 +91,14 @@ Beads matching is deterministic but depends on where it starts: on a drifting se
 
 ## Stabilization: `reference.frame: first` or `previous`
 
+- Channel: one whose structure fills the field and holds still in the sample (dense
+  fluorescence, e.g. GFP nuclei or membranes, or phase); `phase_cross_corr` with
+  `normalization` unset. A 2048 x 2048 timepoint can outrun the 30 min default job: give
+  the plain CLI an sbatch file with a longer time.
+- Judge it with `reference.leftover_motion` (below) and `evaluate-transform` on a few jump
+  frames. A `neighbours` run has no single reference frame: pass `--reference-t` at a quiet
+  frame (its transform near zero), not a frame that jumps.
+
 - `first`: every timepoint against one frame (the first with data); absolute
   transforms, no chain. Fine while the sample stays recognisable against that frame.
 - `previous`: each timepoint against the previous frame with data, steps chained onto
@@ -165,6 +173,10 @@ searches near where it starts, so **the initial transform decides which answer i
 
 - `transform.type: similarity` for most pairs: rotation, shift and one scale. `euclidean` is
   ANTs Rigid (no scale); `affine` can drift in z on stacks with few z slices.
+- The reference: on cells, a virtual stain of the same structure as the moving channel
+  (membranes onto `membrane_prediction`, nuclei onto `nuclei_prediction`), not Phase3D:
+  fluorescence against phase on a sparse sample left ANTs at its start, scoring at noise
+  (mantis neuromast, 2025_09_18).
 - `preprocess`: `sobel` (both) for cross-modal pairs; `clip_percentiles` against bright
   outliers; masks as in the table above.
 - `score.preprocess: [{sobel: {}}]` to score edges like the estimate; `score.report:
