@@ -284,12 +284,13 @@ def test_without_reference_t_a_stabilization_reads_its_files_reference_frame(
             positions[:1], None, _stabilization_file(tmp_path, frame), tmp_path / "e.csv", t=3
         )
         assert seen[-1] == expected
-    with pytest.raises(click.UsageError, match="--reference-t"):
+    module.evaluate_transform(
+        positions[:1], None, _stabilization_file(tmp_path, "neighbours"), tmp_path / "e.csv"
+    )
+    assert seen[-1] == 2
+    with pytest.raises(click.UsageError, match="--reference-t"):  # no frame recorded
         module.evaluate_transform(
-            positions[:1],
-            None,
-            _stabilization_file(tmp_path, "neighbours"),
-            tmp_path / "e.csv",
+            positions[:1], None, _stabilization_file(tmp_path), tmp_path / "e.csv"
         )
 
 
