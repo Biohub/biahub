@@ -73,7 +73,7 @@ def test_nuclei_is_a_landmark_based_graph_matching_estimator():
     assert isinstance(estimator, NodeGraphEstimator)
     assert isinstance(estimator.mov_detector, NucleiNodeDetector)
     assert isinstance(estimator.ref_detector, NucleiNodeDetector)
-    assert estimator.beads_match_settings.algorithm == "hungarian"
+    assert estimator.matching.algorithm == "hungarian"
 
 
 def test_nuclei_recover_a_camera_scale_rotation_and_shift():

@@ -20,7 +20,7 @@ from numpy.typing import ArrayLike
 from biahub.core.transform import Transform
 from biahub.registration.estimators import ScoreFn, fit_pairs
 from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
-from biahub.settings import BeadsMatchSettings, NucleiSettings
+from biahub.settings import NucleiSettings
 
 # How the evaluation pairs this method's landmarks: (radius in µm, axes it is measured on).
 # Nuclei are long in z: they pair up in yx within 3 µm and their z is compared afterwards.
@@ -142,19 +142,10 @@ def nuclei_estimator(
     Both channels are detected on the reference grid (the moving volume is warped onto
     it first), so `ref_um` is the voxel size for both.
     """
-    matching = BeadsMatchSettings(
-        algorithm=settings.algorithm,
-        moving_peaks_settings=None,
-        reference_peaks_settings=None,
-        hungarian_match_settings=settings.hungarian_match_settings,
-        spectral_match_settings=settings.spectral_match_settings,
-        match_descriptor_settings=settings.match_descriptor_settings,
-        filter_matches_settings=settings.filter_matches_settings,
-    )
     return NodeGraphEstimator(
         mov_detector=NucleiNodeDetector(settings, ref_um),
         ref_detector=NucleiNodeDetector(settings, ref_um),
-        beads_match_settings=matching,
+        matching=settings,  # NucleiSettings is a GraphMatchSettings
         transform_type=transform_type,
         iterations=settings.iterations,
         score_fn=score_fn,

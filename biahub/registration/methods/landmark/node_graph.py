@@ -27,14 +27,14 @@ from biahub.registration.estimators import (
     fit_pairs,
 )
 from biahub.settings import (
-    BeadsMatchSettings,
+    GraphMatchSettings,
 )
 
 
 def match_nodes(
     mov_peaks: ArrayLike,
     ref_peaks: ArrayLike,
-    beads_match_settings: BeadsMatchSettings,
+    matching: GraphMatchSettings,
     verbose: bool = False,
 ) -> ArrayLike:
     """
@@ -57,7 +57,7 @@ def match_nodes(
         (N, D) array of moving peak coordinates (D = 2 or 3).
     ref_peaks : ArrayLike
         (M, D) array of reference peak coordinates.
-    beads_match_settings : BeadsMatchSettings
+    matching : GraphMatchSettings
         Settings controlling the matching algorithm, graph construction,
         cost matrix weights, and post-match filtering.
     verbose : bool
@@ -69,13 +69,13 @@ def match_nodes(
         (K, 2) array of matched index pairs [mov_idx, ref_idx].
     """
     if verbose:
-        click.echo(f"Getting matches from beads with settings: {beads_match_settings}")
+        click.echo(f"Matching nodes with settings: {matching}")
 
-    if beads_match_settings.algorithm == "match_descriptor":
+    if matching.algorithm == "match_descriptor":
         mov_graph = Graph.from_nodes(mov_peaks)
         ref_graph = Graph.from_nodes(ref_peaks)
 
-        match_descriptor_settings = beads_match_settings.match_descriptor_settings
+        match_descriptor_settings = matching.match_descriptor_settings
         matcher = GraphMatcher(
             algorithm="descriptor",
             cross_check=match_descriptor_settings.cross_check,
@@ -86,8 +86,8 @@ def match_nodes(
 
         matches = matcher.match(mov_graph, ref_graph)
 
-    elif beads_match_settings.algorithm == "hungarian":
-        hungarian_match_settings = beads_match_settings.hungarian_match_settings
+    elif matching.algorithm == "hungarian":
+        hungarian_match_settings = matching.hungarian_match_settings
         mov_graph = Graph.from_nodes(
             mov_peaks, mode="knn", k=hungarian_match_settings.edge_graph_settings.k
         )
@@ -106,8 +106,8 @@ def match_nodes(
 
         matches = matcher.match(mov_graph, ref_graph)
 
-    elif beads_match_settings.algorithm == "spectral":
-        spectral_match_settings = beads_match_settings.spectral_match_settings
+    elif matching.algorithm == "spectral":
+        spectral_match_settings = matching.spectral_match_settings
         # Spectral matching works from pairwise distances of the raw coordinates; the
         # graph is only a node container here.
         mov_graph = Graph.from_nodes(mov_peaks)
@@ -121,16 +121,16 @@ def match_nodes(
         )
         matches = matcher.match(mov_graph, ref_graph)
     else:
-        raise ValueError(f"Unknown matching algorithm: {beads_match_settings.algorithm}")
+        raise ValueError(f"Unknown matching algorithm: {matching.algorithm}")
 
     matches = matcher.filter_matches(
         matches,
         mov_graph,
         ref_graph,
-        angle_threshold=beads_match_settings.filter_matches_settings.angle_threshold,
-        min_distance_quantile=beads_match_settings.filter_matches_settings.min_distance_quantile,
-        max_distance_quantile=beads_match_settings.filter_matches_settings.max_distance_quantile,
-        direction_threshold=beads_match_settings.filter_matches_settings.direction_threshold,
+        angle_threshold=matching.filter_matches_settings.angle_threshold,
+        min_distance_quantile=matching.filter_matches_settings.min_distance_quantile,
+        max_distance_quantile=matching.filter_matches_settings.max_distance_quantile,
+        direction_threshold=matching.filter_matches_settings.direction_threshold,
     )
 
     if verbose:
@@ -186,7 +186,7 @@ class NodeGraphEstimator(EstimatorBase):
         self,
         mov_detector: NodeDetector,
         ref_detector: NodeDetector,
-        beads_match_settings: BeadsMatchSettings,
+        matching: GraphMatchSettings,
         transform_type: str,
         iterations: int = 1,
         score_fn: ScoreFn | None = None,
@@ -197,7 +197,7 @@ class NodeGraphEstimator(EstimatorBase):
             raise ValueError(f"iterations must be >= 1, got {iterations}")
         self.mov_detector = mov_detector
         self.ref_detector = ref_detector
-        self.beads_match_settings = beads_match_settings
+        self.matching = matching
         self.transform_type = transform_type
         self.iterations = iterations
         self.score_fn = score_fn
@@ -205,9 +205,7 @@ class NodeGraphEstimator(EstimatorBase):
         # type's fit of the matched pairs (fit_pairs), as beads use
         self.fit = fit
         self.matcher = matcher or (
-            lambda mov_nodes, ref_nodes: match_nodes(
-                mov_nodes, ref_nodes, beads_match_settings
-            )
+            lambda mov_nodes, ref_nodes: match_nodes(mov_nodes, ref_nodes, matching)
         )
 
     def estimate(

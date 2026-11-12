@@ -314,7 +314,7 @@ def bead_node_graph(
     return NodeGraphEstimator(
         mov_detector=BeadNodeDetector(beads_match_settings.moving_peaks_settings),
         ref_detector=BeadNodeDetector(beads_match_settings.reference_peaks_settings),
-        beads_match_settings=beads_match_settings,
+        matching=beads_match_settings,
         transform_type=transform_type,
         iterations=(
             beads_match_settings.qc_settings.iterations if iterations is None else iterations

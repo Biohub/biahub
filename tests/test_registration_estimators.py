@@ -70,7 +70,7 @@ def test_node_graph_estimator_matches_direct_call():
     estimator = NodeGraphEstimator(
         mov_detector=_FixedNodeDetector(mov_nodes),
         ref_detector=_FixedNodeDetector(ref_nodes),
-        beads_match_settings=beads_match_settings,
+        matching=beads_match_settings,
         transform_type=transform_type,
     )
     mov_volume = np.zeros((10, 10, 10))
@@ -102,7 +102,7 @@ def test_node_graph_estimator_keeps_the_best_scoring_iteration_not_the_last():
     estimator = NodeGraphEstimator(
         mov_detector=_FixedNodeDetector(mov_nodes),
         ref_detector=_FixedNodeDetector(ref_nodes),
-        beads_match_settings=BeadsMatchSettings(),
+        matching=BeadsMatchSettings(),
         transform_type="euclidean",
         iterations=2,
         score_fn=score_fn,
@@ -121,7 +121,7 @@ def _drifting_estimator(translation, score_fn, iterations):
     return NodeGraphEstimator(
         mov_detector=_FixedNodeDetector(mov_nodes),
         ref_detector=_FixedNodeDetector(ref_nodes),
-        beads_match_settings=BeadsMatchSettings(),
+        matching=BeadsMatchSettings(),
         transform_type="euclidean",
         iterations=iterations,
         score_fn=score_fn,
@@ -164,7 +164,7 @@ def test_node_graph_estimator_fails_clearly_with_too_few_nodes():
     estimator = NodeGraphEstimator(
         mov_detector=_FixedNodeDetector(np.zeros((2, 3))),
         ref_detector=_FixedNodeDetector(np.zeros((30, 3))),
-        beads_match_settings=BeadsMatchSettings(),
+        matching=BeadsMatchSettings(),
         transform_type="euclidean",
     )
     with pytest.raises(EstimationError, match="2 moving, 30 reference"):
@@ -177,7 +177,7 @@ def test_node_graph_estimator_fails_clearly_when_no_iteration_scores():
     estimator = NodeGraphEstimator(
         mov_detector=_FixedNodeDetector(mov_nodes),
         ref_detector=_FixedNodeDetector(ref_nodes),
-        beads_match_settings=BeadsMatchSettings(),
+        matching=BeadsMatchSettings(),
         transform_type="euclidean",
         iterations=2,
         score_fn=lambda transform, mov, ref: float("nan"),
@@ -194,7 +194,7 @@ def test_node_graph_estimator_recovers_known_translation():
     estimator = NodeGraphEstimator(
         mov_detector=_FixedNodeDetector(mov_nodes),
         ref_detector=_FixedNodeDetector(ref_nodes),
-        beads_match_settings=BeadsMatchSettings(),
+        matching=BeadsMatchSettings(),
         transform_type="euclidean",
     )
     transform = estimator.estimate(np.zeros((10, 10, 10)), np.zeros((10, 10, 10)))
@@ -229,7 +229,7 @@ def _bead_estimator():
     return NodeGraphEstimator(
         mov_detector=BeadNodeDetector(peaks_settings),
         ref_detector=BeadNodeDetector(peaks_settings),
-        beads_match_settings=beads_match_settings,
+        matching=beads_match_settings,
         transform_type="euclidean",
     )
 

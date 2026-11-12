@@ -122,7 +122,7 @@ def test_a_matcher_that_cannot_run_is_an_estimation_error():
     estimator = NodeGraphEstimator(
         mov_detector=BeadNodeDetector(settings.moving_peaks_settings),
         ref_detector=BeadNodeDetector(settings.reference_peaks_settings),
-        beads_match_settings=settings,
+        matching=settings,
         transform_type="euclidean",
         matcher=too_large,
     )
@@ -262,7 +262,7 @@ def test_spectral_recovers_an_offset_beyond_the_hungarian_capture_range():
     hungarian_only = NodeGraphEstimator(
         mov_detector=BeadNodeDetector(settings.moving_peaks_settings),
         ref_detector=BeadNodeDetector(settings.reference_peaks_settings),
-        beads_match_settings=settings,
+        matching=settings,
         transform_type=affine,
     )
     with pytest.raises(EstimationError):

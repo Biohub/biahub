@@ -136,7 +136,7 @@ def test_vote_icp_estimator_recovers_an_offset_the_hungarian_matcher_cannot():
         NodeGraphEstimator(
             mov_detector=BeadNodeDetector(PEAKS),
             ref_detector=BeadNodeDetector(PEAKS),
-            beads_match_settings=settings,
+            matching=settings,
             transform_type=affine,
         ).estimate(mov, ref)
 
@@ -153,7 +153,7 @@ def test_vote_icp_estimator_recovers_an_offset_the_hungarian_matcher_cannot():
             NodeGraphEstimator(
                 mov_detector=BeadNodeDetector(PEAKS),
                 ref_detector=BeadNodeDetector(PEAKS),
-                beads_match_settings=settings,
+                matching=settings,
                 transform_type=affine,
             ),
         ],

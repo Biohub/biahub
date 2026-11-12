@@ -466,8 +466,21 @@ LEGACY_BEAD_KEYS = {
 }
 
 
-class BeadsMatchSettings(MyBaseModel):
+class GraphMatchSettings(MyBaseModel):
+    """How two node sets are matched (`node_graph.match_nodes`): beads' and nuclei's.
+
+    `algorithm` and its settings, then the match filters. The keys sit in each method's
+    own block (`bead_matching:`, `nuclei_matching:`), which adds what finds its nodes.
+    """
+
     algorithm: Literal["hungarian", "match_descriptor", "spectral"] = "hungarian"
+    match_descriptor_settings: MatchDescriptorSettings = MatchDescriptorSettings()
+    hungarian_match_settings: HungarianMatchSettings = HungarianMatchSettings()
+    spectral_match_settings: SpectralMatchSettings = SpectralMatchSettings()
+    filter_matches_settings: FilterMatchesSettings = FilterMatchesSettings()
+
+
+class BeadsMatchSettings(GraphMatchSettings):
     # what the method's own choices (its passes, its competing start and spectral
     # candidate) are scored with; None: the run's score (its metric and blocks)
     tuning_metric: ScoreMetric | None = None
@@ -477,9 +490,6 @@ class BeadsMatchSettings(MyBaseModel):
     reference_peaks_settings: DetectPeaksSettings | None = Field(
         default_factory=DetectPeaksSettings
     )
-    match_descriptor_settings: MatchDescriptorSettings = MatchDescriptorSettings()
-    hungarian_match_settings: HungarianMatchSettings = HungarianMatchSettings()
-    spectral_match_settings: SpectralMatchSettings = SpectralMatchSettings()
     # A second candidate: acquire the correspondence with spectral matching, then refine
     # with `algorithm`; the higher-scoring candidate wins. "on_low_score" runs it only when
     # `algorithm` alone scores below qc_settings.score_threshold.
@@ -492,7 +502,6 @@ class BeadsMatchSettings(MyBaseModel):
     initial_transform_correction_settings: InitialTransformCorrectionSettings = (
         InitialTransformCorrectionSettings()
     )
-    filter_matches_settings: FilterMatchesSettings = FilterMatchesSettings()
     qc_settings: QCBeadsRegistrationSettings = QCBeadsRegistrationSettings()
 
     @model_validator(mode="after")
@@ -1680,7 +1689,7 @@ class FallbackSettings(MyBaseModel):
     sweep: SweepSettings | None = None
 
 
-class NucleiSettings(MyBaseModel):
+class NucleiSettings(GraphMatchSettings):
     """Settings for the nuclei method: landmark-based, as beads, with nuclei for landmarks.
 
     Detection as `nuclei_matching.detect_nuclei` (areas in µm², so they hold
@@ -1694,11 +1703,6 @@ class NucleiSettings(MyBaseModel):
     max_area_um2: PositiveFloat = 320.0
     min_solidity: float = Field(0.9, gt=0, le=1)
     smooth_um: float = Field(0.2, ge=0)
-    algorithm: Literal["hungarian", "match_descriptor", "spectral"] = "hungarian"
-    hungarian_match_settings: HungarianMatchSettings = HungarianMatchSettings()
-    spectral_match_settings: SpectralMatchSettings = SpectralMatchSettings()
-    match_descriptor_settings: MatchDescriptorSettings = MatchDescriptorSettings()
-    filter_matches_settings: FilterMatchesSettings = FilterMatchesSettings()
     iterations: PositiveInt = 2
     # what the passes are scored with; None: the run's score when it is an intensity
     # metric, else correlation (nuclei detect no beads)
