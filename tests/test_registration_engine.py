@@ -970,3 +970,46 @@ def test_frame_first_is_the_runs_first_timepoint_with_data():
     policy = build_reference_policy(settings, mov)
     assert policy.reference_index(mov) == 3
     assert policy.compares_with_itself(mov, 3)
+
+
+def test_an_estimate_that_scores_below_its_start_keeps_the_start_and_is_unreliable():
+    # an ANTs run that ended worse than where it started was written as accepted
+    from biahub.estimate_transform import transform_entries
+
+    mov = _frames([1, 2])
+    start = _shift_x(10)
+
+    def score(transform, m, r):  # the start (x=10) is the best place; the estimate (11) worse
+        return -abs(transform.translation[2] - 10.0)
+
+    for propagated in (False, True):
+        if propagated:
+            from biahub.registration.engine import estimate_propagated
+
+            result = estimate_propagated(
+                mov, CrossChannel(mov), _StepX(), start, score, range(2)
+            )
+        else:
+            result = estimate_series(
+                mov, CrossChannel(mov), _StepX(), FixedInitialTransform(start), score, range(2)
+            )
+        assert [result.transforms[t].translation[2] for t in range(2)] == [10.0, 10.0]
+        assert "scored below its start" in result.kept_start[0]
+        entries = transform_entries(
+            result, [0, 1], [result.transforms[t] for t in range(2)], None
+        )
+        assert [e.status for e in entries] == ["unreliable", "unreliable"]
+        assert "scored below its start" in entries[0].note
+
+
+def test_a_tie_with_the_start_keeps_the_estimate():
+    mov = _frames([1])
+    result = estimate_series(
+        mov,
+        CrossChannel(mov),
+        _StepX(),
+        FixedInitialTransform(IDENTITY),
+        _finite_score,
+        range(1),
+    )
+    assert result.transforms[0].translation[2] == 1.0 and not result.kept_start

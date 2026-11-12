@@ -66,7 +66,8 @@ def transform_entries(
 
     A timepoint is `unreliable` when the pipeline found no good transform for it: none
     at all (the entry is a stand-in -- the run's initial transform -- and `note` says
-    why), no score, a stack block that failed (`note` names it and the block kept
+    why), an estimate that scored below its start (the start is kept), no score, a stack
+    block that failed (`note` names it and the block kept
     instead), or flagged and still below `hard_fail` after repair and sweep (without
     one: below the run's own flagging line, `result.flag_line`). Otherwise `accepted`.
 
@@ -82,8 +83,10 @@ def transform_entries(
         # a repair or sweep replaced the estimate, and its blocks with it
         replaced = filled_from is not None or t in result.repaired_from
         failure = None if replaced else block_failure(result.blocks.get(t))
+        kept_start = None if replaced else result.kept_start.get(t)
         unreliable = (
             filled_from is not None
+            or kept_start is not None
             or failure is not None
             or not finite
             or (t in result.flagged and below is not None and score < below)
@@ -101,7 +104,9 @@ def transform_entries(
                 filled_from=filled_from,
                 # why there is no transform of its own (estimate error, job cancelled, ...),
                 # or which block of a stack failed and whose result stands in for it
-                note=result.errors.get(t) if filled_from is not None else failure,
+                note=result.errors.get(t)
+                if filled_from is not None
+                else failure or kept_start,
             )
         )
     return entries

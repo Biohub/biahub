@@ -65,6 +65,9 @@ class SeriesResult:
     best_candidate: dict[int, str] = field(default_factory=dict)
     # From a file: "file" (its transform kept as it is) or "file+refined".
     initialized_from: dict[int, str] = field(default_factory=dict)
+    # Timepoints whose estimate scored below its start: the start is kept, reported
+    # unreliable with this note.
+    kept_start: dict[int, str] = field(default_factory=dict)
     # Where each estimated t started (the initial transform, or under propagation the
     # start that won): `from_start` reads the change the estimate made after it.
     starts: dict[int, Transform] = field(default_factory=dict)
@@ -96,6 +99,7 @@ class TimepointRecord:
     stand_in: list | None = None  # propagation: what the next timepoint starts from
     filled_from: str | None = None
     initialized_from: str | None = None  # "file" or "file+refined" (from: file)
+    kept_start: str | None = None  # the estimate scored below its start, which was kept
     best_candidate: str | None = None  # competing candidates: the one kept
     from_start: list | None = None  # the change the estimate made after its start
     blocks: list[dict] | None = None  # a stack: what each block did
@@ -133,6 +137,8 @@ class TimepointRecord:
             result.best_candidate[t] = self.best_candidate
         if self.initialized_from:
             result.initialized_from[t] = self.initialized_from
+        if self.kept_start:
+            result.kept_start[t] = self.kept_start
         if self.centroid is not None:
             result.centroids[t] = self.centroid
         if self.raw_shift:
@@ -157,7 +163,8 @@ def estimate_series(
     An `EstimationError` records nan plus the message for that timepoint and moves on.
     An initial transform the policy keeps unless beaten (from a file, an earlier result)
     competes as it is (`_keep_initial`); when it is kept, its score stands, and an
-    estimate that raised still records its message and trace.
+    estimate that raised still records its message and trace. Any other estimate that
+    scores below its start gives way to it (`_no_worse_than_start`).
     """
     result = SeriesResult()
     for t in time_indices:
@@ -198,6 +205,10 @@ def estimate_series(
             )
             if result.initialized_from[t] == "file" and lost:
                 trace = None  # the kept initial transform is not the estimator's
+        elif estimate is not None:
+            estimate = _no_worse_than_start(
+                result, t, estimate, result.starts[t], score_fn, mov_t, ref_t
+            )
         _keep_trace(result, t, trace)
         if estimate is None:
             result.scores[t] = float("nan")
@@ -206,6 +217,23 @@ def estimate_series(
         if on_timepoint is not None:
             on_timepoint(t, result)
     return result
+
+
+def _no_worse_than_start(result, t, estimate, start, score_fn, mov, ref) -> tuple:
+    """Return the estimate, or the start (noted in `result.kept_start`) when it scores lower.
+
+    An estimate that ends worse than where it started (an optimizer that wandered) is
+    not a result: the start stands, reported unreliable. A tie keeps the estimate (it
+    refines the start at the score's resolution, e.g. bead overlap 1.0 against 1.0).
+    """
+    start_score = float(score_fn(start, mov, ref))
+    if not is_higher(start_score, estimate[1]):
+        return estimate
+    result.kept_start[t] = (
+        f"the estimate scored below its start ({estimate[1]:.4g} < {start_score:.4g}): "
+        "the start is kept"
+    )
+    return start, start_score
 
 
 def _keep_initial(estimate, initial_transform, score_fn, mov, ref) -> tuple[tuple, str]:
@@ -385,8 +413,16 @@ def estimate_propagated(
                 else:
                     _keep_trace(result, t, trace)
                     transform = _gap_rule(estimator, reference_policy, mov, t, transform)
+                    transform, result.scores[t] = _no_worse_than_start(
+                        result,
+                        t,
+                        (transform, float(score_fn(transform, mov_t, ref_t))),
+                        result.starts[t],
+                        score_fn,
+                        mov_t,
+                        ref_t,
+                    )
                     result.transforms[t] = transform
-                    result.scores[t] = float(score_fn(transform, mov_t, ref_t))
                     previous, previous_source = transform, f"t={t}"
         if on_timepoint is not None:
             on_timepoint(t, result)

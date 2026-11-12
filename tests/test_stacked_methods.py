@@ -339,8 +339,8 @@ def test_propagated_blocks_are_the_winning_runs_and_empty_frames_have_none():
     from biahub.registration.engine.policies import CrossChannel
     from biahub.registration.estimators import ChainedEstimator
 
-    def score(t, mov, ref):  # best near x = 3
-        return -abs(t.translation[2] - 3)
+    def score(t, mov, ref):  # best near x = 5: every step improves on its start, or ties
+        return -abs(t.translation[2] - 5)
 
     chain = ChainedEstimator([_Shift(1.0), _Shift(1.0)], score_fn=score, names=["1:a", "2:b"])
     mov = np.random.default_rng(0).random((4, 4, 8, 8)).astype(np.float32) + 1

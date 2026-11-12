@@ -293,6 +293,7 @@ def _estimate_timepoint_job(
         score=finite_or_none(result.scores.get(t)),
         error=result.errors.get(t),
         initialized_from=result.initialized_from.get(t),
+        kept_start=result.kept_start.get(t),
         best_candidate=result.best_candidate.get(t),
         from_start=_from_start_list(result, t),
         # a stack: what each block did (its transform, score, error) and which won
@@ -365,6 +366,7 @@ def _estimate_propagated_job(
             error=result.errors.get(t),
             stand_in=stand_in[0].to_list() if stand_in else None,
             filled_from=stand_in[1] if stand_in else None,
+            kept_start=result.kept_start.get(t),
             best_candidate=result.best_candidate.get(t),
             from_start=_from_start_list(result, t),
             blocks=result.blocks.get(t),
