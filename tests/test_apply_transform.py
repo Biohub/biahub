@@ -1152,3 +1152,35 @@ def test_a_registration_file_needs_its_reference_positions(structured_plate, tmp
     )
     with pytest.raises(click.UsageError, match="needs the reference positions"):
         apply_transform([position], config, tmp_path / "out.zarr", cluster="debug")
+
+
+def test_a_registration_is_not_applied_onto_a_grid_of_another_voxel_size(
+    structured_plate, tmp_path
+):
+    # the matrices are in voxels: a beads store at 0.2 µm z applied to a plate at 0.4 µm
+    # moved everything by the wrong amount, without a word
+    position, data = structured_plate
+    reference_store = tmp_path / "reference.zarr"
+    with open_ome_zarr(
+        reference_store, layout="hcs", mode="w", channel_names=["Phase3D"]
+    ) as plate:
+        plate.create_position("A", "1", "0")["0"] = data[:, 1:]
+    reference = reference_store / "A" / "1" / "0"
+    with open_ome_zarr(reference, mode="r") as store:
+        scale = list(store.scale)
+    config = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["GFP"],
+            reference_channel="Phase3D",
+            voxel_size=[*scale[:2], scale[2] / 2, *scale[3:]],  # estimated at half the z step
+            transforms=[TransformEntry(matrix=_translation(0, 1, 1))],
+        ),
+        config,
+    )
+    with pytest.raises(click.UsageError, match="voxel size"):
+        apply_transform(
+            [position], config, tmp_path / "out.zarr", reference_position_dirpaths=[reference],
+            cluster="debug", channels=["GFP"],
+        )  # fmt: skip

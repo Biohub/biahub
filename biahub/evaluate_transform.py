@@ -461,4 +461,15 @@ def evaluate_transform_cli(
                 else ""
             )
         )
+    if landmarks is not None and landmarks != "none":
+        # none matched: the point columns are empty and z comes from the image crops
+        unmatched = sorted(
+            {r["position"] for r in rows if not r["empty"] and not r.get("points_n")}
+        )
+        if unmatched:
+            click.echo(
+                f"WARNING --landmarks {landmarks} matched no points on {unmatched}: dense or "
+                "3D tissue, or no such structure in one channel; the yx and z there come from "
+                "the images only"
+            )
     click.echo(f"Evaluation saved to {Path(output_filepath).resolve()}")

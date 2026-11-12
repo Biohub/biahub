@@ -244,6 +244,15 @@ def apply_transform(
             reference_shape = tuple(reference.data.shape[-3:])
             reference_channel_names = list(reference.channel_names)
             reference_voxel_size = list(reference.scale)
+        recorded = settings.voxel_size
+        if recorded and not np.allclose(recorded[-3:], reference_voxel_size[-3:], rtol=1e-3):
+            raise click.UsageError(
+                f"the transforms were estimated on a reference grid of voxel size "
+                f"{list(recorded[-3:])} (zyx µm), this reference store's is "
+                f"{reference_voxel_size[-3:]}: the matrices are in voxels, so they would "
+                "move everything by the wrong amount; estimate on a store with this grid "
+                "(e.g. a beads stack at the plate's z step)"
+            )
         if channels is None:
             transformed = [
                 c
