@@ -567,3 +567,55 @@ def test_sweep_jobs_are_sized_for_the_heaviest_trial(beads_plate, tmp_path, monk
     resources = plan["resources"]
     assert resources["sweep"]["mem_gb"] > resources["estimate"]["mem_gb"]
     assert resources["repair"]["mem_gb"] == resources["estimate"]["mem_gb"]
+
+
+# --- measure: a block that measures only some axes ----------------------------------------
+
+
+class _Moves(EstimatorBase):
+    """Moves its start by (1, 2, 3) voxels zyx."""
+
+    def estimate(self, mov, ref, initial_transform=None):
+        from biahub.core.transform import Transform
+
+        start = initial_transform or Transform.identity(3)
+        return Transform.from_translation([1.0, 2.0, 3.0]) @ start
+
+
+def test_a_block_measuring_z_keeps_the_yx_of_its_start():
+    # DragonFly: the beads give yx, the cells z; mantis: z per timepoint, not its z scale
+    import numpy as np
+
+    from biahub.core.transform import Transform
+    from biahub.registration.estimators import MeasuredAxes
+
+    vol = np.zeros((4, 8, 8), np.float32)
+    start = Transform.from_translation([0.0, 5.0, 0.0])
+    z_only = MeasuredAxes(_Moves(), "z").estimate(vol, vol, initial_transform=start)
+    np.testing.assert_allclose(z_only.translation, [1.0, 5.0, 0.0])
+    yx_only = MeasuredAxes(_Moves(), "yx").estimate(vol, vol, initial_transform=start)
+    np.testing.assert_allclose(yx_only.translation, [0.0, 7.0, 3.0])
+    assert not MeasuredAxes(_Moves(), "z").accepts_competitor  # each start run on its own
+
+
+def test_measure_is_a_blocks_transform_setting_and_shapes_cannot_take_it():
+    from biahub.registration.engine import build_estimator
+    from biahub.registration.estimators import MeasuredAxes
+
+    stack = _settings(
+        [
+            BEADS_BLOCK,
+            {"phase_cross_corr": {"transform": {"type": "euclidean", "measure": "z"}}},
+        ]
+    )
+    chain, _ = build_estimator(stack, (16, 64, 64))
+    assert isinstance(chain.stages[1], MeasuredAxes) and chain.stages[1].measure == "z"
+    assert not isinstance(chain.stages[0], MeasuredAxes)
+    with pytest.raises(ValidationError, match="measure"):
+        shapes = {
+            "shapes": {
+                **SHAPES_BLOCK["shapes"],
+                "transform": {"type": "affine", "measure": "z"},
+            }
+        }
+        _settings([shapes, BEADS_BLOCK])

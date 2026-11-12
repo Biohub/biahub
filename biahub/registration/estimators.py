@@ -198,6 +198,54 @@ def measure_from_start(
 NOT_RUN = "not run: an earlier block failed"
 
 
+def held_axes(change: Transform, measure: str) -> Transform:
+    """Return `change` with only the `measure`d rows: "z" holds yx, "yx" holds z.
+
+    A row of the forward matrix is one output axis (z, y, x, then the homogeneous row):
+    holding an axis replaces its row with the identity's, so the change neither moves
+    that axis nor couples it to the others.
+    """
+    matrix = np.array(change.matrix)
+    held = {"z": slice(1, 3), "yx": slice(0, 1)}[measure]
+    matrix[held, :] = np.eye(len(matrix))[held, :]
+    return Transform(matrix, transform_type=change.transform_type)
+
+
+class MeasuredAxes(EstimatorBase):
+    """`estimator` measuring some axes only (`measure`: "z" or "yx"); the others stay at its start.
+
+    The method runs as configured; of the change it made after its start
+    (`result @ start^-1`) only the measured rows are kept (`held_axes`), then composed back
+    onto the start. E.g. a phase correlation measuring z after beads, which set the yx.
+    It takes no competitor start: under propagation the engine runs each start on its own,
+    so the change is always measured from the start that produced it.
+    """
+
+    accepts_competitor = False
+
+    def __init__(self, estimator: TransformEstimator, measure: str):
+        if measure not in ("z", "yx"):
+            raise ValueError(f"measure is 'z' or 'yx', got {measure!r}")
+        self.estimator = estimator
+        self.measure = measure
+        self.uses_initial_transform = estimator.uses_initial_transform
+        self.holds_xy_across_gaps = estimator.holds_xy_across_gaps
+
+    def estimate(
+        self, mov: ArrayLike, ref: ArrayLike, initial_transform: Transform | None = None
+    ) -> Transform:
+        start = (
+            initial_transform
+            if initial_transform is not None
+            else Transform.identity(np.ndim(mov))
+        )
+        result = self.estimator.estimate(mov, ref, initial_transform=initial_transform)
+        return held_axes(result @ start.invert(), self.measure) @ start
+
+    def trace(self) -> dict:
+        return self.estimator.trace()
+
+
 class ChainedEstimator(EstimatorBase):
     """Run estimators in sequence, each started from the previous result.
 

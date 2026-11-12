@@ -25,6 +25,7 @@ from biahub.registration.estimators import (
     EstimatorBase,
     ScoreFn,
     TransformEstimator,
+    held_axes,
     is_higher,
     select_best,
 )
@@ -268,9 +269,7 @@ def _keep_trace(result: SeriesResult, t: int, trace: dict | None) -> None:
 
 def _hold_xy(transform: Transform) -> Transform:
     """Keep the z part of a step; the yx part becomes identity."""
-    matrix = np.array(transform.matrix)
-    matrix[1:3, :] = np.eye(4)[1:3, :]
-    return Transform(matrix, transform_type=transform.transform_type)
+    return held_axes(transform, "z")
 
 
 def _gap_rule(estimator, reference_policy, mov, t: int, transform: Transform) -> Transform:

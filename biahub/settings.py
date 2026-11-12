@@ -1578,10 +1578,16 @@ class InitialTransformSettings(MyBaseModel):
 
 
 class TransformFitSettings(MyBaseModel):
-    """What kind of transform to fit (`type`), and where it starts (`initial`)."""
+    """What to fit (`type`), where it starts (`initial`), which axes to keep (`measure`).
+
+    `measure`: "all" (the default), or "z" / "yx": of what the method changed after its
+    start, only those axes are kept and the others stay at the start -- e.g. a block
+    measuring z on cells after the beads set yx.
+    """
 
     type: Literal["euclidean", "similarity", "affine"] = "euclidean"
     initial: InitialTransformSettings | None = None
+    measure: Literal["all", "z", "yx"] = "all"
 
     @property
     def propagates(self) -> bool:
@@ -1790,15 +1796,16 @@ def _named_method_block(item):
             f"a block's transform is a mapping, `transform: {{type: {transform}}}`; "
             f"got {transform!r}"
         )
-    if set(transform) - {"type"}:
+    if set(transform) - {"type", "measure"}:
         raise ValueError(
-            f"a block's transform sets only its type; {sorted(set(transform) - {'type'})} "
-            "belong to the run's transform"
+            "a block's transform sets only its type and measure; "
+            f"{sorted(set(transform) - {'type', 'measure'})} belong to the run's transform"
         )
     return {
         "method": method,
         "preprocess": body.pop("preprocess", []),
         "type": transform.get("type"),
+        "measure": transform.get("measure", "all"),
         "settings": body,
     }
 
@@ -1806,14 +1813,16 @@ def _named_method_block(item):
 class MethodBlock(MyBaseModel):
     """One block of a stack: a method with its own preparation, transform type and settings.
 
-    Written `- <method>: {preprocess: [...], transform: {type: ...}, <the method's
-    settings>}`; `type` unset takes the run's `transform.type`. The settings are checked
+    Written `- <method>: {preprocess: [...], transform: {type: ..., measure: ...}, <the
+    method's settings>}`; `type` unset takes the run's `transform.type`; `measure` (see
+    `TransformFitSettings`) is the block's own, "all" unset. The settings are checked
     when the run's settings build each block (`EstimateTransformSettings.stack_settings`).
     """
 
     method: EstimationMethod
     preprocess: PreprocessBlocks = []
     type: TransformType | None = None
+    measure: Literal["all", "z", "yx"] = "all"
     settings: dict[str, Any] = {}
 
     @model_serializer(mode="wrap")
@@ -1822,8 +1831,11 @@ class MethodBlock(MyBaseModel):
         body = dict(fields["settings"])
         if fields["preprocess"]:
             body["preprocess"] = fields["preprocess"]
-        if fields["type"] is not None:
-            body["transform"] = {"type": fields["type"]}
+        transform = {"type": fields["type"]} if fields["type"] is not None else {}
+        if fields["measure"] != "all":
+            transform["measure"] = fields["measure"]
+        if transform:
+            body["transform"] = transform
         return {fields["method"]: body}
 
 
@@ -2134,6 +2146,22 @@ class EstimateTransformSettings(MyBaseModel):
         return self
 
     @model_validator(mode="after")
+    def check_shapes_measures_every_axis(self) -> "EstimateTransformSettings":
+        if self.is_stack and self.transform.measure != "all":
+            raise ValueError(
+                "a stack's transform.measure goes on its blocks (`transform: {measure: z}` "
+                "in the block that measures only z)"
+            )
+        # shapes computes a start from the grids; a part of it would be no start at all
+        blocks = self.stack_settings() if self.is_stack else [self]
+        if any(b.method == "shapes" and b.transform.measure != "all" for b in blocks):
+            raise ValueError(
+                "shapes computes the start from the stores' grids: it measures every axis "
+                "(transform.measure: all)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def check_shapes_has_no_preprocess(self) -> "EstimateTransformSettings":
         # the shapes method reads only metadata: blocks before it would change nothing
         blocks = (
@@ -2338,6 +2366,7 @@ class EstimateTransformSettings(MyBaseModel):
             data[block.method] = block.settings
             if block.type is not None:
                 data["transform"]["type"] = block.type
+            data["transform"]["measure"] = block.measure  # each block's own
             fits = _fitted_types(block.method, (block.settings or {}).get("local") is not None)
             if block.type is None and fits and data["transform"]["type"] not in fits:
                 raise ValueError(

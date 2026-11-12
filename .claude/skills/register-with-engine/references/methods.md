@@ -12,6 +12,7 @@
 | stabilization of phase (focus z + stackreg yx) | `focus_finding` | what the A549 projects used (`label-free/2-stabilize`); `templates/estimate-transform-focus_finding.yml` |
 | the registration the two stores' metadata implies (voxel sizes, camera turn and flip) | `shapes` | reads no pixels: `shapes: {rotate90: -1, fliplr: false}` (mantis light-sheet); a first block before a fine method, or a quick check of the geometry; `templates/estimate-transform-shapes.yml` |
 | a coarse method, then a fine one (each block starts from the one before) | a stack: `method: [<block>, <block>]` | `templates/pipelines/` (e.g. `local_pcc_ants.yml`: local phase correlation then ANTs; `local_pcc_nuclei_matching.yml`); the benchmark compares them |
+| one axis from another measure (beads set yx; z measured on cells) | a block with `transform: {measure: z}` (or `yx`) | of what the block changed after its start only those axes are kept, the others stay at the start: e.g. `- phase_cross_corr: {transform: {measure: z}}` after `bead_matching`. Not for `shapes` |
 
 `reference.frame`: `cross` (another channel at the same timepoint: registration), `first`
 or `previous` (the channel's own first / previous frame with data: stabilization), or

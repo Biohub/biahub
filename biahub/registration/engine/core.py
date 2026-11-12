@@ -65,6 +65,7 @@ from biahub.registration.engine.series import (
 from biahub.registration.estimators import (
     NOT_RUN,
     ChainedEstimator,
+    MeasuredAxes,
     ScoreFn,
     TransformEstimator,
     is_higher,
@@ -307,6 +308,8 @@ def build_estimator(
         raise ValueError(f"unknown method '{settings.method}'")
     if settings.preprocess:
         estimator = PreprocessedEstimator(estimator, settings.preprocess, method_score)
+    if settings.transform.measure != "all":  # the other axes stay at the block's start
+        estimator = MeasuredAxes(estimator, settings.transform.measure)
     return estimator, score_fn
 
 
