@@ -361,3 +361,46 @@ def test_a_refused_pipeline_has_a_row_saying_why_and_the_choice_names_it(tmp_pat
         f.write("c,broken,refused,,,,\n")
     choice = select_pipeline(table)
     assert choice["pipeline"] == "ants" and "broken refused" in choice["reason"]
+
+
+def test_a_pipeline_that_scales_z_cannot_win(tmp_path):
+    # ANTs alone put the DragonFly camera's yx scale into z (0.95): it won on residuals
+    # and two of three eval runs overrode it by hand
+    import csv as _csv
+
+    from biahub.registration.benchmark import select_pipeline
+
+    path = tmp_path / "benchmark.csv"
+    fields = ["case", "pipeline", "candidate", "position", "tiles_median_um",
+              "points_median_um", "points_n", "transform_scale_zyx"]  # fmt: skip
+    rows = []
+    for pipeline, tiles, scale in (
+        ("ants", 0.53, "[0.95, 0.95, 0.95]"),
+        ("local_pcc_ants", 0.54, "[0.996, 0.95, 0.95]"),
+    ):
+        rows.append(("c", pipeline, "unregistered", "A/1/0", 4.0, "", 0, "[1.0, 1.0, 1.0]"))
+        rows.append(("c", pipeline, "transforms", "A/1/0", tiles, "", 0, scale))
+    with open(path, "w", newline="") as f:
+        writer = _csv.writer(f)
+        writer.writerow(fields)
+        writer.writerows(rows)
+    choice = select_pipeline(path)
+    assert choice["pipeline"] == "local_pcc_ants"
+    assert "ants" in choice["reason"] and "z scale" in choice["reason"]
+    assert select_pipeline(path, z_scale_tolerance=None)["pipeline"] == "ants"
+
+
+def test_held_out_positions_come_from_different_wells_and_ties_go_to_more_nuclei():
+    from biahub.registration.benchmark import select_positions
+
+    rows = [
+        {"position": "0/12/000000", "spread": 1.0, "n_nuclei": 10},
+        {"position": "0/12/000001", "spread": 1.0, "n_nuclei": 21},  # the tie's better
+        {"position": "0/11/000000", "spread": 1.0, "n_nuclei": 9},
+        {"position": "0/11/000001", "spread": 1.0, "n_nuclei": 8},
+        {"position": "0/19/000000", "spread": 0.9, "n_nuclei": 15},
+        {"position": "0/20/000000", "spread": 0.8, "n_nuclei": 15},
+    ]
+    estimate, held_out = select_positions(rows, n_held_out=3)
+    assert estimate == "0/12/000001"
+    assert [p.rsplit("/", 1)[0] for p in held_out] == ["0/11", "0/19", "0/20"]  # one per well

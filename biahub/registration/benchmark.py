@@ -13,6 +13,7 @@ skill runs a few candidate pipelines (estimate configs, e.g. stacks of methods) 
 from __future__ import annotations
 
 import csv
+import json
 import warnings
 
 from pathlib import Path
@@ -49,6 +50,17 @@ def _block(candidate: str) -> str:
     return candidate.split(" (")[0]
 
 
+def _z_scale(row: dict) -> float | None:
+    """Return the transform's physical z scale from a table row, or None."""
+    value = row.get("transform_scale_zyx")
+    if not value:
+        return None
+    try:
+        return float(json.loads(value)[0])
+    except (ValueError, TypeError, IndexError):
+        return None
+
+
 def select_pipeline(
     benchmark_csv,
     blocks: dict[str, int] | None = None,
@@ -56,6 +68,7 @@ def select_pipeline(
     must_beat: float = 0.5,
     min_points: int = 10,
     case: str | None = None,
+    z_scale_tolerance: float | None = 0.02,
 ) -> dict:
     """Return the pipeline to register with, and why, from a benchmark table.
 
@@ -69,6 +82,9 @@ def select_pipeline(
     does -- counted from its block rows unless `blocks` gives them. No winner unless
     its tile median is below `must_beat` times the unregistered pair's (judged on
     tiles: the unregistered pair matches few landmarks), and none without that baseline.
+    A pipeline whose transforms scale z by more than `z_scale_tolerance` (median over
+    positions; None: no check) cannot win: z keeps its scale between cameras, so a z scale
+    is a yx scale fitted into the wrong axis (ANTs alone on DragonFly: 0.95).
     """
     with open(benchmark_csv) as f:
         rows = list(csv.DictReader(f))
@@ -102,9 +118,17 @@ def select_pipeline(
             for position in positions
         }
 
-    scores, tiles, missing, counts = {}, {}, {}, {}
+    scores, tiles, missing, counts, implausible = {}, {}, {}, {}, {}
     for pipeline in dict.fromkeys(r["pipeline"] for r in finals):
         selected = [r for r in finals if r["pipeline"] == pipeline]
+        z_scale = median(_z_scale(r) for r in selected)
+        if (
+            z_scale_tolerance is not None
+            and z_scale is not None
+            and abs(z_scale - 1) > z_scale_tolerance
+        ):
+            implausible[pipeline] = z_scale
+            continue
         values = per_position(selected, metric)
         missing_here = [p for p, v in values.items() if v is None]
         if missing_here:
@@ -132,9 +156,14 @@ def select_pipeline(
         ).values()
     )
     base = {"metric": metric, "unregistered_tiles_um": unregistered, "scores": scores}
-    left_out = "".join(
-        f"; {p} left out: no {metric} on {where}" for p, where in missing.items()
-    ) + "".join(f"; {p} refused: {why}".rstrip(": ") for p, why in refused.items())
+    left_out = (
+        "".join(f"; {p} left out: no {metric} on {where}" for p, where in missing.items())
+        + "".join(f"; {p} refused: {why}".rstrip(": ") for p, why in refused.items())
+        + "".join(
+            f"; {p} left out: z scale {z:.3f} (more than {z_scale_tolerance} from 1)"
+            for p, z in implausible.items()
+        )
+    )
     if not scores:
         reason = (
             "no pipeline was evaluated on every position"
@@ -248,24 +277,37 @@ def select_positions(survey_rows: list[dict], n_held_out: int = 3) -> tuple[str,
     """Return (the position to estimate on, held-out positions) from `survey_positions`.
 
     Usable positions are written and under half NaN. The estimate position has the most
-    spread-out structure (what constrains scale and rotation); held-out ones are the next
-    most spread, from other wells first, so the evaluation sees how the transform carries
-    across the plate.
+    spread-out structure (what constrains scale and rotation; ties: more nuclei, then more
+    foreground); held-out ones are the next most spread, one per other well first, so the
+    evaluation sees how the transform carries across the plate.
     """
     usable = [
         r for r in survey_rows if not r.get("empty") and (r.get("nan_fraction") or 0) < 0.5
     ]
     if not usable:
         raise ValueError("no usable position: every one is empty or mostly NaN")
-    ranked = sorted(usable, key=lambda r: -(r.get("spread") or 0))
+    # most spread first; among equals, the most nuclei, then the most foreground
+    ranked = sorted(
+        usable,
+        key=lambda r: (
+            -(r.get("spread") or 0),
+            -(r.get("n_nuclei") or 0),
+            -(r.get("foreground") or 0),
+        ),
+    )
     estimate = ranked[0]["position"]
 
     def well(position):
         return position.rsplit("/", 1)[0]
 
-    others = [r["position"] for r in ranked[1:] if well(r["position"]) != well(estimate)]
-    same = [r["position"] for r in ranked[1:] if well(r["position"]) == well(estimate)]
-    return estimate, (others + same)[:n_held_out]
+    # one per well first (how far the transform carries across the plate), then the rest
+    held_out, wells = [], {well(estimate)}
+    for r in ranked[1:]:
+        if well(r["position"]) not in wells:
+            held_out.append(r["position"])
+            wells.add(well(r["position"]))
+    held_out += [r["position"] for r in ranked[1:] if r["position"] not in held_out]
+    return estimate, held_out[:n_held_out]
 
 
 def write_benchmark_config(
