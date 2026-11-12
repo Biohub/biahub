@@ -2153,8 +2153,12 @@ class EstimateTransformSettings(MyBaseModel):
                 "in the block that measures only z)"
             )
         # shapes computes a start from the grids; a part of it would be no start at all
-        blocks = self.stack_settings() if self.is_stack else [self]
-        if any(b.method == "shapes" and b.transform.measure != "all" for b in blocks):
+        measures = (
+            [(b.method, b.measure) for b in self.method]
+            if self.is_stack
+            else [(self.method, self.transform.measure)]
+        )
+        if any(method == "shapes" and measure != "all" for method, measure in measures):
             raise ValueError(
                 "shapes computes the start from the stores' grids: it measures every axis "
                 "(transform.measure: all)"
