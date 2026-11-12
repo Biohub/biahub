@@ -28,6 +28,8 @@ from biahub.registration.engine.disk import (
     ENGINE_SETTINGS_FILENAME,
     FLAGS_FILENAME,
     INITIAL_FILENAME,
+    JOURNAL_FILENAME,
+    REPORT_FILENAME,
     RUN_PLAN_FILENAME,
     RunJournal,
     finite_or_none,
@@ -836,9 +838,9 @@ def finalize_run(
         result.leftover_motion = leftover_motion_report(
             result, time_indices, transforms, plan["voxel_um"]
         )
-    journal.save(work_dir / "run_journal.json")
+    journal.save(work_dir / JOURNAL_FILENAME)
     write_json(
-        work_dir / "estimate_transform_report.json",
+        work_dir / REPORT_FILENAME,
         _report(result, time_indices, journal.current_run_id),
         indent=2,
     )

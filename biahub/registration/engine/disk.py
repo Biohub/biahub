@@ -159,10 +159,14 @@ def start_run(
     Without `resume`, the record dirs of any earlier run are removed so none of their
     files can stand in for a job of this run. With `resume`, the settings and inputs must
     match the manifest of the run being resumed; records with no manifest to check them
-    against are refused, and with no records at all the run simply starts fresh.
+    against are refused, and with no records at all the run simply starts fresh. Either
+    way an earlier report and journal are removed: finalize writes this run's.
     """
     manifest_path = work_dir / RUN_MANIFEST_FILENAME
     fingerprint = _run_fingerprint(settings, moving, reference)
+    # finalize rewrites them: until it does, an earlier run's would read as this run's
+    for name in (REPORT_FILENAME, JOURNAL_FILENAME):
+        (work_dir / name).unlink(missing_ok=True)
     if resume and manifest_path.exists():
         previous = json.loads(manifest_path.read_text())
         changed = sorted(k for k in fingerprint if previous.get(k) != fingerprint[k])
@@ -260,6 +264,10 @@ RUN_PLAN_FILENAME = "run_plan.json"
 
 
 FLAGS_FILENAME = "flags.json"
+
+# What finalize writes: removed at every start, so an earlier run's never stands for this one.
+REPORT_FILENAME = "estimate_transform_report.json"
+JOURNAL_FILENAME = "run_journal.json"
 
 
 def run_record_dirs(work_dir: Path) -> tuple[Path, Path, Path]:

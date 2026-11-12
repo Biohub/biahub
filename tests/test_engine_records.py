@@ -344,3 +344,20 @@ def test_a_job_writes_the_change_from_its_start_into_the_record(tmp_path):
     record = json.loads((output.with_suffix("") / "timepoints" / "0.json").read_text())
     # identity start (the default): the change is the whole transform
     np.testing.assert_allclose(record["from_start"], record["matrix"])
+
+
+def test_a_new_start_removes_the_earlier_runs_report_and_journal(tmp_path):
+    # a rerun that died before finalize left the earlier report: "done when the report
+    # exists" read the old run as this one's
+    from biahub.registration.engine.disk import JOURNAL_FILENAME, REPORT_FILENAME, start_run
+    from biahub.settings import EstimateTransformSettings
+
+    settings = EstimateTransformSettings(
+        moving={"channel": "GFP"}, reference={"frame": "first"}, method="phase_cross_corr"
+    )
+    for resume in (False, True):
+        for name in (REPORT_FILENAME, JOURNAL_FILENAME):
+            (tmp_path / name).write_text("{}")
+        start_run(tmp_path, settings, tmp_path / "mov", tmp_path / "ref", resume)
+        assert not (tmp_path / REPORT_FILENAME).exists()
+        assert not (tmp_path / JOURNAL_FILENAME).exists()
