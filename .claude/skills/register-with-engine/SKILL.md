@@ -328,9 +328,8 @@ row: `evaluate(..., landmarks=(moving_points, reference_points))`.
   the weakest measure. Then the overlays and the user's look decide.
 - On mantis the unregistered pair (identity) is not a baseline -- the light-sheet is turned
   onto the phase grid; compare against the `shapes` transform or the previous registration.
-- Run it as a SLURM job (`cpu` partition, 4 CPUs, ~8-16 GB for a 2048 x 2048 stack): one
-  warp per position, a few minutes. `evaluate-transform` has no `--cluster`: wrap it in an
-  sbatch script.
+- `evaluate-transform` submits one SLURM job per position (4 CPUs, 16 GB, ~10 min per
+  candidate; `-sb` to change them; `--cluster debug` to run in this process).
 
 Read every number against `record.baseline` (the unregistered pair) and across positions;
 these are not pass/fail thresholds:

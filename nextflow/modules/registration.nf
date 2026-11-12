@@ -576,7 +576,7 @@ process benchmark_evaluate {
     } else {
     """
     mkdir -p "${slurm_log_dir('benchmark_evaluate')}"
-    biahub evaluate-transform \\
+    biahub evaluate-transform --cluster debug \\
         -m ${position_args(moving, evaluate_positions)} \\
         -r ${position_args(ref_store, evaluate_positions)} \\
         -c "${transforms}" -o "${table}" --figures ${options} \\

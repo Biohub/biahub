@@ -8,12 +8,14 @@ unregistered pair, into one table (CSV). Independent of the score the estimate o
 from __future__ import annotations
 
 import csv
+import functools
 
 from pathlib import Path
 
 import click
 
 from biahub.cli.parsing import (
+    cluster,
     config_filepath,
     moving_position_dirpaths,
     output_filepath,
@@ -21,10 +23,14 @@ from biahub.cli.parsing import (
     position_key,
     reference_position_dirpaths,
     refusals_as_usage_errors,
+    sbatch_filepath,
+    sbatch_to_submitit,
 )
+from biahub.cli.slurm import wait_for_jobs_to_finish
 from biahub.core.transform import Transform
 from biahub.registration.benchmark import block_candidates, evaluate_candidates
 from biahub.settings import load_transform_settings
+from biahub.utils.cluster import apply_sbatch_overrides, get_submitit_cluster
 
 
 def _file_candidate(transforms, position_keys: list[str], t: int) -> dict:
@@ -97,6 +103,8 @@ def evaluate_transform(
     tags: dict | None = None,
     bead_threshold: float | None = None,
     reference_t: int | None = None,
+    cluster: str = "debug",
+    sbatch_filepath: str | None = None,
     **image_kwargs,
 ) -> list[dict]:
     """Evaluate a transforms file (and its stack's blocks) on positions; write the table.
@@ -150,21 +158,27 @@ def evaluate_transform(
         candidates = _relative_to_reference_frame(candidates, transforms, reference_t)
     output_filepath = Path(output_filepath)
     detect_kwargs = _bead_detection(run_dir, bead_threshold) if landmarks == "beads" else None
-    rows = evaluate_candidates(
+    pairs = [
+        (path, reference_for[key])
+        for key, path in zip(keys, moving_position_dirpaths, strict=True)
+    ]
+    evaluate_on = functools.partial(
+        evaluate_candidates,
         candidates,
-        [
-            (path, reference_for[key])
-            for key, path in zip(keys, moving_position_dirpaths, strict=True)
-        ],
-        moving_channel or transforms.moving_channels[0],
+        moving_channel=moving_channel or transforms.moving_channels[0],
         # a stabilization has no reference channel: its reference is the moving channel
-        reference_channel or transforms.reference_channel or transforms.moving_channels[0],
+        reference_channel=(
+            reference_channel or transforms.reference_channel or transforms.moving_channels[0]
+        ),
         t=t,
         landmarks=landmarks,
         detect_kwargs=detect_kwargs,
         reference_t=reference_t,
         figures_dir=output_filepath.with_suffix("") if figures else None,
         **image_kwargs,
+    )
+    rows = _run_per_position(
+        evaluate_on, pairs, len(candidates), output_filepath, cluster, sbatch_filepath
     )
     clash = sorted(set(tags or {}) & set(rows[0]))
     if clash:
@@ -214,6 +228,51 @@ def _relative_to_reference_frame(candidates: dict, transforms, reference_t: int)
         )
         for name, by_key in candidates.items()
     }
+
+
+# A job's size: one position, every candidate warped once (2048 x 2048 x ~60 stacks).
+EVALUATE_CPUS = 4
+EVALUATE_GB_PER_CPU = 4
+EVALUATE_MINUTES_PER_CANDIDATE = 10
+
+
+def _run_per_position(
+    evaluate_on, pairs, n_candidates, output_filepath, cluster, sbatch_filepath
+) -> list[dict]:
+    """Return the rows of every position, evaluated in this process or one job each.
+
+    `cluster` "debug" (the default for Python callers, and what a Nextflow task passes)
+    runs here; "slurm" / "local" submit one job per position, sized for its candidates
+    (an sbatch file's settings win), and join the rows in the positions' order.
+    """
+    cluster = get_submitit_cluster(cluster=cluster)
+    if cluster == "debug":
+        return evaluate_on(pairs)
+    import submitit
+
+    slurm_args = {
+        "slurm_job_name": "evaluate_transform",
+        "slurm_cpus_per_task": EVALUATE_CPUS,
+        "slurm_mem_per_cpu": f"{EVALUATE_GB_PER_CPU}G",
+        # the unregistered pair is a candidate too
+        "slurm_time": EVALUATE_MINUTES_PER_CANDIDATE * (n_candidates + 1),
+        "slurm_partition": "preempted",
+        "slurm_use_srun": False,
+    }
+    if sbatch_filepath:
+        slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
+    folder = (
+        Path(output_filepath).with_suffix("").parent / "slurm_output" / "evaluate_transform"
+    )
+    executor = submitit.AutoExecutor(folder=folder, cluster=cluster)
+    executor.update_parameters(**slurm_args)
+    click.echo(
+        f"Submitting {len(pairs)} evaluation job(s) on cluster='{cluster}': {slurm_args}"
+    )
+    with submitit.helpers.clean_env(), executor.batch():
+        jobs = [executor.submit(evaluate_on, [pair]) for pair in pairs]
+    wait_for_jobs_to_finish(jobs)
+    return [row for job in jobs for row in job.result()]
 
 
 def _parse_tags(tags) -> dict:
@@ -285,6 +344,8 @@ def _parse_tags(tags) -> dict:
     multiple=True,
     help="name=value, a constant column (e.g. --tag case=dragonfly); repeat for several.",
 )
+@cluster()
+@sbatch_filepath()
 @refusals_as_usage_errors
 def evaluate_transform_cli(
     moving_position_dirpaths,
@@ -301,12 +362,15 @@ def evaluate_transform_cli(
     figures,
     bead_threshold,
     tags,
+    cluster,
+    sbatch_filepath,
 ) -> None:
     """Evaluate a transforms file on positions: residuals in µm, against unregistered.
 
     One row per candidate (the file's transform, each block of its stack, unregistered)
     and position: tile and point medians, residual scale and rotation, z and where it
-    came from. Pass held-out positions to see whether the transform carries.
+    came from. Pass held-out positions to see whether the transform carries. Each
+    position is one SLURM job (`--cluster debug` to run here, as a Nextflow task does).
 
     \b
     >>> biahub evaluate-transform -m moving.zarr/A/1/0 -r reference.zarr/A/1/0 \\
@@ -331,6 +395,8 @@ def evaluate_transform_cli(
         tags=_parse_tags(tags),
         bead_threshold=bead_threshold,
         reference_t=reference_t,
+        cluster=cluster,
+        sbatch_filepath=sbatch_filepath,
         tile_px=tile_px,
     )
     for row in rows:

@@ -38,6 +38,8 @@ def test_evaluate_transform_writes_one_row_per_candidate_and_position(tmp_path):
         cli,
         [
             "evaluate-transform",
+            "--cluster",
+            "debug",
             "-m",
             *map(str, positions),
             "-r",
@@ -79,7 +81,15 @@ def test_tags_add_columns_so_tables_can_be_joined(tmp_path):
         transforms,
     )
     output = tmp_path / "evaluation.csv"
-    args = ["evaluate-transform", "-m", str(positions[0]), "-r", str(positions[0])]
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(positions[0]),
+        "-r",
+        str(positions[0]),
+    ]
     args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64"]
     args += ["--tag", "case=dragonfly", "--tag", "pipeline=tiles > nuclei"]
     result = CliRunner().invoke(cli, args)
@@ -105,7 +115,15 @@ def test_a_per_position_file_is_evaluated_on_held_out_positions(tmp_path):
         transforms,
     )
     output = tmp_path / "evaluation.csv"
-    args = ["evaluate-transform", "-m", str(positions[1]), "-r", str(positions[1])]
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(positions[1]),
+        "-r",
+        str(positions[1]),
+    ]
     args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64"]
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
@@ -151,7 +169,17 @@ def test_bead_landmarks_take_the_runs_detection_threshold(tmp_path):
     _run(plate, _write_config(tmp_path), output)
 
     table = tmp_path / "evaluation.csv"
-    args = ["evaluate-transform", "-m", str(plate), "-r", str(plate), "-c", str(output)]
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(plate),
+        "-r",
+        str(plate),
+        "-c",
+        str(output),
+    ]
     args += ["-o", str(table), "--tile-px", "32", "--landmarks", "beads"]
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
@@ -161,7 +189,8 @@ def test_bead_landmarks_take_the_runs_detection_threshold(tmp_path):
     # no run folder and no threshold: say what is missing
     bare = tmp_path / "bare.yml"
     bare.write_text(output.read_text())
-    result = CliRunner().invoke(cli, args[:6] + [str(bare)] + args[7:])
+    config = args.index("-c") + 1
+    result = CliRunner().invoke(cli, [*args[:config], str(bare), *args[config + 1 :]])
     assert result.exit_code != 0 and "--bead-threshold" in result.output
 
 
@@ -200,7 +229,7 @@ def test_a_stabilization_is_evaluated_against_its_reference_frame(tmp_path):
     # with -r, and without: a stabilization's reference is its own positions
     for reference in (["-r", str(position)], []):
         output = tmp_path / f"evaluation{len(reference)}.csv"
-        args = ["evaluate-transform", "-m", str(position), *reference]
+        args = ["evaluate-transform", "--cluster", "debug", "-m", str(position), *reference]
         args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64", "--t", "1"]
         args += ["--reference-t", "0"]
         result = CliRunner().invoke(cli, args)
@@ -221,7 +250,15 @@ def test_a_registration_file_needs_its_reference_positions(tmp_path):
         transforms,
     )
     positions = _plate(tmp_path)
-    args = ["evaluate-transform", "-m", str(positions[0]), "-c", str(transforms)]
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(positions[0]),
+        "-c",
+        str(transforms),
+    ]
     result = CliRunner().invoke(cli, [*args, "-o", str(tmp_path / "e.csv")])
     assert result.exit_code == 2 and "needs the reference positions (-r)" in result.output
 
@@ -243,7 +280,15 @@ def test_a_blank_position_is_reported_not_left_as_empty_rows(tmp_path):
         transforms,
     )
     output = tmp_path / "evaluation.csv"
-    args = ["evaluate-transform", "-m", *map(str, positions), "-r", *map(str, positions)]
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        *map(str, positions),
+        "-r",
+        *map(str, positions),
+    ]
     args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64"]
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
@@ -352,3 +397,25 @@ def test_a_stabilization_is_evaluated_relative_to_its_reference_frames_own_trans
     )
     (relative,) = seen["transforms"].values()
     np.testing.assert_allclose(relative.translation, [0.0, 2.0, 0.0])  # 5 - 3
+
+
+def _rows_of(pairs):
+    return [
+        {"position": str(moving), "reference": str(reference)} for moving, reference in pairs
+    ]
+
+
+def test_evaluation_jobs_are_one_per_position_and_join_in_order(tmp_path, monkeypatch):
+    # evaluate-transform ran in the calling process only: every eval run wrapped it in its
+    # own sbatch script
+    import functools
+
+    from biahub.evaluate_transform import _run_per_position
+
+    monkeypatch.delenv("CI")  # the suite forces jobs in-process; submit them here
+    pairs = [(tmp_path / f"m{i}", tmp_path / f"r{i}") for i in range(3)]
+    rows = _run_per_position(
+        functools.partial(_rows_of), pairs, 2, tmp_path / "out" / "e.csv", "local", None
+    )
+    assert [r["position"] for r in rows] == [str(m) for m, _ in pairs]
+    assert (tmp_path / "out" / "slurm_output" / "evaluate_transform").is_dir()
