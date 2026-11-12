@@ -419,3 +419,47 @@ def test_evaluation_jobs_are_one_per_position_and_join_in_order(tmp_path, monkey
     )
     assert [r["position"] for r in rows] == [str(m) for m, _ in pairs]
     assert (tmp_path / "out" / "slurm_output" / "evaluate_transform").is_dir()
+
+
+def test_bead_thresholds_may_differ_per_channel(tmp_path):
+    # one threshold for both channels matched no beads on fluorescence against phase
+    from biahub.evaluate_transform import _bead_detection
+
+    both = _bead_detection(tmp_path, 50.0)
+    assert both == {"threshold_abs": 50.0}
+    sides = _bead_detection(tmp_path, (50.0, 800.0))
+    assert sides == {"moving": {"threshold_abs": 50.0}, "reference": {"threshold_abs": 800.0}}
+
+
+def test_the_comparison_and_tile_grid_are_command_line_options(tmp_path, monkeypatch):
+    # the defaults found no tiles on a compact sample, and the command could not change them
+    from biahub import evaluate_transform as module
+
+    seen = {}
+
+    def capture(candidates, pairs, **kwargs):
+        from biahub.registration.benchmark import _empty_row
+
+        seen.update(kwargs)
+        return [{**_empty_row("A/1/0", 0, None), "candidate": "transforms"}]
+
+    monkeypatch.setattr(module, "evaluate_candidates", capture)
+    positions = _plate(tmp_path)
+    transforms = _stabilization_file(tmp_path, "first")
+    args = ["evaluate-transform", "--cluster", "debug", "-m", str(positions[0])]
+    args += ["-c", str(transforms), "-o", str(tmp_path / "e.csv"), "--no-blocks"]
+    args += [
+        "--compare",
+        "intensity",
+        "--grid",
+        "5",
+        "--tile-px",
+        "128",
+        "--bead-threshold",
+        "50,800",
+    ]
+    args += ["--landmarks", "beads"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert (seen["compare"], seen["grid"], seen["tile_px"]) == ("intensity", 5, 128)
+    assert seen["detect_kwargs"]["reference"] == {"threshold_abs": 800.0}

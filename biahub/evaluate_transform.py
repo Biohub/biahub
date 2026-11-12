@@ -53,8 +53,14 @@ def _run_dir(transforms_filepath: Path) -> Path:
     return beside
 
 
-def _bead_detection(run_dir: Path, threshold: float | None) -> dict:
-    """Return bead detection settings: `threshold` for both, else the estimate's own."""
+def _bead_detection(run_dir: Path, threshold: float | tuple | None) -> dict:
+    """Return bead detection settings, `threshold` or else the estimate's own.
+
+    `threshold` is one value for both channels, or (moving, reference).
+    """
+    if isinstance(threshold, tuple):  # fluorescence and phase need their own
+        moving, reference = threshold
+        return {"moving": {"threshold_abs": moving}, "reference": {"threshold_abs": reference}}
     if threshold is not None:
         return {"threshold_abs": threshold}
     from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME, RunFolder
@@ -101,8 +107,9 @@ def evaluate_transform(
     blocks: bool = True,
     figures: bool = False,
     tags: dict | None = None,
-    bead_threshold: float | None = None,
+    bead_threshold: float | tuple | None = None,
     reference_t: int | None = None,
+    compare: str = "edges",
     cluster: str = "debug",
     sbatch_filepath: str | None = None,
     **image_kwargs,
@@ -172,6 +179,7 @@ def evaluate_transform(
         ),
         t=t,
         landmarks=landmarks,
+        compare=compare,
         detect_kwargs=detect_kwargs,
         reference_t=reference_t,
         figures_dir=output_filepath.with_suffix("") if figures else None,
@@ -275,6 +283,23 @@ def _run_per_position(
     return [row for job in jobs for row in job.result()]
 
 
+def _thresholds(value: str | None) -> float | tuple | None:
+    """Parse --bead-threshold: one number, or 'moving,reference'."""
+    if value is None:
+        return None
+    try:
+        numbers = tuple(float(v) for v in str(value).split(","))
+    except ValueError:
+        raise click.BadParameter(
+            f"a number or 'moving,reference', got {value!r}", param_hint="--bead-threshold"
+        ) from None
+    if len(numbers) not in (1, 2):
+        raise click.BadParameter(
+            f"a number or 'moving,reference', got {value!r}", param_hint="--bead-threshold"
+        )
+    return numbers[0] if len(numbers) == 1 else numbers
+
+
 def _parse_tags(tags) -> dict:
     parsed = {}
     for tag in tags:
@@ -322,7 +347,22 @@ def _parse_tags(tags) -> dict:
     "(the run's first timepoint with data); a registration's reference at --t.",
 )
 @click.option(
-    "--tile-px", type=int, default=256, show_default=True, help="Tile size (pixels)."
+    "--tile-px",
+    type=int,
+    default=256,
+    show_default=True,
+    help="Tile size (pixels); smaller (128) on a compact sample that fills few tiles.",
+)
+@click.option(
+    "--grid", type=int, default=None, help="Tiles per side of the grid (default: evaluate's)."
+)
+@click.option(
+    "--compare",
+    type=click.Choice(["edges", "intensity"]),
+    default="edges",
+    show_default=True,
+    help="What the tiles and z crops compare: edges (cross-modal pairs) or intensity "
+    "(the same kind of image, e.g. membranes onto virtual-stained membranes).",
 )
 @click.option(
     "--no-blocks", is_flag=True, help="Only the file's transform, not each block of its stack."
@@ -334,9 +374,11 @@ def _parse_tags(tags) -> dict:
 )
 @click.option(
     "--bead-threshold",
-    type=float,
+    type=str,
     default=None,
-    help="With --landmarks beads: the detection threshold (default: the estimate's).",
+    callback=lambda ctx, param, value: _thresholds(value),
+    help="With --landmarks beads: the detection threshold, one for both channels or "
+    "'moving,reference' (fluorescence and phase differ). Default: the estimate's own.",
 )
 @click.option(
     "--tag",
@@ -358,6 +400,8 @@ def evaluate_transform_cli(
     t,
     reference_t,
     tile_px,
+    grid,
+    compare,
     no_blocks,
     figures,
     bead_threshold,
@@ -395,9 +439,11 @@ def evaluate_transform_cli(
         tags=_parse_tags(tags),
         bead_threshold=bead_threshold,
         reference_t=reference_t,
+        compare=compare,
         cluster=cluster,
         sbatch_filepath=sbatch_filepath,
         tile_px=tile_px,
+        **({} if grid is None else {"grid": grid}),
     )
     for row in rows:
         if row["empty"]:
