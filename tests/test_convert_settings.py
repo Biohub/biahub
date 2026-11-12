@@ -398,3 +398,23 @@ def test_compute_approx_transform_converts_to_the_shapes_start():
     initial = unified.transform.initial
     assert (initial.from_, initial.rotate90, initial.fliplr) == ("shapes", -1, False)
     assert any("approx_transform ignored" in n for n in notes)
+
+
+def test_a_registration_written_as_a_stabilize_config_names_its_reference():
+    # the 2025 mantis 1-register files are registrations in the stabilize schema (estimation
+    # channel Phase3D, channels GFP + Phase3D): converted as a stabilization, Phase3D became
+    # a moving channel and there was no reference, so evaluate-transform refused the file
+    legacy = StabilizationSettings(
+        stabilization_estimation_channel="Phase3D",
+        stabilization_type="affine",
+        stabilization_method="beads",
+        stabilization_channels=["GFP EX488 EM525-45", "Phase3D"],
+        affine_transform_zyx_list=[INVERSE.tolist()] * 2,
+        output_voxel_size=[1, 1, 0.174, 0.1494, 0.1494],
+    )
+    unified, notes = convert_settings(legacy, reference_channel="Phase3D")
+    assert unified.reference_channel == "Phase3D"
+    assert unified.moving_channels == ["GFP EX488 EM525-45"]
+    assert unified.timepoints() == [0, 1]
+    with pytest.raises(ValueError, match="not one of"):
+        convert_settings(legacy, reference_channel="nuclei_prediction")

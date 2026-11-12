@@ -430,6 +430,7 @@ def estimate_settings_from_legacy(
 
 def transform_settings_from_legacy(
     legacy: RegistrationSettings | StabilizationSettings,
+    reference_channel: str | None = None,
 ) -> tuple[TransformSettings, list[str]]:
     """Convert a legacy register / stabilize config to a inverse-direction transform series.
 
@@ -463,13 +464,26 @@ def transform_settings_from_legacy(
         )
         return settings, notes
     # stabilize transformed every listed channel onto the estimation channel's own grid,
-    # so the estimation channel is one of the moving channels and there is no reference.
+    # so the estimation channel is one of the moving channels and there is no reference --
+    # unless the file is a registration written in this schema (`reference_channel`).
+    channels = sorted(
+        {*legacy.stabilization_channels, legacy.stabilization_estimation_channel}
+    )
+    if reference_channel is not None:
+        if reference_channel not in channels:
+            raise ValueError(
+                f"reference channel {reference_channel!r} is not one of the file's channels "
+                f"{channels}"
+            )
+        channels.remove(reference_channel)
+        notes.append(
+            f"read as a registration onto {reference_channel!r} (the stabilize schema holds "
+            "no reference channel)"
+        )
     settings = TransformSettings(
         direction="inverse",
-        moving_channels=sorted(
-            {*legacy.stabilization_channels, legacy.stabilization_estimation_channel}
-        ),
-        reference_channel=None,
+        moving_channels=channels,
+        reference_channel=reference_channel,
         method=RENAMED_METHODS.get(legacy.stabilization_method, legacy.stabilization_method),
         voxel_size=list(legacy.output_voxel_size),
         transforms=[
@@ -512,14 +526,26 @@ def _unified_pcc(pcc, notes: list[str]):
 
 
 def convert_settings(
-    legacy: LegacySettings,
+    legacy: LegacySettings, reference_channel: str | None = None
 ) -> tuple[EstimateTransformSettings | TransformSettings, list[str]]:
+    """Convert one legacy config.
+
+    `reference_channel` reads a stabilize-schema file as a registration onto that channel
+    (the schema cannot say which it is).
+    """
+    if reference_channel is not None and not isinstance(legacy, StabilizationSettings):
+        raise ValueError(
+            "--reference-channel is for a stabilize-schema file (a registration written as "
+            f"one); this is a {type(legacy).__name__}, which names its own"
+        )
     if isinstance(legacy, (EstimateRegistrationSettings, EstimateStabilizationSettings)):
         return estimate_settings_from_legacy(legacy)
-    return transform_settings_from_legacy(legacy)
+    return transform_settings_from_legacy(legacy, reference_channel)
 
 
-def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, list[str]]:
+def per_position_stabilization(
+    paths: list[Path], reference_channel: str | None = None
+) -> tuple[TransformSettings, list[str]]:
     """Fold legacy per-FOV stabilize configs (`<row>_<col>_<fov>.yml`) into one file.
 
     Legacy estimate-stabilization wrote one stabilize config per position; the unified
@@ -538,7 +564,7 @@ def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, li
             raise click.UsageError(
                 f"{path}: per-position stabilize configs are named <row>_<col>_<fov>.yml"
             )
-        settings, file_notes = transform_settings_from_legacy(legacy)
+        settings, file_notes = transform_settings_from_legacy(legacy, reference_channel)
         if first is None:
             first = settings
         elif (settings.moving_channels, settings.voxel_size) != (
@@ -554,14 +580,19 @@ def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, li
     return TransformSettings.model_validate(merged.model_dump()), notes
 
 
-def convert_settings_file(config_filepaths: list[Path], output_filepath: Path) -> None:
+def convert_settings_file(
+    config_filepaths: list[Path], output_filepath: Path, reference_channel: str | None = None
+) -> None:
     config_filepaths = [Path(p) for p in config_filepaths]
     if len(config_filepaths) == 1:
         legacy = load_legacy_settings(config_filepaths[0])
-        settings, notes = convert_settings(legacy)
+        try:
+            settings, notes = convert_settings(legacy, reference_channel)
+        except ValueError as error:
+            raise click.UsageError(str(error)) from None
         source = f"{config_filepaths[0]} ({type(legacy).__name__})"
     else:
-        settings, notes = per_position_stabilization(config_filepaths)
+        settings, notes = per_position_stabilization(config_filepaths, reference_channel)
         source = f"{len(config_filepaths)} per-position stabilize configs"
     Path(output_filepath).parent.mkdir(parents=True, exist_ok=True)
     model_to_yaml(settings, output_filepath)
@@ -580,7 +611,15 @@ def convert_settings_file(config_filepaths: list[Path], output_filepath: Path) -
 @click.command("convert-settings")
 @config_filepaths()
 @output_filepath()
-def convert_settings_cli(config_filepaths: list[Path], output_filepath: Path) -> None:
+@click.option(
+    "--reference-channel",
+    default=None,
+    help="Read a stabilize-schema file as a registration onto this channel (e.g. Phase3D): "
+    "the schema cannot say which it is. Default: a stabilization.",
+)
+def convert_settings_cli(
+    config_filepaths: list[Path], output_filepath: Path, reference_channel: str | None
+) -> None:
     """Convert a retired registration / stabilization config to the unified one.
 
     estimate-registration / estimate-stabilization -> estimate-transform;
@@ -591,5 +630,9 @@ def convert_settings_cli(config_filepaths: list[Path], output_filepath: Path) ->
     >> biahub convert-settings -c estimate-registration.yml -o estimate-transform.yml
 
     >> biahub convert-settings -c "xyz_stabilization_settings/*.yml" -o transforms.yml
+
+    A registration written as a stabilize config (e.g. the 2025 mantis 1-register files):
+
+    >> biahub convert-settings -c registration_settings.yml -o transforms.yml --reference-channel Phase3D
     """
-    convert_settings_file(config_filepaths, Path(output_filepath))
+    convert_settings_file(config_filepaths, Path(output_filepath), reference_channel)
