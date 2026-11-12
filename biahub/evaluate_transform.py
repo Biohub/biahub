@@ -232,8 +232,8 @@ def _parse_tags(tags) -> dict:
     "--reference-t",
     type=int,
     default=None,
-    help="Read the reference at this timepoint (a stabilization's reference frame, e.g. 0); "
-    "default: --t.",
+    help="Read the reference at this timepoint. Default: a stabilization's reference frame "
+    "(the run's first timepoint with data); a registration's reference at --t.",
 )
 @click.option(
     "--tile-px", type=int, default=256, show_default=True, help="Tile size (pixels)."
