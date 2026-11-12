@@ -132,8 +132,9 @@ or after the user agrees, when the family's pipeline failed.
 
 | Family | Case | Pipeline |
 |---|---|---|
-| mantis (tlg2_mantis, A549 mantis v1) | a beads well | `templates/estimate-transform-bead_matching.yml` on the beads well, every timepoint, onto Phase3D; applied to the sample wells |
-| mantis | no beads well | `templates/pipelines/mantis_shapes_ants_vs.yml`: shapes (the light-sheet turn), then ANTs similarity, a membrane fluorescence channel onto the virtual-stained `membrane_prediction` -- never Phase3D itself (it fails on cells) |
+| mantis v1 (tlg2_mantis, A549 organelle_dynamics) | a beads well | `templates/estimate-transform-bead_matching.yml` on the beads well, every timepoint, onto Phase3D; applied to the sample wells |
+| mantis v1 | no beads well | `templates/pipelines/mantis_shapes_ants_vs.yml`: shapes (the light-sheet turn), then ANTs similarity, a membrane fluorescence channel onto the virtual-stained `membrane_prediction` -- never Phase3D itself (it fails on cells) |
+| mantis v2 (`0-flatfield` ... `4-assemble`) | any | **no registration**: the arms are aligned on acquisition (BF and fluorescence in one deskewed store); only stabilization applies. Asked to register, say so and stop |
 | DragonFly (organelle_box) | a beads store | `templates/estimate-transform-bead_matching.yml` on the beads FOV (its phase reconstructed first), yx and z from the beads; one transform for every `*-Prime_*` channel (one camera) |
 | DragonFly | no beads | `templates/pipelines/local_pcc_ants.yml`, DAPI onto the virtual-stained `nuclei_prediction`, on one FOV with many nuclei; checked with `--landmarks nuclei` on 2-3 held-out FOVs; one transform for every `*-Prime_*` channel |
 
