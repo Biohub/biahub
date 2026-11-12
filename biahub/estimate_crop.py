@@ -386,7 +386,7 @@ def estimate_crop_one_position(
 def estimate_crop(
     config_filepath: str,
     output_filepath: str,
-    lf_mask_radius: float | None = None,
+    lf_mask_radius: float | None = 0.95,
     sbatch_filepath: str = None,
     local: bool = False,
 ):
@@ -403,7 +403,8 @@ def estimate_crop(
     lf_mask_radius : float | None
         Also crop to a circle on the phase channel, of this radius as a fraction of the
         half-width of the shorter yx axis (0 < radius <= 1; e.g. 0.95 leaves out a bright
-        well edge). None (the default): no circle.
+        well edge; the default, as on main). None: no circle. The command passes None
+        unless --lf-mask-radius is given.
     sbatch_filepath : str
         Path to a SLURM submission script.
     local : bool

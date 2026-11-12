@@ -30,7 +30,7 @@ def test_no_valid_data_keeps_the_whole_common_volume(tmp_path):
 
 
 def test_without_a_radius_there_is_no_circle(tmp_path):
-    # the default was 0.95 on main; now leaving it out crops to the data only
+    # one position's crop: no radius, no circle (as on main)
     shape = (2, 1, 4, 40, 80)
     phase = _position(tmp_path / "lf.zarr", np.ones(shape, np.float32))
     fluor = _position(tmp_path / "ls.zarr", np.ones(shape, np.float32))
