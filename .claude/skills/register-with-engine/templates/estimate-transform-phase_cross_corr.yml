@@ -12,7 +12,6 @@ reference:
   frame: first
 method: phase_cross_corr
 phase_cross_corr:
-  normalization: magnitude
   maximum_shift: 1.2
   function_type: custom
   center_crop_xy: null
