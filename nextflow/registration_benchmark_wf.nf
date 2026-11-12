@@ -19,6 +19,7 @@
 //       reference_frame: first                      # a stabilization: first, previous or neighbours
 //                                                   # (default: the pipeline's, else first)
 //       evaluate_t: 10                              # a stabilization: the timepoint evaluated against the run's first
+//       reference_t: 4                              # a neighbours stabilization: a quiet frame to compare with
 //       estimate_positions: 0/12/001001             # one, or a list
 //       evaluate_positions: [0/9/001001, 0/19/001001]
 //       landmarks: nuclei                           # optional: nuclei, beads
@@ -123,8 +124,10 @@ workflow {
         if (c.landmarks) options << "--landmarks ${c.landmarks}"
         if (c.tile_px) options << "--tile-px ${c.tile_px}"
         // a stabilization is evaluated against its file's reference frame (the run's first
-        // timepoint with data for first and previous; a neighbours pipeline needs one)
+        // timepoint with data for first and previous); a neighbours pipeline has none: the
+        // case names a quiet frame as reference_t
         if (!c.reference) options << "--t ${c.evaluate_t}"
+        if (!c.reference && c.reference_t != null) options << "--reference-t ${c.reference_t}"
         [(c.name): [as_list(c.evaluate_positions), options.join(' ')]]
     }
 

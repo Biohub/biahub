@@ -22,6 +22,7 @@ from biahub.cli.parsing import (
     reference_position_dirpaths,
     refusals_as_usage_errors,
 )
+from biahub.core.transform import Transform
 from biahub.registration.benchmark import block_candidates, evaluate_candidates
 from biahub.settings import load_transform_settings
 
@@ -103,9 +104,9 @@ def evaluate_transform(
     `tags` become constant columns, first (e.g. the case and pipeline of a benchmark), so
     tables from several runs can be joined; a tag named like a column is refused. -r
     positions are paired with the moving ones by position (one serves them all). A
-    stabilization (no reference channel) compares `t` with `reference_t`, by default
-    its reference frame: the run's first timepoint with data (for `neighbours`, as long
-    as the slow drift is small).
+    stabilization (no reference channel) compares `t` with `reference_t` -- by default
+    its reference frame, the run's first timepoint with data (`neighbours` has none: pass
+    a quiet frame) -- each candidate relative to that frame's own transform.
     """
     if bead_threshold is not None and landmarks != "beads":
         raise click.UsageError("--bead-threshold goes with --landmarks beads")
@@ -145,6 +146,8 @@ def evaluate_transform(
             for (position, at), transform in by_key.items():
                 if at == t:
                     candidates[f"{name} ({position})"] = {t: transform}
+    if transforms.reference_channel is None:
+        candidates = _relative_to_reference_frame(candidates, transforms, reference_t)
     output_filepath = Path(output_filepath)
     detect_kwargs = _bead_detection(run_dir, bead_threshold) if landmarks == "beads" else None
     rows = evaluate_candidates(
@@ -178,15 +181,39 @@ def evaluate_transform(
 def _reference_frame_t(transforms) -> int:
     """Return the timepoint a stabilization file's transforms are measured against."""
     entries = transforms.transforms or next(iter((transforms.positions or {}).values()), [])
-    if transforms.reference_frame not in ("first", "previous", "neighbours"):
+    if transforms.reference_frame not in ("first", "previous"):
+        # neighbours aligns each timepoint onto the median around it: no frame is the
+        # reference, and the first may be one that jumps
         raise click.UsageError(
             f"a stabilization with reference frame {transforms.reference_frame!r} needs "
-            "--reference-t: the frame its transforms are measured against"
+            "--reference-t: a quiet frame to compare with (its transform near zero)"
         )
     # the run's first timepoint with data (an empty frame's entry is a stand-in): first
-    # aligns onto it and previous chains onto it; neighbours aligns onto the median around
-    # each timepoint, which holds still with it while the slow drift is small
+    # aligns onto it and previous chains onto it
     return min(e.t for e in entries if e.t is not None and e.filled_from is None)
+
+
+def _relative_to_reference_frame(candidates: dict, transforms, reference_t: int) -> dict:
+    """Return each candidate relative to the reference frame's own transform.
+
+    A stabilization moves every frame, the reference frame too (`neighbours`): frame t
+    stabilized is compared with the reference frame stabilized, which is frame t warped
+    by `T_ref^-1 @ T_t` compared with the raw reference frame. For `first` and
+    `previous` the reference frame's transform is the identity: nothing changes.
+    """
+
+    def reference(key):
+        position = key[0] if isinstance(key, tuple) else None
+        return transforms.transform_for(reference_t, position).invert()
+
+    return {
+        name: (
+            reference(None) @ by_key
+            if isinstance(by_key, Transform)
+            else {key: reference(key) @ transform for key, transform in by_key.items()}
+        )
+        for name, by_key in candidates.items()
+    }
 
 
 def _parse_tags(tags) -> dict:

@@ -300,6 +300,7 @@ def test_a_stabilization_case_keeps_the_pipelines_reference_settings(tmp_path):
                 "estimate_positions": position_key,
                 "evaluate_positions": [position_key],
                 "evaluate_t": n_t - 1,
+                "reference_t": 0,  # neighbours has no single reference frame
                 "tile_px": 32,
             }
         ],

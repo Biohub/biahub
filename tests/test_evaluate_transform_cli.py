@@ -284,11 +284,12 @@ def test_without_reference_t_a_stabilization_reads_its_files_reference_frame(
             positions[:1], None, _stabilization_file(tmp_path, frame), tmp_path / "e.csv", t=3
         )
         assert seen[-1] == expected
-    module.evaluate_transform(
-        positions[:1], None, _stabilization_file(tmp_path, "neighbours"), tmp_path / "e.csv"
-    )
-    assert seen[-1] == 2
-    with pytest.raises(click.UsageError, match="--reference-t"):  # no frame recorded
+    for frame in ("neighbours", None):  # no single reference frame, or none recorded
+        with pytest.raises(click.UsageError, match="--reference-t"):
+            module.evaluate_transform(
+                positions[:1], None, _stabilization_file(tmp_path, frame), tmp_path / "e.csv"
+            )
+    with pytest.raises(click.UsageError, match="--reference-t"):
         module.evaluate_transform(
             positions[:1], None, _stabilization_file(tmp_path), tmp_path / "e.csv"
         )
@@ -312,3 +313,42 @@ def test_evaluate_transform_refuses_what_it_would_not_read(tmp_path):
             positions[:1], None, transforms, tmp_path / "e.csv", reference_t=0,
             tags={"tiles_median_um": "x"}, images=False,
         )  # fmt: skip
+
+
+def test_a_stabilization_is_evaluated_relative_to_its_reference_frames_own_transform(
+    tmp_path, monkeypatch
+):
+    # a neighbours run moves every frame, the reference frame too: frame t warped was
+    # compared with the raw reference frame, and scored worse than unregistered
+    from biahub import evaluate_transform as module
+
+    seen = {}
+
+    def capture(candidates, *args, **kwargs):
+        seen.update(candidates)
+        return [{"x": 1}]
+
+    monkeypatch.setattr(module, "evaluate_candidates", capture)
+    transforms = tmp_path / "neighbours.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_frame="neighbours",
+            transforms=[
+                TransformEntry(
+                    t=t, matrix=Transform.from_translation([0.0, dy, 0.0]).to_list()
+                )
+                for t, dy in ((2, 3.0), (3, 5.0))
+            ],
+        ),
+        transforms,
+    )
+    positions = _plate(tmp_path)
+    with pytest.raises(click.UsageError, match="--reference-t"):  # no single reference frame
+        module.evaluate_transform(positions[:1], None, transforms, tmp_path / "e.csv", t=3)
+    module.evaluate_transform(
+        positions[:1], None, transforms, tmp_path / "e.csv", t=3, reference_t=2, blocks=False
+    )
+    (relative,) = seen["transforms"].values()
+    np.testing.assert_allclose(relative.translation, [0.0, 2.0, 0.0])  # 5 - 3

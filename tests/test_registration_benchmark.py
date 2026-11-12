@@ -180,6 +180,7 @@ def test_every_pipeline_template_loads():
         "local_pcc",
         "local_pcc_ants",
         "local_pcc_nuclei_matching",
+        "mantis_shapes_ants_vs",
     ]
     for path in folder.glob("*.yml"):
         EstimateTransformSettings(**yaml.safe_load(path.read_text()))
