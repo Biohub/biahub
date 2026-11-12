@@ -279,7 +279,7 @@ def test_without_reference_t_a_stabilization_reads_its_files_reference_frame(
         lambda *a, **k: seen.append(k["reference_t"]) or [{"x": 1}],
     )
     positions = _plate(tmp_path)
-    for frame, expected in (("first", 0), ("previous", 2)):
+    for frame, expected in (("first", 2), ("previous", 2)):  # the run starts at t=2
         module.evaluate_transform(
             positions[:1], None, _stabilization_file(tmp_path, frame), tmp_path / "e.csv", t=3
         )

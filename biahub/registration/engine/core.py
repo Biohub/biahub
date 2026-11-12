@@ -114,12 +114,12 @@ from biahub.utils.config import model_to_yaml
 def build_reference_policy(settings: EstimateTransformSettings, ref) -> ReferencePolicy:
     if settings.reference.frame == "cross":
         return CrossChannel(ref)
-    if settings.reference.frame == "first":
-        return FixedFrame(0)
+    # every frame is within the run: nothing before its first timepoint is compared
     run = resolve_time_indices(settings.time_indices, len(ref))
+    if settings.reference.frame == "first":  # the run's first timepoint with data
+        return FixedFrame(min(run))
     if settings.reference.frame == "neighbours":
         return NeighbourMedian(settings.reference.window, first=min(run), last=max(run))
-    # the chain starts at the run's first timepoint: nothing before it is compared
     return PreviousFrame(first=min(run))
 
 

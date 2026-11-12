@@ -953,3 +953,20 @@ def test_the_previous_frame_reads_each_earlier_frame_once_per_timepoint():
     policy.compares_with_itself(mov, 2)
     policy.spans_gap(mov, 2)
     assert sorted(mov.reads) == [0, 1]
+
+
+def test_frame_first_is_the_runs_first_timepoint_with_data():
+    # it was the store's frame 0, outside a run over later timepoints
+    from biahub.registration.engine.core import build_reference_policy
+    from biahub.settings import EstimateTransformSettings
+
+    settings = EstimateTransformSettings(
+        moving={"channel": "GFP"},
+        reference={"frame": "first"},
+        method="phase_cross_corr",
+        time_indices=[2, 3, 4],
+    )
+    mov = _frames([1, 2, 0, 4, 5])  # t=2 holds no data: the reference is t=3
+    policy = build_reference_policy(settings, mov)
+    assert policy.reference_index(mov) == 3
+    assert policy.compares_with_itself(mov, 3)

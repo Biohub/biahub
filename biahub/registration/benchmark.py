@@ -287,10 +287,11 @@ def write_benchmark_config(
 
     One case (its stores, channels, estimate and held-out positions) and `pipelines`
     (name -> estimate config). A registration names its `reference` store and
-    `reference_channel`; a stabilization (no `reference`) the timepoint `evaluate_t`
-    evaluated against frame 0, and `reference_frame` if not the pipelines' own. Every config must load, every
-    position must exist in the stores, no position may be both estimated on and held
-    out, and `landmarks` is a detector `evaluate` has.
+    `reference_channel`; a stabilization (no `reference`) the timepoint `evaluate_t`,
+    evaluated against its run's reference frame, and `reference_frame` if not the
+    pipelines' own. Every config must load, every position must exist in the stores, no
+    position may be both estimated on and held out, and `landmarks` is a detector
+    `evaluate` has.
     """
     import yaml
 

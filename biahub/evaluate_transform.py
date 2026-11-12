@@ -104,7 +104,7 @@ def evaluate_transform(
     tables from several runs can be joined; a tag named like a column is refused. -r
     positions are paired with the moving ones by position (one serves them all). A
     stabilization (no reference channel) compares `t` with `reference_t`, by default
-    its reference frame: frame 0 for `first`, the run's first timepoint for `previous`.
+    its reference frame: the run's first timepoint with data, for `first` and `previous`.
     """
     if bead_threshold is not None and landmarks != "beads":
         raise click.UsageError("--bead-threshold goes with --landmarks beads")
@@ -177,10 +177,10 @@ def evaluate_transform(
 def _reference_frame_t(transforms) -> int:
     """Return the timepoint a stabilization file's transforms are measured against."""
     entries = transforms.transforms or next(iter((transforms.positions or {}).values()), [])
-    if transforms.reference_frame == "first":
-        return 0
-    if transforms.reference_frame == "previous":  # chained onto the run's first timepoint
-        return min(e.t for e in entries if e.t is not None)
+    if transforms.reference_frame in ("first", "previous"):
+        # the run's first timepoint with data (an empty frame's entry is a stand-in);
+        # `previous` chains onto it
+        return min(e.t for e in entries if e.t is not None and e.filled_from is None)
     raise click.UsageError(
         f"a stabilization with reference frame {transforms.reference_frame!r} needs "
         "--reference-t: the frame its transforms are measured against"

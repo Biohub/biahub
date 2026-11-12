@@ -18,7 +18,7 @@
 //       reference_channel: nuclei_prediction      # omit with the reference
 //       reference_frame: first                      # a stabilization: first, previous or neighbours
 //                                                   # (default: the pipeline's, else first)
-//       evaluate_t: 10                              # a stabilization: the timepoint evaluated against frame 0
+//       evaluate_t: 10                              # a stabilization: the timepoint evaluated against the run's first
 //       estimate_positions: 0/12/001001             # one, or a list
 //       evaluate_positions: [0/9/001001, 0/19/001001]
 //       landmarks: nuclei                           # optional: nuclei, beads
@@ -122,9 +122,9 @@ workflow {
         def options = []
         if (c.landmarks) options << "--landmarks ${c.landmarks}"
         if (c.tile_px) options << "--tile-px ${c.tile_px}"
-        // a stabilization's transforms are absolute (first and previous chain onto the
-        // first frame; neighbours move toward the series' median): evaluate against frame 0
-        if (!c.reference) options << "--t ${c.evaluate_t} --reference-t 0"
+        // a stabilization is evaluated against its file's reference frame (the run's first
+        // timepoint with data for first and previous; a neighbours pipeline needs one)
+        if (!c.reference) options << "--t ${c.evaluate_t}"
         [(c.name): [as_list(c.evaluate_positions), options.join(' ')]]
     }
 
