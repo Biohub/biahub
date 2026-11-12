@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from scipy.ndimage import shift as ndi_shift
 
@@ -66,3 +67,231 @@ def test_non_default_resampling_options_are_honoured_by_the_default_backend():
     assert set(np.unique(out)) <= {0.0, 3.0, 7.0}  # no blended label values
     filled = shift.apply(labels, cval=-1.0)
     assert filled.min() == -1.0  # the fill value outside the moved volume
+
+
+@pytest.mark.parametrize("ndim", [2, 3])
+@pytest.mark.parametrize("transform_type", ["affine", "similarity", "euclidean"])
+def test_fit_recovers_a_transform_from_matched_points(ndim, transform_type):
+    rng = np.random.default_rng(0)
+    src = rng.uniform(0, 100, (20, ndim))
+    angle = np.deg2rad(5.0)
+    linear = np.eye(ndim)
+    linear[-2:, -2:] = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+    if transform_type == "similarity":
+        linear = 0.95 * linear
+    elif transform_type == "affine":
+        linear = linear @ np.diag(np.linspace(0.9, 1.05, ndim))
+    truth = np.eye(ndim + 1)
+    truth[:ndim, :ndim] = linear
+    truth[:ndim, ndim] = rng.uniform(-5, 5, ndim)
+    dst = Transform(truth).apply_points(src)
+    fitted = Transform.fit(src, dst, transform_type)
+    np.testing.assert_allclose(fitted.matrix, truth, atol=1e-8)
+    assert fitted.ndim == ndim
+
+
+def test_fit_says_when_it_cannot():
+    with pytest.raises(ValueError, match="similarity fit failed on 1 pairs"):
+        Transform.fit(np.zeros((1, 3)), np.ones((1, 3)), "similarity")
+
+
+def _coplanar_pairs():
+    # beads in one z plane: nothing constrains z, so a 3D affine would invent its z row
+    rng = np.random.default_rng(2)
+    src = np.column_stack([np.full(10, 5.0), rng.uniform(0, 100, (10, 2))])
+    return src, src + [1.0, 2.0, 3.0]
+
+
+@pytest.mark.parametrize(
+    "src, dst",
+    [
+        (np.zeros((1, 3)), np.ones((1, 3))),  # too few
+        (np.arange(9.0).reshape(3, 3), np.arange(9.0).reshape(3, 3) + 1),  # collinear
+        _coplanar_pairs(),
+    ],
+    ids=["one pair", "collinear", "coplanar"],
+)
+def test_the_least_squares_affine_fit_says_when_it_cannot(src, dst):
+    # it returned the minimum-norm answer: on beads in one plane a z scale of 1.35 and shear
+    with pytest.raises(ValueError, match=f"affine fit failed on {len(src)} pairs"):
+        Transform.fit(src, dst, "affine")
+
+
+def test_fit_can_use_scikit_images_affine_estimator():
+    # exact pairs: both solvers agree; noisy pairs: "skimage" is scikit-image's estimator
+    from skimage.transform import AffineTransform
+
+    rng = np.random.default_rng(1)
+    src = rng.uniform(0, 100, (30, 3))
+    truth = np.eye(4)
+    truth[:3, :3] = np.diag([0.95, 1.02, 0.98])
+    truth[:3, 3] = [2.0, -3.0, 1.0]
+    exact = Transform(truth).apply_points(src)
+    np.testing.assert_allclose(
+        Transform.fit(src, exact, solver="skimage").matrix,
+        Transform.fit(src, exact).matrix,
+        atol=1e-8,
+    )
+    noisy = exact + rng.normal(0, 0.5, exact.shape)
+    np.testing.assert_allclose(
+        Transform.fit(src, noisy, solver="skimage").matrix,
+        AffineTransform.from_estimate(src, noisy).params,
+    )
+    with pytest.raises(ValueError, match="solver"):
+        Transform.fit(src, noisy, solver="ransac")
+
+
+def test_a_transform_copies_its_matrix_and_leaves_the_callers_writable():
+    # np.asarray kept a float64 caller's array itself and then froze it: the caller could
+    # no longer write to its own matrix.
+    matrix = np.eye(4)
+    transform = Transform(matrix)
+    matrix[0, 3] = 5.0  # the caller's array is still its own
+    assert matrix.flags.writeable
+    np.testing.assert_array_equal(
+        transform.matrix, np.eye(4)
+    )  # and the transform is not changed
+    with pytest.raises(ValueError, match="read-only"):
+        transform._matrix[0, 3] = 1.0  # the transform's own copy stays immutable
+
+
+def test_an_inverse_matrix_moves_the_volume_the_other_way():
+    # apply-transform's files store the inverse (output -> input) matrix: a translation
+    # of (-3, 1, 4) in it moves the data by (+3, -1, -4)
+    inverse = np.eye(4)
+    inverse[:3, -1] = (-3, 1, 4)
+    out = Transform.from_inverse(inverse).apply(
+        np.ones((10, 10, 10), dtype=np.float32), reference=np.zeros((10, 10, 10), np.float32)
+    )
+    assert out.shape == (10, 10, 10)
+    assert np.all(out[3:10, 0:9, 0:6] == 1)
+    assert not out[:3].any() and not out[:, 9:].any() and not out[:, :, 6:].any()
+
+
+def test_the_output_voxel_size_is_one_output_step_in_the_input_um():
+    # apply-transform writes it as the output's scale when the file gives none. An output
+    # step along axis j is the input step column j of the inverse matrix, in the input's
+    # µm; rescale_voxel_size took the rows, which swaps sizes when a rotation mixes axes
+    # of different voxel sizes.
+    um = (0.5, 0.1, 0.2)
+    two_planes = np.diag([2.0, 1.0, 1.0, 1.0])  # an output plane every two input planes
+    np.testing.assert_allclose(
+        Transform.from_inverse(two_planes).output_voxel_size(um), (1.0, 0.1, 0.2)
+    )
+    swap_yx = np.eye(4)
+    swap_yx[1:3, 1:3] = [[0.0, 1.0], [1.0, 0.0]]  # an output y step is an input x step
+    np.testing.assert_allclose(
+        Transform.from_inverse(swap_yx).output_voxel_size(um), (0.5, 0.2, 0.1)
+    )
+    # a rotation within an isotropic yx plane keeps its voxel size (mantis: 90 degrees)
+    theta = np.deg2rad(90)
+    rotate = np.eye(4)
+    rotate[1:3, 1:3] = [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
+    np.testing.assert_allclose(
+        Transform.from_inverse(rotate).output_voxel_size((0.5, 0.15, 0.15)), (0.5, 0.15, 0.15)
+    )
+
+
+def test_scaling_rotation_and_flip_constructors_keep_the_centre_where_it_belongs():
+    # from_scaling / from_rotation_yx (forward, start grid -> end grid): the start grid's
+    # yx centre ((n - 1) / 2: voxel centres run 0 .. n - 1) lands on the end grid's; z is
+    # scaled about plane 0. from_flip_x flips within one grid, about its own x centre
+    start, end = (10, 40, 60), (20, 80, 100)
+    centre = lambda shape: np.array([0.0, (shape[1] - 1) / 2, (shape[2] - 1) / 2])  # noqa: E731
+    scaled = Transform.from_scaling((2.0, 0.5, 0.5), start, end)
+    np.testing.assert_allclose(scaled.apply_points(centre(start)[None])[0], centre(end))
+    np.testing.assert_allclose(scaled.apply_points(np.array([[3.0, 20, 30]]))[0, 0], 6.0)
+    assert scaled.transform_type == "affine"
+    turned = Transform.from_rotation_yx(90, start, end)
+    np.testing.assert_allclose(turned.apply_points(centre(start)[None])[0], centre(end))
+    # a quarter turn: one step along x becomes one step along y
+    step = turned.apply_points(centre(start)[None] + [0.0, 0.0, 1.0])[0] - centre(end)
+    np.testing.assert_allclose(step, (0.0, -1.0, 0.0), atol=1e-12)
+    flipped = Transform.from_flip_x(start)
+    np.testing.assert_allclose(
+        flipped.apply_points(np.array([[1.0, 5.0, 10.0]]))[0],
+        (1, 5, 49),  # 59 - 10
+    )
+    # the same shape twice: the end grid defaults to the start
+    np.testing.assert_array_equal(
+        Transform.from_rotation_yx(90, start).matrix,
+        Transform.from_rotation_yx(90, start, start).matrix,
+    )
+
+
+def test_on_grid_is_the_same_transform_on_another_grid():
+    # a point of the new grid, mapped there, lands where the transform sends it in the
+    # old coordinates: index i of the new grid sits at scale * i + offset
+    rng = np.random.default_rng(3)
+    matrix = np.eye(4)
+    matrix[:3, :3] += 0.1 * rng.standard_normal((3, 3))
+    matrix[:3, 3] = 10 * rng.standard_normal(3)
+    transform = Transform(matrix, transform_type="affine")
+    scale, offset = np.array([1.0, 4.0, 4.0]), np.array([0.0, 1.5, 1.5])
+    on_grid = transform.on_grid(scale, offset)
+    points = rng.uniform(0, 50, size=(20, 3))
+    old = points * scale + offset
+    mapped_old = old @ matrix[:3, :3].T + matrix[:3, 3]
+    mapped_new = points @ on_grid.matrix[:3, :3].T + on_grid.matrix[:3, 3]
+    np.testing.assert_allclose(mapped_new * scale + offset, mapped_old, atol=1e-9)
+    assert on_grid.transform_type == "affine"
+    # one scale for every axis, no offset: a 2-voxel shift is 1 voxel on a 2x coarser grid
+    shift = Transform.from_translation([2.0, 4.0, -6.0]).on_grid(2)
+    np.testing.assert_allclose(shift.translation, [1.0, 2.0, -3.0])
+
+
+def test_from_yx_applies_a_2d_transform_in_every_plane_and_shifts_z():
+    rng = np.random.default_rng(4)
+    yx = np.eye(3)
+    yx[:2, :2] += 0.1 * rng.standard_normal((2, 2))
+    yx[:2, 2] = [5.0, -3.0]
+    lifted = Transform.from_yx(Transform(yx), z_shift=2.5, transform_type="similarity")
+    points = rng.uniform(0, 50, size=(10, 3))
+    moved = lifted.apply_points(points)
+    np.testing.assert_allclose(moved[:, 0], points[:, 0] + 2.5)
+    np.testing.assert_allclose(moved[:, 1:], points[:, 1:] @ yx[:2, :2].T + yx[:2, 2])
+    assert lifted.transform_type == "similarity" and lifted.ndim == 3
+
+
+def test_fit_refuses_a_transform_type_it_does_not_know():
+    # 'translation' was fitted as a rigid transform and kept its name: a 2x scale lost
+    src = np.random.default_rng(3).uniform(0, 10, (6, 3))
+    with pytest.raises(ValueError, match="transform_type must be one of"):
+        Transform.fit(src, 2 * src, "translation")
+
+
+def test_from_skimage_refuses_a_dimension_it_cannot_produce():
+    # a 2D scikit-image transform with ndim neither 2 nor 3 returned None
+    from skimage.transform import SimilarityTransform
+
+    with pytest.raises(ValueError, match="2D skimage transform.*ndim 2 or 3"):
+        Transform.from_skimage(SimilarityTransform(scale=0.9), ndim=4)
+
+
+def test_apply_refuses_an_interpolation_it_does_not_know_on_every_backend():
+    # the scipy path (2D, or order != 1) ignored the name and interpolated linearly
+    with pytest.raises(ValueError, match="interpolation must be one of"):
+        Transform.identity(2).apply(np.zeros((4, 4)), interpolation="cubic")
+
+
+def test_equal_transforms_hash_alike():
+    # equality is allclose; the hash rounded to 6 decimals, so two equal transforms on
+    # either side of a rounding boundary hashed differently
+    a = Transform.from_translation([0.0, 0.0, 0.12345651])
+    b = Transform.from_translation([0.0, 0.0, 0.12345649])
+    assert a == b and hash(a) == hash(b)
+
+
+@pytest.mark.parametrize("ndim", [2, 3])
+def test_covers_agrees_with_coverage(ndim):
+    # one edge rule for both: a point is covered exactly where the coverage mask says so
+    rng = np.random.default_rng(4)
+    mov_shape, ref_shape = (9, 12, 11)[-ndim:], (10, 11, 13)[-ndim:]
+    for _ in range(10):
+        matrix = np.eye(ndim + 1)
+        matrix[:ndim, :ndim] += 0.05 * rng.normal(size=(ndim, ndim))
+        matrix[:ndim, ndim] = rng.uniform(-3, 3, ndim)
+        transform = Transform(matrix)
+        grid = np.indices(ref_shape).reshape(ndim, -1).T
+        expected = transform.coverage(mov_shape, ref_shape).ravel()
+        np.testing.assert_array_equal(transform.covers(grid, mov_shape), expected)

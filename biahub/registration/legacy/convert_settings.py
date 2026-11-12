@@ -6,8 +6,9 @@ become a `TransformSettings` for `apply-transform`. The retired schemas are defi
 and nowhere else: the rest of biahub reads only the unified models, and its loaders point
 at this command when they meet a legacy file.
 
-`use_prev_t_transform` becomes `transform.seed_from: previous_timepoint` for beads, the
-only method that read it.
+`approx_transform` becomes `transform.initial` (`from: matrix`, inverse direction), or
+`from: shapes` with `compute_approx_transform`; `use_prev_t_transform` becomes
+`transform.initial.propagate` for beads, the only method that read it.
 
 What has no equivalent and is dropped, with a note printed at conversion time:
 `eval_transform_settings` (the engine flags and repairs outlying timepoints instead of
@@ -29,6 +30,9 @@ from pydantic import Field, NonNegativeInt, PositiveFloat, field_validator, mode
 
 from biahub.cli.parsing import config_filepaths, output_filepath
 from biahub.settings import (
+    LEGACY_BEAD_KEYS,
+    METHOD_TRANSFORM_TYPES,
+    RENAMED_METHODS,
     AffineTransformSettings,
     AntsRegistrationSettings,
     BeadsMatchSettings,
@@ -79,6 +83,22 @@ class EvalTransformSettings(MyBaseModel):
     interpolation_type: Literal["linear", "cubic"] = "linear"
 
 
+class LegacyAntsRegistrationSettings(MyBaseModel):
+    """The retired ANTs block; its preparation fields become preprocess blocks."""
+
+    sobel_filter: bool = False
+    crop: bool = False
+    ref_mask_radius: float | None = None
+    clip: bool = False
+
+
+def _with_new_bead_keys(beads):
+    """Return a legacy `beads_match_settings` with today's names for its two detections."""
+    if not isinstance(beads, dict):
+        return beads
+    return {LEGACY_BEAD_KEYS.get(k, k): v for k, v in beads.items()}
+
+
 class EstimateRegistrationSettings(MyBaseModel):
     target_channel_name: str
     source_channel_name: str
@@ -90,10 +110,15 @@ class EstimateRegistrationSettings(MyBaseModel):
         default_factory=AffineTransformSettings
     )
     eval_transform_settings: EvalTransformSettings | None = None
-    ants_registration_settings: AntsRegistrationSettings | None = None
+    ants_registration_settings: LegacyAntsRegistrationSettings | None = None
     manual_registration_settings: ManualRegistrationSettings | None = None
     time_indices: NonNegativeInt | list[NonNegativeInt] | Literal["all"] = "all"
     verbose: bool = False
+
+    @field_validator("beads_match_settings", mode="before")
+    @classmethod
+    def rename_bead_keys(cls, beads):
+        return _with_new_bead_keys(beads)
 
     @model_validator(mode="after")
     def set_defaults_and_validate(self) -> EstimateRegistrationSettings:
@@ -102,7 +127,7 @@ class EstimateRegistrationSettings(MyBaseModel):
         elif self.estimation_method == "beads" and self.beads_match_settings is None:
             self.beads_match_settings = BeadsMatchSettings()
         elif self.estimation_method == "ants" and self.ants_registration_settings is None:
-            self.ants_registration_settings = AntsRegistrationSettings()
+            self.ants_registration_settings = LegacyAntsRegistrationSettings()
         elif (
             self.estimation_method == "phase-cross-corr"
             and self.phase_cross_corr_settings is None
@@ -127,6 +152,11 @@ class EstimateStabilizationSettings(MyBaseModel):
     )
     eval_transform_settings: EvalTransformSettings | None = None
     verbose: bool = False
+
+    @field_validator("beads_match_settings", mode="before")
+    @classmethod
+    def rename_bead_keys(cls, beads):
+        return _with_new_bead_keys(beads)
 
     @model_validator(mode="after")
     def set_defaults_and_validate(self) -> EstimateStabilizationSettings:
@@ -204,6 +234,53 @@ LegacySettings = (
 # --------------------------------------------------------------------------------------
 
 
+def _ants_blocks(legacy, notes: list[str]) -> list[dict]:
+    """Return the retired ANTs preparation fields as preprocess blocks."""
+    if legacy.estimation_method != "ants":
+        return []
+    ants = legacy.ants_registration_settings
+    blocks = []
+    if ants.clip:
+        blocks.append({"clip_percentiles": {}})
+        notes.append(
+            "ants clip: its fixed limits (phase 0-0.5, fluorescence 110 to the 99th "
+            "percentile) became clip_percentiles, each volume clipped to its own 1st-99.5th "
+            "percentiles"
+        )
+    if ants.sobel_filter:
+        blocks.append({"sobel": {}})
+    # the old pipeline used ref_mask_radius only to choose its crop
+    if ants.ref_mask_radius is not None and ants.crop:
+        blocks.append(
+            {"mask_circle": {"volumes": ["reference"], "radius": ants.ref_mask_radius}}
+        )
+    elif ants.ref_mask_radius is not None:
+        notes.append("ants ref_mask_radius dropped: without crop it was never applied")
+    if ants.crop:
+        notes.append(
+            "ants crop dropped: ANTs no longer warps the moving volume first, so there is no "
+            "empty border to crop; to use only part of the field, add a mask_box block"
+        )
+    return blocks
+
+
+# The legacy section each unified block came from, for the notes.
+_LEGACY_SECTION = {
+    "bead_matching": "beads_match_settings",
+    "phase_cross_corr": "phase_cross_corr_settings",
+    "manual": "manual_registration_settings",
+    "focus_finding": "focus_finding_settings",
+}
+
+
+def _only_the_methods_blocks(method: str, blocks: dict, notes: list[str]) -> dict:
+    """Keep the block `method` reads; note each other one given (a legacy file kept them all)."""
+    for name, block in blocks.items():
+        if block is not None and name != method:
+            notes.append(f"{_LEGACY_SECTION[name]} dropped: read only by {name}, not {method}")
+    return {name: block for name, block in blocks.items() if name == method}
+
+
 def estimate_settings_from_legacy(
     legacy: EstimateRegistrationSettings | EstimateStabilizationSettings,
 ) -> tuple[EstimateTransformSettings, list[str]]:
@@ -218,19 +295,34 @@ def estimate_settings_from_legacy(
         else legacy.stabilization_method
     )
     propagate = ats.use_prev_t_transform and legacy_method == "beads"
-    seed_from = "previous_timepoint" if propagate else "input"
     if legacy.eval_transform_settings is not None:
         notes.append(
             "eval_transform_settings dropped: the engine flags and repairs outlying "
             "timepoints (fallback) instead of smoothing the series afterwards"
         )
-    fit = TransformFitSettings(
-        type=ats.transform_type,
-        seed=ats.approx_transform,
-        seed_direction="inverse",
-        seed_from_shapes=ats.compute_approx_transform,
-        seed_from=seed_from,
-    )
+    initial: dict = {}
+    if ats.compute_approx_transform:
+        # the legacy pipeline built it from the store shapes, in the mantis orientation
+        initial = {"from": "shapes", "rotate90": -1, "fliplr": False}
+        if not np.allclose(np.asarray(ats.approx_transform, dtype=float), np.eye(4)):
+            notes.append(
+                "approx_transform ignored: compute_approx_transform replaced it (as before), "
+                "so the run starts from the shapes method's answer"
+            )
+    elif not np.allclose(np.asarray(ats.approx_transform, dtype=float), np.eye(4)):
+        initial = {"from": "matrix", "matrix": ats.approx_transform, "direction": "inverse"}
+    if propagate:
+        initial["propagate"] = True
+    method = RENAMED_METHODS.get(legacy_method, legacy_method)
+    transform_type = ats.transform_type
+    fits = METHOD_TRANSFORM_TYPES.get(method)
+    if fits is not None and transform_type not in fits:
+        notes.append(
+            f"transform_type {transform_type!r} -> {fits[0]!r}: {method} fits "
+            f"{' or '.join(fits)} only (the legacy pipeline ignored the setting)"
+        )
+        transform_type = fits[0]
+    fit = TransformFitSettings(type=transform_type, initial=initial or None)
     if isinstance(legacy, EstimateRegistrationSettings):
         # estimate-registration always read the source channel from the source store and
         # the target channel from the target store, so this is a cross estimate even when
@@ -242,19 +334,32 @@ def estimate_settings_from_legacy(
                 "reference.frame to 'first' or 'previous' and drop reference.channel"
             )
         manual = legacy.manual_registration_settings
+        blocks = _only_the_methods_blocks(
+            method,
+            {
+                "bead_matching": legacy.beads_match_settings,
+                "phase_cross_corr": _unified_pcc(legacy.phase_cross_corr_settings, notes),
+                "manual": None
+                if manual is None
+                else ManualSettings(
+                    affine_90degree_rotation=manual.affine_90degree_rotation,
+                    affine_fliplr=manual.affine_fliplr,
+                ),
+            },
+            notes,
+        )
         settings = EstimateTransformSettings(
             moving=ChannelSettings(channel=legacy.source_channel_name),
             reference=ReferenceSettings(frame="cross", channel=legacy.target_channel_name),
-            method=legacy.estimation_method,
-            beads=legacy.beads_match_settings,
-            ants=legacy.ants_registration_settings,
-            phase_cross_corr=_unified_pcc(legacy.phase_cross_corr_settings, notes),
-            manual=None
-            if manual is None
-            else ManualSettings(
-                affine_90degree_rotation=manual.affine_90degree_rotation,
-                affine_fliplr=manual.affine_fliplr,
-            ),
+            method=method,
+            **blocks,
+            ants=AntsRegistrationSettings() if legacy.estimation_method == "ants" else None,
+            preprocess=_ants_blocks(legacy, notes),
+            # the legacy ANTs score compared Sobel edges when sobel_filter was on
+            score={"preprocess": [{"sobel": {}}]}
+            if legacy.estimation_method == "ants"
+            and legacy.ants_registration_settings.sobel_filter
+            else {},
             transform=fit,
             # legacy manual registered manual_registration_settings.time_index
             time_indices=manual.time_index
@@ -264,10 +369,9 @@ def estimate_settings_from_legacy(
         )
         return settings, notes
 
-    method = legacy.stabilization_method
     focus_finding = None
     reference = ats.t_reference
-    if method == "focus-finding":
+    if legacy_method == "focus-finding":
         stack_reg = legacy.stack_reg_settings
         focus = legacy.focus_finding_settings or (
             stack_reg.focus_finding_settings if stack_reg is not None else None
@@ -303,15 +407,21 @@ def estimate_settings_from_legacy(
                 "average_across_wells / skip_beads_fov dropped: per-plate orchestration, "
                 "not part of the estimate (leave the beads FOV out of -m)"
             )
-    elif method == "phase-cross-corr" and legacy.phase_cross_corr_settings is not None:
+    elif legacy_method == "phase-cross-corr" and legacy.phase_cross_corr_settings is not None:
         reference = legacy.phase_cross_corr_settings.t_reference
     settings = EstimateTransformSettings(
         moving=ChannelSettings(channel=legacy.stabilization_estimation_channel),
         reference=ReferenceSettings(frame=reference),
         method=method,
-        beads=legacy.beads_match_settings,
-        phase_cross_corr=_unified_pcc(legacy.phase_cross_corr_settings, notes),
-        focus_finding=focus_finding,
+        **_only_the_methods_blocks(
+            method,
+            {
+                "bead_matching": legacy.beads_match_settings,
+                "phase_cross_corr": _unified_pcc(legacy.phase_cross_corr_settings, notes),
+                "focus_finding": focus_finding,
+            },
+            notes,
+        ),
         transform=fit,
         verbose=legacy.verbose,
     )
@@ -323,13 +433,13 @@ def transform_settings_from_legacy(
 ) -> tuple[TransformSettings, list[str]]:
     """Convert a legacy register / stabilize config to a inverse-direction transform series.
 
-    How the series is applied (timepoints, canvas, interpolation, output version) is no
+    How the series is applied (timepoints, crop, interpolation, output version) is no
     longer stored with the transforms: those are `apply-transform` options, noted here.
     """
     notes = []
     if legacy.time_indices != "all":
         notes.append(
-            f"time_indices {legacy.time_indices!r} dropped: pass --time-indices to apply-transform"
+            f"time_indices {legacy.time_indices!r} dropped: pass --timepoints to apply-transform"
         )
     if legacy.output_ome_zarr_version is not None:
         notes.append(
@@ -360,7 +470,7 @@ def transform_settings_from_legacy(
             {*legacy.stabilization_channels, legacy.stabilization_estimation_channel}
         ),
         reference_channel=None,
-        method=legacy.stabilization_method,
+        method=RENAMED_METHODS.get(legacy.stabilization_method, legacy.stabilization_method),
         voxel_size=list(legacy.output_voxel_size),
         transforms=[
             TransformEntry(t=t, matrix=matrix)

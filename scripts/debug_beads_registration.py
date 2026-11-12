@@ -8,7 +8,7 @@ registration pipeline. Walks through each step:
 3. Detect bead peaks in both channels
 4. Match beads and visualize correspondences
 5. Estimate correction transform from matches
-6. Run the full iterative optimization pipeline (optimize_transform)
+6. Run the full beads estimator (detect -> match -> correct -> score, over its passes)
 
 Usage: Run cell-by-cell in an IDE with interactive Python support (e.g. VSCode).
 Set ``visualize = True`` to open napari viewers at each stage.
@@ -23,12 +23,10 @@ from biahub.core.transform import Transform
 import napari
 # the retired estimate-registration schema this script reads its config with
 from biahub.registration.legacy.convert_settings import EstimateRegistrationSettings
-from biahub.registration.methods.beads import (
-    transform_from_matches,
-    matches_from_beads,
-    peaks_from_beads,
-    optimize_transform,
-)
+from biahub.registration.methods.landmark.node_graph import match_nodes, transform_from_matches
+from biahub.registration.methods.landmark.bead_matching import peaks_from_beads
+from biahub.registration.methods.landmark.bead_matching import build_beads_estimator
+from biahub.registration.metrics import metric_fn
 
 # %% Dataset configuration
 dataset = '2024_12_11_A549_LAMP1_DENV'
@@ -126,18 +124,14 @@ ref_data_ants = ants.from_numpy(ref_data)
 
 # %% Compute approximate transform from voxel sizes (if not provided in config)
 if config.affine_transform_settings.compute_approx_transform:
-    from biahub.registration.utils import get_aprox_transform
+    from biahub.registration.methods.manual.shapes import ShapesEstimator
 
-    approx_transform = get_aprox_transform(
-        mov_shape=mov_data.shape[-3:],
-        ref_shape=ref_data.shape[-3:],
-        pre_affine_90degree_rotation=-1,
-        pre_affine_fliplr=False,
-        verbose=True,
-        ref_voxel_size=ref_scale,
-        mov_voxel_size=mov_scale,
+    # the shapes method: the stores' grids with the mantis light-sheet turn (forward)
+    forward = ShapesEstimator(mov_scale, ref_scale, rotate90=-1, fliplr=False).transform_for(
+        mov_data.shape[-3:], ref_data.shape[-3:]
     )
-    config.affine_transform_settings.approx_transform = approx_transform.to_list()
+    # the legacy config holds the inverse (reference -> moving) matrix
+    config.affine_transform_settings.approx_transform = forward.invert().to_list()
 # %% Apply approximate transform to moving volume and visualize overlay
 initial_transform = Transform(
     matrix=np.asarray(config.affine_transform_settings.approx_transform)
@@ -157,8 +151,8 @@ if visualize:
 mov_peaks, ref_peaks = peaks_from_beads(
     mov_data_reg,
     ref_data,
-    config.beads_match_settings.source_peaks_settings,
-    config.beads_match_settings.target_peaks_settings,
+    config.beads_match_settings.moving_peaks_settings,
+    config.beads_match_settings.reference_peaks_settings,
     verbose=True,
 )
 
@@ -180,7 +174,7 @@ if visualize:
     )
 
 # %% Match beads between moving and reference peak sets
-matches = matches_from_beads(
+matches = match_nodes(
     mov_peaks,
     ref_peaks,
     config.beads_match_settings,
@@ -216,8 +210,7 @@ fwd_transform, inv_transform = transform_from_matches(
     matches=matches,
     mov_peaks=mov_peaks,
     ref_peaks=ref_peaks,
-    affine_transform_settings=config.affine_transform_settings,
-    ndim=mov_data_reg.ndim,
+    transform_type=config.affine_transform_settings.transform_type,
 )
 
 # Compose: apply approx transform first, then the bead-based correction
@@ -249,15 +242,17 @@ if visualize:
 matches
 # %%
 composed_transform
-# %% Run the full iterative optimization pipeline (detect -> match -> correct -> score)
-optimized_transform, quality_score_optimized = optimize_transform(
-    transform=initial_transform,
-    mov=mov_data,
-    ref=ref_data,
-    beads_match_settings=config.beads_match_settings,
-    affine_transform_settings=config.affine_transform_settings,
-    verbose=True,
-    debug=True,
+# %% Run the full beads estimator (detect -> match -> correct -> score, over its passes)
+estimator = build_beads_estimator(
+    config.beads_match_settings, config.affine_transform_settings.transform_type
+)
+# the engine starts from a forward (moving -> reference) transform; the legacy matrix is
+# the inverse
+optimized_transform = estimator.estimate(
+    mov_data, ref_data, initial_transform=initial_transform.invert()
+)
+quality_score_optimized = metric_fn("overlap", config.beads_match_settings)(
+    optimized_transform, mov_data, ref_data
 )
 print(f"Optimized transform:\n{optimized_transform}")
 print(f"Quality score: {quality_score_optimized:.4f}")

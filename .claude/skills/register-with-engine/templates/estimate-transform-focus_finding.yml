@@ -1,0 +1,26 @@
+# biahub estimate-transform -- stabilization of phase over time: z from the focus, yx by
+# stackreg (what the A549 projects used). Decide:
+#   reference.frame         -- first or previous (across a gap of empty frames z is
+#                              measured and yx held)
+#   focus_finding           -- the optics (NA, wavelength) that find the focus
+# See references/methods.md, "Which method".
+moving:
+  channel: Phase3D
+reference:
+  frame: first
+method: focus_finding
+focus_finding:
+  axes: xyz
+  center_crop_xy:
+  - 800
+  - 800
+  na_det: 1.35
+  lambda_ill: 0.5
+transform:
+  type: euclidean
+time_indices: all
+fallback:
+  flag:
+    k_mad: 2.0
+  repair: null  # off; {} re-estimates a flagged timepoint from its neighbours' transforms, or keeps one as it is
+verbose: true

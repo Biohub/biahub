@@ -3,26 +3,26 @@ import pytest
 
 from scipy.ndimage import shift as ndi_shift
 
+from biahub.core.nodes.point_set import vote_drift, vote_icp_register
 from biahub.core.transform import Transform
-from biahub.registration.engine import build_beads_estimator
 from biahub.registration.estimators import (
     ChainedEstimator,
     EstimationError,
+    EstimatorBase,
     TransformEstimator,
 )
-from biahub.registration.methods.beads import BeadNodeDetector, NodeGraphEstimator
-from biahub.registration.methods.vote_icp import (
+from biahub.registration.methods.landmark.bead_matching import (
+    BeadNodeDetector,
     VoteIcpEstimator,
-    VoteSeedCorrection,
-    vote_drift,
-    vote_icp_register,
+    VoteInitialTransformCorrection,
+    build_beads_estimator,
 )
+from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
 from biahub.registration.metrics import score_transform
 from biahub.settings import (
-    AffineTransformSettings,
     BeadsMatchSettings,
     DetectPeaksSettings,
-    SeedCorrectionSettings,
+    InitialTransformCorrectionSettings,
     VoteIcpSettings,
 )
 
@@ -33,12 +33,14 @@ def test_vote_icp_register_recovers_a_large_offset_with_clutter():
     offset = np.array([30.0, -25.0, 40.0])
     mov = np.vstack([ref + offset, rng.uniform(0, 200, size=(6, 3))])  # + clutter
 
-    inverse, info = vote_icp_register(mov, ref, np.eye(4), initial_capture_radius=80.0)
+    found, info = vote_icp_register(
+        mov, ref, Transform.identity(3), initial_capture_radius=80.0
+    )
 
-    assert inverse is not None and info["converged"]
-    # inverse maps reference coordinates to moving sample coordinates: ref + offset.
-    np.testing.assert_allclose(inverse[:3, 3], offset, atol=0.5)
-    np.testing.assert_allclose(inverse[:3, :3], np.eye(3), atol=0.02)
+    assert found is not None and info["converged"]
+    # forward: moving peaks onto the reference, so the offset comes off
+    np.testing.assert_allclose(found.translation, -offset, atol=0.5)
+    np.testing.assert_allclose(found.linear, np.eye(3), atol=0.02)
 
 
 @pytest.mark.parametrize("transform_type", ["euclidean", "similarity", "affine"])
@@ -49,11 +51,15 @@ def test_vote_icp_register_fits_the_configured_transform_type(transform_type):
     ref = rng.uniform(0, 200, size=(30, 3))
     mov = ref * np.array([1.0, 1.04, 0.97]) + np.array([12.0, -9.0, 15.0])
 
-    inverse, _info = vote_icp_register(
-        mov, ref, np.eye(4), initial_capture_radius=80.0, transform_type=transform_type
+    found, _info = vote_icp_register(
+        mov,
+        ref,
+        Transform.identity(3),
+        initial_capture_radius=80.0,
+        transform_type=transform_type,
     )
 
-    linear = inverse[:3, :3]
+    linear = found.invert().linear  # the fit's own (reference -> moving) direction
     gram = linear.T @ linear
     if transform_type == "euclidean":
         np.testing.assert_allclose(gram, np.eye(3), atol=1e-9)
@@ -66,8 +72,10 @@ def test_vote_icp_register_fits_the_configured_transform_type(transform_type):
 def test_vote_icp_register_abstains_without_votes():
     ref = np.array([[0.0, 0.0, 0.0], [50.0, 0.0, 0.0], [0.0, 50.0, 0.0]])
     mov = ref + 500.0  # far outside any capture radius
-    inverse, info = vote_icp_register(mov, ref, np.eye(4), initial_capture_radius=20.0)
-    assert inverse is None and info["iterations"] == 0
+    found, info = vote_icp_register(
+        mov, ref, Transform.identity(3), initial_capture_radius=20.0
+    )
+    assert found is None and info["iterations"] == 0
 
 
 def test_vote_drift_finds_the_consensus_displacement():
@@ -100,9 +108,10 @@ PEAKS = DetectPeaksSettings(
 
 def _beads_settings(**overrides):
     return BeadsMatchSettings(
-        source_peaks_settings=PEAKS,
-        target_peaks_settings=PEAKS,
-        # Synthetic beads sit ~15 vox apart in a 60-vox field, so the vote cluster must be tight.
+        moving_peaks_settings=PEAKS,
+        reference_peaks_settings=PEAKS,
+        # Synthetic beads sit ~15 vox apart in a 60-vox field, so the vote cluster must
+        # be tight.
         vote_icp_settings=VoteIcpSettings(
             vote_peaks_settings=PEAKS, initial_capture_radius=40.0, cluster_radius=3.0
         ),
@@ -121,14 +130,14 @@ def test_vote_icp_estimator_recovers_an_offset_the_hungarian_matcher_cannot():
     applied_zyx = (8, -12, 16)
     mov = ndi_shift(ref, shift=applied_zyx, order=1, mode="constant", cval=0.0)
     settings = _beads_settings()
-    affine = AffineTransformSettings(transform_type="euclidean")
+    affine = "euclidean"
 
     with pytest.raises(EstimationError):
         NodeGraphEstimator(
             mov_detector=BeadNodeDetector(PEAKS),
             ref_detector=BeadNodeDetector(PEAKS),
-            beads_match_settings=settings,
-            affine_transform_settings=affine,
+            matching=settings,
+            transform_type=affine,
         ).estimate(mov, ref)
 
     estimator = VoteIcpEstimator.from_beads_settings(settings, score_fn=_score(settings))
@@ -144,8 +153,8 @@ def test_vote_icp_estimator_recovers_an_offset_the_hungarian_matcher_cannot():
             NodeGraphEstimator(
                 mov_detector=BeadNodeDetector(PEAKS),
                 ref_detector=BeadNodeDetector(PEAKS),
-                beads_match_settings=settings,
-                affine_transform_settings=affine,
+                matching=settings,
+                transform_type=affine,
             ),
         ],
         score_fn=_score(settings),
@@ -155,55 +164,60 @@ def test_vote_icp_estimator_recovers_an_offset_the_hungarian_matcher_cannot():
     assert np.abs(refined.translation - truth).max() < np.abs(coarse.translation - truth).max()
 
 
-def test_build_beads_estimator_wires_vote_icp_mode_and_seed_correction():
-    plain = build_beads_estimator(_beads_settings(), AffineTransformSettings())
-    vote = build_beads_estimator(
-        _beads_settings(estimation_mode="vote_icp"), AffineTransformSettings()
-    )
+def test_build_beads_estimator_wires_vote_icp_mode_and_initial_transform_correction():
+    plain = build_beads_estimator(_beads_settings(), "euclidean")
+    vote = build_beads_estimator(_beads_settings(estimation_mode="vote_icp"), "euclidean")
     corrected = build_beads_estimator(
-        _beads_settings(seed_correction_settings=SeedCorrectionSettings(mode="votefit")),
-        AffineTransformSettings(),
+        _beads_settings(
+            initial_transform_correction_settings=InitialTransformCorrectionSettings(
+                mode="vote_fit"
+            )
+        ),
+        "euclidean",
     )
     assert isinstance(plain, NodeGraphEstimator)
     assert isinstance(vote, VoteIcpEstimator)
     assert isinstance(corrected, ChainedEstimator)
-    assert isinstance(corrected.stages[0], VoteSeedCorrection)
+    assert isinstance(corrected.stages[0], VoteInitialTransformCorrection)
     assert isinstance(corrected.stages[1], NodeGraphEstimator)
 
 
-def test_vote_seed_correction_moves_a_drifted_seed_toward_the_truth_and_never_worsens_it():
+def test_vote_correction_moves_a_drifted_initial_transform_to_the_truth_never_worse():
     rng = np.random.default_rng(11)
     shape = (40, 60, 60)
     ref = _synthetic_bead_volume(rng, shape)
     applied_zyx = (8, -12, 16)
     mov = ndi_shift(ref, shift=applied_zyx, order=1, mode="constant", cval=0.0)
     truth = Transform.from_translation([-a for a in applied_zyx])
-    correction = VoteSeedCorrection(
-        SeedCorrectionSettings(
-            mode="votefit", vote_peaks_settings=PEAKS, capture_radius=40.0, cluster_radius=3.0
+    correction = VoteInitialTransformCorrection(
+        InitialTransformCorrectionSettings(
+            mode="vote_fit",
+            vote_peaks_settings=PEAKS,
+            capture_radius=40.0,
+            cluster_radius=3.0,
         ),
         mov_detector=BeadNodeDetector(PEAKS),
         ref_detector=BeadNodeDetector(PEAKS),
     )
 
     drifted = Transform.from_translation([0.0, 0.0, 0.0])
-    corrected = correction.estimate(mov, ref, seed=drifted)
+    corrected = correction.estimate(mov, ref, initial_transform=drifted)
     assert (
         np.abs(corrected.translation - truth.translation).max()
         < np.abs(drifted.translation - truth.translation).max()
     )
     assert "pick=" in correction.last_note
 
-    already_right = correction.estimate(mov, ref, seed=truth)
+    already_right = correction.estimate(mov, ref, initial_transform=truth)
     np.testing.assert_allclose(already_right.translation, truth.translation, atol=1.0)
 
 
 def test_chained_estimator_keeps_an_earlier_scored_stage_when_a_later_stage_fails():
-    class _Fixed:
+    class _Fixed(EstimatorBase):
         def __init__(self, transform, fail=False):
             self.transform, self.fail = transform, fail
 
-        def estimate(self, mov, ref, seed=None):
+        def estimate(self, mov, ref, initial_transform=None):
             if self.fail:
                 raise EstimationError("no nodes")
             return self.transform
@@ -232,3 +246,134 @@ def test_vote_icp_keeps_a_finite_precise_score_over_a_nan_coarse_one():
     result = VoteIcpEstimator.from_beads_settings(settings, score_fn=score).estimate(mov, ref)
     assert len(scored) == 2  # the precise stage ran
     np.testing.assert_array_equal(result.matrix, scored[1].matrix)
+
+
+def test_the_correction_modes_name_what_the_vote_fits():
+    from typing import get_args
+
+    from biahub.settings import InitialTransformCorrectionSettings
+
+    modes = get_args(InitialTransformCorrectionSettings.model_fields["mode"].annotation)
+    assert modes == ("none", "vote_translation", "vote_fit")
+
+
+def test_the_voted_fit_is_the_runs_transform_type():
+    # vote_fit fitted an affine whatever transform.type was: a euclidean run kept shear
+    rng = np.random.default_rng(11)
+    shape = (40, 60, 60)
+    ref = _synthetic_bead_volume(rng, shape)
+    mov = ndi_shift(ref, shift=(4, -6, 8), order=1, mode="constant", cval=0.0)
+    settings = InitialTransformCorrectionSettings(
+        mode="vote_fit", vote_peaks_settings=PEAKS, capture_radius=40.0, cluster_radius=3.0
+    )
+    correction = VoteInitialTransformCorrection(
+        settings, BeadNodeDetector(PEAKS), BeadNodeDetector(PEAKS), transform_type="euclidean"
+    )
+    start = Transform.from_scaling((1.0, 1.03, 0.97), shape)  # a start with scale in it
+    corrected = correction.estimate(mov, ref, initial_transform=start)
+    fitted_part = corrected @ start.invert()  # what the correction composed after it
+    linear = fitted_part.linear
+    np.testing.assert_allclose(linear.T @ linear, np.eye(3), atol=1e-6)
+
+
+def test_vote_icp_fits_moving_onto_reference_directly():
+    # it fitted reference -> moving and inverted: residuals minimized in moving space,
+    # not where the result is judged (0.003 um apart on noisy pairs)
+    rng = np.random.default_rng(7)
+    mov = rng.uniform(0, 200, size=(40, 3))
+    truth = Transform(
+        np.array(
+            [
+                [1.02, 0.01, 0.0, 3.0],
+                [0.0, 0.98, 0.02, -2.0],
+                [0.01, 0.0, 1.01, 1.0],
+                [0, 0, 0, 1.0],
+            ]
+        )
+    )
+    ref = truth.apply_points(mov) + rng.normal(0, 0.3, size=mov.shape)
+    found, info = vote_icp_register(
+        mov, ref, Transform.identity(3), initial_capture_radius=20.0
+    )
+    assert info["n_inliers"] == len(mov)
+    np.testing.assert_allclose(
+        found.matrix, Transform.fit(mov, ref, "affine").matrix, atol=1e-9
+    )
+
+
+class _Points:
+    """A detector that returns the same points whatever it is given."""
+
+    missing_as_nan = False
+
+    def __init__(self, points):
+        self.points = np.asarray(points, dtype=float)
+
+    def detect(self, volume):
+        return self.points
+
+
+def test_a_degenerate_vote_leaves_the_start_unchanged_instead_of_crashing(monkeypatch):
+    # six pairs at one point: the fit raised out of the job (ValueError / LinAlgError)
+    from biahub.registration.methods.landmark import bead_matching
+
+    ref_peaks = np.random.default_rng(14).uniform(0, 30, (20, 3))
+    pairs = [(np.array([5.0, 5.0, 5.0]), np.array([6.0, 5.0, 5.0]))] * 6
+    monkeypatch.setattr(
+        bead_matching, "vote_drift", lambda *a: (np.array([1.0, 0.0, 0.0]), pairs, 6)
+    )
+    correction = VoteInitialTransformCorrection(
+        InitialTransformCorrectionSettings(mode="vote_fit", vote_peaks_settings=PEAKS),
+        mov_detector=_Points(ref_peaks + 0.5),
+        ref_detector=_Points(ref_peaks),
+    )
+    correction.dense_detector = _Points(ref_peaks)
+    vol = np.zeros((8, 8, 8), np.float32)
+    corrected = correction.estimate(vol, vol, initial_transform=Transform.identity(3))
+    assert isinstance(corrected, Transform)
+    assert "fit rejected" in correction.last_note
+    assert correction.trace()["best_candidate"] in ("keep", "+drift", "-drift")
+
+
+def test_vote_translation_moves_a_drifted_initial_transform_by_the_drift():
+    rng = np.random.default_rng(11)
+    ref = _synthetic_bead_volume(rng, (40, 60, 60))
+    applied_zyx = (8, -12, 16)
+    mov = ndi_shift(ref, shift=applied_zyx, order=1, mode="constant", cval=0.0)
+    truth = [-a for a in applied_zyx]
+    correction = VoteInitialTransformCorrection(
+        InitialTransformCorrectionSettings(
+            mode="vote_translation",
+            vote_peaks_settings=PEAKS,
+            capture_radius=40.0,
+            cluster_radius=3.0,
+        ),
+        mov_detector=BeadNodeDetector(PEAKS),
+        ref_detector=BeadNodeDetector(PEAKS),
+    )
+    corrected = correction.estimate(mov, ref, initial_transform=Transform.identity(3))
+    np.testing.assert_allclose(corrected.translation, truth, atol=1.0)
+    np.testing.assert_allclose(np.asarray(corrected.matrix)[:3, :3], np.eye(3))
+    assert correction.trace()["best_candidate"] in ("+drift", "-drift")
+
+
+def _vote_icp(mov_points, ref_points, **settings):
+    return VoteIcpEstimator(
+        dense_detector=_Points(mov_points),
+        precise_detector=_Points(mov_points),
+        ref_detector=_Points(ref_points),
+        settings=VoteIcpSettings(**settings),
+        score_fn=lambda t, m, r: 0.0,
+        transform_type="euclidean",
+    )
+
+
+def test_vote_icp_fails_with_too_few_peaks_or_when_voting_abstains():
+    vol = np.zeros((8, 8, 8), np.float32)
+    ref_points = np.random.default_rng(15).uniform(0, 30, (20, 3))
+    with pytest.raises(EstimationError, match="peaks \\(need >= 3\\)"):
+        _vote_icp(ref_points[:2], ref_points).estimate(vol, vol)
+    # every moving point further from the reference than the capture radius reaches
+    far = ref_points + 1000.0
+    with pytest.raises(EstimationError, match="abstained"):
+        _vote_icp(far, ref_points).estimate(vol, vol)

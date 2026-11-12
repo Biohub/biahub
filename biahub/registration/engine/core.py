@@ -1,0 +1,951 @@
+"""The engine's core: build a run from its settings, and its steps on disk.
+
+`init_run` checks the config against the stores, builds the run's objects (reference and
+initial-transform policies, score, estimator), plans each job's resources and starts the
+run folder; `flag_run` picks the timepoints to repair; `finalize_run` folds repairs and
+sweeps in and turns the series into one transform per timepoint (stand-ins, the
+`previous` chain, the anchor, leftover motion) with the run's report. The estimating
+itself is `series`, the fallback passes `fallback`, the run folder `disk`, the jobs and
+their submission `cluster`.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+from collections.abc import Iterable
+from pathlib import Path
+
+import click
+import numpy as np
+
+from iohub import open_ome_zarr
+
+from biahub.cli.parsing import position_key
+from biahub.core.transform import Transform
+from biahub.registration.engine.disk import (
+    ENGINE_SETTINGS_FILENAME,
+    FLAGS_FILENAME,
+    INITIAL_FILENAME,
+    RUN_PLAN_FILENAME,
+    RunJournal,
+    finite_or_none,
+    initial_transforms_from_file,
+    load_series,
+    read_flags,
+    read_record,
+    read_run_plan,
+    read_run_settings,
+    run_record_dirs,
+    start_run,
+    write_json,
+)
+from biahub.registration.engine.fallback import (
+    PassRecord,
+    PassResult,
+    accept_result,
+    cap_worst,
+    flag_series,
+    fold_sweep,
+)
+from biahub.registration.engine.policies import (
+    CrossChannel,
+    FileInitialTransform,
+    FixedFrame,
+    FixedInitialTransform,
+    InitialTransformPolicy,
+    NeighbourMedian,
+    PreviousFrame,
+    ReferencePolicy,
+)
+from biahub.registration.engine.series import (
+    SeriesResult,
+)
+from biahub.registration.estimators import (
+    NOT_RUN,
+    ChainedEstimator,
+    ScoreFn,
+    TransformEstimator,
+    is_higher,
+)
+from biahub.registration.methods.intensity.ants import AntsEstimator
+from biahub.registration.methods.intensity.focus_finding import FocusEstimator
+from biahub.registration.methods.intensity.local_phase_cross_corr import LocalPCCEstimator
+from biahub.registration.methods.intensity.phase_cross_corr import PCCEstimator
+from biahub.registration.methods.landmark.bead_matching import (
+    build_beads_estimator,
+)
+from biahub.registration.methods.landmark.nuclei_matching import nuclei_estimator
+from biahub.registration.methods.manual.manual import ManualEstimator
+from biahub.registration.methods.manual.shapes import ShapesEstimator
+from biahub.registration.metrics import (
+    LEFTOVER_MOTION_VOLUMES,
+    leftover_motion,
+    metric_fn,
+    smooth_track,
+)
+from biahub.registration.preprocess import (
+    PreprocessedEstimator,
+    RawVolumeScore,
+    apply_image_blocks,
+    blocks_footprint,
+    check_boxes,
+)
+from biahub.registration.utils import (
+    Remembered,
+    RunError,
+    resolve_time_indices,
+    transform_key,
+)
+from biahub.settings import (
+    DEFAULT_SCORE_METRIC,
+    INTENSITY_METRICS,
+    AnchorSettings,
+    EstimateTransformSettings,
+    InitialTransformSettings,
+)
+from biahub.utils.cluster import (
+    estimate_resources,
+)
+from biahub.utils.config import model_to_yaml
+
+
+def build_reference_policy(settings: EstimateTransformSettings, ref) -> ReferencePolicy:
+    if settings.reference.frame == "cross":
+        return CrossChannel(ref)
+    # every frame is within the run: nothing before its first timepoint is compared
+    run = resolve_time_indices(settings.time_indices, len(ref))
+    if settings.reference.frame == "first":  # the run's first timepoint with data
+        return FixedFrame(min(run))
+    if settings.reference.frame == "neighbours":
+        return NeighbourMedian(settings.reference.window, first=min(run), last=max(run))
+    return PreviousFrame(first=min(run))
+
+
+def static_initial(settings: EstimateTransformSettings) -> Transform:
+    """Return the run's one initial transform: `transform.initial.matrix`, else identity.
+
+    `init_run` makes a `from: shapes` initial a matrix; a file's per-timepoint transforms
+    are `build_initial_policy`'s.
+    """
+    fit, init = settings.transform, settings.transform.initial
+    if init is None or init.from_ != "matrix":
+        return Transform(np.eye(4), transform_type=fit.type)
+    if init.direction == "forward":
+        return Transform(init.matrix, transform_type=fit.type)
+    return Transform.from_inverse(init.matrix, fit.type)
+
+
+def build_initial_policy(
+    settings: EstimateTransformSettings, run_dir: Path
+) -> InitialTransformPolicy:
+    """Return where each timepoint starts: the run's file, else the one initial transform.
+
+    `init_run` wrote a file's transform for each timepoint beside the run's settings.
+    """
+    if settings.transform.initial_file is not None:
+        by_t = json.loads((Path(run_dir) / INITIAL_FILENAME).read_text())
+        return FileInitialTransform(
+            {
+                int(t): Transform(m, transform_type=settings.transform.type)
+                for t, m in by_t.items()
+            }
+        )
+    return FixedInitialTransform(static_initial(settings))
+
+
+def run_score_fn(settings: EstimateTransformSettings) -> ScoreFn:
+    """Return the score every decision uses: `settings.score`, never the method's blocks."""
+    blocks = settings.score.preprocess
+    prepare = None
+    if blocks:
+
+        def prepare(warped, ref, overlap):
+            return (
+                apply_image_blocks(warped, blocks, "moving", where=overlap),
+                apply_image_blocks(ref, blocks, "reference", where=overlap),
+            )
+
+        # how far the blocks reach: the score leaves that margin by the empty padding
+        prepare.footprint = blocks_footprint(blocks)
+    return _scored_once(run_metric_fn(settings, settings.effective_score_metric, prepare))
+
+
+# The run's recent scores: a stack's winner, a propagated run's winning start and a kept
+# initial transform are scored by the estimator, then again by the series.
+_SCORES = Remembered(16)
+
+
+def _scored_once(score_fn: ScoreFn) -> ScoreFn:
+    """Return `score_fn`, computed once per transform of a (moving, reference) pair."""
+
+    def score(transform, mov, ref):
+        return _SCORES(
+            (mov, ref),
+            (score_fn, transform_key(transform)),
+            lambda: score_fn(transform, mov, ref),
+        )
+
+    return score
+
+
+def _tuning_score(
+    settings: EstimateTransformSettings,
+    run: EstimateTransformSettings,
+    run_score: ScoreFn,
+    metric: str | None,
+) -> ScoreFn:
+    """Return what a method's own choices are scored with, on the raw volumes.
+
+    Its `tuning_metric` when set (no score blocks); otherwise the run's score
+    (`run_score`) -- except a bead metric for a method that detects no beads, which tunes
+    with its default. Raw: the method's blocks change what it estimates from, not what it
+    is judged on.
+    """
+    if metric is None and (
+        settings.method == "bead_matching" or run.effective_score_metric in INTENSITY_METRICS
+    ):
+        tuning = run_score
+    else:
+        default = DEFAULT_SCORE_METRIC[settings.method]
+        tuning = _scored_once(run_metric_fn(settings, metric or default))
+    return RawVolumeScore(tuning) if settings.preprocess else tuning
+
+
+def final_block(settings: EstimateTransformSettings) -> EstimateTransformSettings:
+    """Return the config of the method with the last word (a stack's final block)."""
+    return settings.stack_settings()[-1] if settings.is_stack else settings
+
+
+def run_metric_fn(settings: EstimateTransformSettings, metric: str, prepare=None) -> ScoreFn:
+    """Return one metric as a score function, with the bead settings of a stack's final block."""
+    return metric_fn(metric, final_block(settings).bead_matching, prepare)
+
+
+def build_estimator(
+    settings: EstimateTransformSettings,
+    shape_zyx: tuple[int, int, int] | None = None,
+    mov_voxel_size: tuple[float, float, float] | None = None,
+    ref_voxel_size: tuple[float, float, float] | None = None,
+    run: EstimateTransformSettings | None = None,
+) -> tuple[TransformEstimator, ScoreFn]:
+    """Return the estimator and score function for the settings' method.
+
+    Where it starts is the initial-transform policy's (`build_initial_policy`). `run`: the
+    run's settings when `settings` is one block of its stack (a method that tunes
+    without a `tuning_metric` of its own tunes with the run's score).
+    """
+    if settings.is_stack:
+        # each block is the estimator its own config builds (its preprocess, transform
+        # type, settings), started from the block before; the run's score keeps the best
+        blocks = [
+            build_estimator(block, shape_zyx, mov_voxel_size, ref_voxel_size, run=settings)[0]
+            for block in settings.stack_settings()
+        ]
+        score_fn = run_score_fn(settings)
+        names = [f"{k}:{m}" for k, m in enumerate(settings.method_names, start=1)]
+        chain = ChainedEstimator(blocks, score_fn=score_fn, names=names)
+        return chain, score_fn
+    score_fn = run_score_fn(settings)
+    run_score = (
+        score_fn if run is None else run_score_fn(run)
+    )  # one object: its memo is shared
+    run = run or settings
+    method_score = None  # a method that scores its own choices: its tuning_metric
+    if settings.method == "bead_matching":
+        method_score = _tuning_score(
+            settings, run, run_score, settings.bead_matching.tuning_metric
+        )
+        estimator: TransformEstimator = build_beads_estimator(
+            settings.bead_matching, settings.transform.type, score_fn=method_score
+        )
+    elif settings.method == "ants":
+        estimator = AntsEstimator.from_settings(
+            settings.ants, settings.transform.type, verbose=settings.verbose
+        )
+    elif settings.method == "phase_cross_corr" and settings.phase_cross_corr.local:
+        estimator = LocalPCCEstimator.from_settings(
+            settings.phase_cross_corr,
+            settings.transform.type,
+            ref_voxel_size or (1.0, 1.0, 1.0),
+        )
+    elif settings.method == "phase_cross_corr":
+        estimator = PCCEstimator.from_settings(settings.phase_cross_corr, shape_zyx)
+    elif settings.method == "focus_finding":
+        estimator = FocusEstimator.from_settings(
+            settings.focus_finding, pixel_size=(mov_voxel_size or (1.0, 1.0, 1.0))[-1]
+        )
+    elif settings.method == "nuclei_matching":
+        method_score = _tuning_score(
+            settings, run, run_score, settings.nuclei_matching.tuning_metric
+        )
+        estimator = nuclei_estimator(
+            settings.nuclei_matching,
+            settings.transform.type,
+            ref_voxel_size or (1.0, 1.0, 1.0),
+            score_fn=method_score,
+        )
+    elif settings.method == "shapes":
+        estimator = ShapesEstimator.from_settings(
+            settings.shapes,
+            mov_voxel_size or (1.0, 1.0, 1.0),
+            ref_voxel_size or (1.0, 1.0, 1.0),
+        )
+    elif settings.method == "manual":
+        manual = settings.manual
+        estimator = ManualEstimator(
+            moving_channel_name=settings.moving.channel,
+            reference_channel_name=settings.reference_channel,
+            moving_channel_voxel_size=mov_voxel_size or (1.0, 1.0, 1.0),
+            reference_channel_voxel_size=ref_voxel_size or (1.0, 1.0, 1.0),
+            similarity=settings.transform.type == "similarity",
+            pre_affine_90degree_rotation=manual.affine_90degree_rotation,
+            pre_affine_fliplr=manual.affine_fliplr,
+        )
+    else:
+        raise ValueError(f"unknown method '{settings.method}'")
+    if settings.preprocess:
+        estimator = PreprocessedEstimator(estimator, settings.preprocess, method_score)
+    return estimator, score_fn
+
+
+# Default wall-clock budgets per phase, in minutes (an sbatch file's time wins).
+ESTIMATE_MINUTES = 30
+REPAIR_MINUTES = 60
+# Wall-clock budget per timepoint for the sequential (propagation) job, in minutes:
+# 2024_11_07 A549 beads took 7-8 min per timepoint (two passes from two initial
+# transforms), so ~1.3x.
+PROPAGATION_MINUTES_PER_TIMEPOINT = 10
+# The `preempted` partition's limit: sbatch rejects a longer request outright.
+MAX_MINUTES = 2880
+
+
+def _propagation_minutes(n_timepoints: int) -> int:
+    """Return the sequential job's budget for this many timepoints, within the partition.
+
+    As every step sizes its time: `estimate_resources` counts the ZYX volumes processed
+    (one channel per timepoint) times the step's calibrated minutes per volume.
+    """
+    time_minutes, _, _ = estimate_resources(
+        shape=(n_timepoints, 1, 1, 1, 1),
+        time_multiplier=PROPAGATION_MINUTES_PER_TIMEPOINT,
+        min_time_minutes=ESTIMATE_MINUTES,
+    )
+    return min(MAX_MINUTES, time_minutes)
+
+
+def estimate_minutes(n_blocks: int, n_timepoints: int, propagated: bool) -> int:
+    """Return an estimate job's time: each block's, one after another, within the partition.
+
+    A propagated run is one job over `n_timepoints`; otherwise each job is one timepoint.
+    """
+    per_block = _propagation_minutes(n_timepoints) if propagated else ESTIMATE_MINUTES
+    return min(MAX_MINUTES, n_blocks * per_block)
+
+
+def _one_transform_per_timepoint(
+    result: SeriesResult,
+    time_indices: list[int],
+    initial: Transform | InitialTransformPolicy,
+) -> list[Transform]:
+    """Return one transform per requested timepoint.
+
+    The accepted transform, else the timepoint's initial transform (e.g. the one
+    from the two grids, or a file's own for that timepoint), as the legacy pipeline returned when
+    refinement failed. Each stand-in is recorded in `result.filled_from`.
+    """
+    if isinstance(initial, Transform):
+        initial = FixedInitialTransform(initial)
+    out = []
+    for t in time_indices:
+        if t in result.transforms:
+            out.append(result.transforms[t])
+        elif t in result.stand_ins:
+            transform, source = result.stand_ins[t]
+            result.filled_from[t] = source
+            out.append(transform)
+        else:
+            result.filled_from[t] = initial.source
+            out.append(initial.initial_for(t))
+    return out
+
+
+def _pass_report(outcome: PassResult) -> dict:
+    return {
+        "accepted": outcome.accepted,
+        "repaired_from": outcome.repaired_from,
+        "score": finite_or_none(outcome.score),
+        "candidate_scores": {k: finite_or_none(v) for k, v in outcome.scores.items()},
+        "candidate_failures": outcome.failures,
+    }
+
+
+def _report(result: SeriesResult, time_indices: list[int], run_id: str) -> dict:
+    return {
+        "run_id": run_id,
+        "time_indices": time_indices,
+        "scores": {
+            str(t): finite_or_none(result.scores[t])
+            for t in time_indices
+            if t in result.scores
+        },
+        "errors": {str(t): e for t, e in result.errors.items()},
+        "flagged": result.flagged,
+        "repairs": {
+            str(t): {
+                **_pass_report(r),
+                "polish_rounds": r.polish_rounds,
+                "repair_transform_score": finite_or_none(r.repair_transform_score),
+            }
+            for t, r in result.repairs.items()
+        },
+        "sweeps": {str(t): _pass_report(r) for t, r in result.sweeps.items()},
+        "repaired_from": {str(t): r for t, r in sorted(result.repaired_from.items())},
+        "filled_from": {str(t): f for t, f in sorted(result.filled_from.items())},
+        **({"blocks": _blocks_summary(result.blocks)} if result.blocks else {}),
+        **(
+            {"anchor": {str(t): a for t, a in result.anchors.items()}}
+            if result.anchors
+            else {}
+        ),
+        **(
+            {"leftover_motion": result.leftover_motion}
+            if result.leftover_motion is not None
+            else {}
+        ),
+    }
+
+
+def block_failure(stages: list[dict] | None) -> str | None:
+    """Say which block of a stack failed and whose result was kept instead, or None.
+
+    Blocks after a failed one are "not run"; the first failure is the one to report.
+    """
+    failed = next((s for s in stages or [] if s["error"] and s["error"] != NOT_RUN), None)
+    if failed is None:
+        return None
+    kept = next((s["block"] for s in stages if s["won"]), None)
+    message = f"block {failed['block']} failed ({failed['error']})"
+    return f"{message}; kept block {kept}'s result" if kept else message
+
+
+def _blocks_summary(blocks: dict[int, list[dict]]) -> dict:
+    """Return, per block of a stack, how often it won or failed and its median score."""
+    summary = {}
+    for stages in blocks.values():
+        for stage in stages:
+            entry = summary.setdefault(stage["block"], {"won": 0, "failed": 0, "scores": []})
+            entry["won"] += bool(stage["won"])
+            entry["failed"] += bool(stage["error"]) and stage["error"] != NOT_RUN  # ran
+            if stage["score"] is not None:
+                entry["scores"].append(stage["score"])
+    return {
+        name: {
+            "won": e["won"],
+            "failed": e["failed"],
+            "median_score": float(np.median(e["scores"])) if e["scores"] else None,
+        }
+        for name, e in summary.items()
+    }
+
+
+def _sweep_minutes(n_trials: int) -> int:
+    return 30 + 3 * n_trials
+
+
+# Memory of one estimate job, in volumes of the moving store, whatever its CPU count (the
+# peak is the job's copies, not per thread). ANTs copies both volumes several times (Sobel,
+# crop, its image pyramid): on a 66 x 2048 x 2048 pair it peaked at 14.5-22.6 GB (SLURM
+# MaxRSS, 12 jobs), i.e. ~22 volumes; 30 leaves ~30% headroom. Phase correlation on a
+# 60 x 1024 x 1024 pair peaked at 9.6 volumes, 16.6 upsampled (the full complex spectra of
+# the refinement); the same headroom gives 13 and 22.
+RAM_VOLUMES_PER_JOB = {"ants": 30}
+DEFAULT_RAM_VOLUMES_PER_JOB = 13
+UPSAMPLED_PCC_RAM_VOLUMES = 22
+# CPUs per estimate job: ANTs' optimizer runs ITK threads, one per CPU (`use_task_threads`);
+# the other methods are single-threaded.
+CPUS_PER_JOB = {"ants": 8}
+DEFAULT_CPUS_PER_JOB = 2
+# SLURM's smallest useful memory request per CPU, in GB.
+MIN_GB_PER_CPU = 4
+
+
+def _ram_volumes(block: EstimateTransformSettings) -> int:
+    """Return the volumes one block's estimate holds at its peak (RAM_VOLUMES_PER_JOB)."""
+    pcc = block.phase_cross_corr
+    if (
+        block.method == "phase_cross_corr"
+        and pcc.local is None
+        and pcc.effective_upsample_factor > 1
+    ):
+        return UPSAMPLED_PCC_RAM_VOLUMES
+    return RAM_VOLUMES_PER_JOB.get(block.method, DEFAULT_RAM_VOLUMES_PER_JOB)
+
+
+def _estimate_job_resources(
+    method: str, zyx_shape: tuple[int, int, int], volumes: int, at_least: int = 0
+) -> tuple[int, int]:
+    """Return (cpus, GB of RAM per CPU) for one estimate job of `method` on this volume.
+
+    `volumes`: what the job holds at its peak (the method's, `_ram_volumes`, and the
+    reference's). `at_least`: volumes a later step of the job holds on its own, once the
+    method's are freed (leftover motion's raw shift).
+    """
+    # in CI the suite runs serially (as estimate_resources does)
+    in_ci = os.environ.get("CI") == "true"
+    num_cpus = 1 if in_ci else CPUS_PER_JOB.get(method, DEFAULT_CPUS_PER_JOB)
+    gb_per_volume = np.prod(zyx_shape) * np.dtype(np.float32).itemsize / 2**30
+    volumes = max(volumes, at_least)
+    job_gb = gb_per_volume * volumes
+    gb_per_cpu = max(MIN_GB_PER_CPU, np.ceil(gb_per_volume), np.ceil(job_gb / num_cpus))
+    return num_cpus, int(gb_per_cpu)
+
+
+def init_run(
+    moving_position_dirpath: Path,
+    reference_position_dirpath: Path,
+    settings: EstimateTransformSettings,
+    work_dir: Path,
+    resume: bool = False,
+) -> dict:
+    """Start a run in `work_dir` and return its plan (also written as `run_plan.json`).
+
+    Resolves the settings the jobs read (an initial transform from the store shapes is
+    computed once, here), writes them with the run manifest -- clearing an earlier run's
+    records unless `resume` -- and plans the run: the timepoints, whether they are
+    estimated in one sequential job (`transform.initial.propagate`), whether the method
+    uses an initial transform (repair needs one), and each phase's resources. Reads only
+    store metadata.
+    """
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    moving, reference = Path(moving_position_dirpath), Path(reference_position_dirpath)
+    with open_ome_zarr(moving, mode="r") as position:
+        T, _C, Z, Y, X = position.data.shape
+        mov_voxel_size = tuple(position.scale[-3:])
+    with open_ome_zarr(reference, mode="r") as position:
+        ref_T = position.data.shape[0]
+        ref_shape = position.data.shape[-3:]
+        ref_voxel_size = tuple(position.scale[-3:])
+    # Checked before anything is written: a refused run must not clear an earlier one's
+    # records.
+    time_indices = resolve_time_indices(settings.time_indices, T)
+    if settings.reference.frame == "cross":
+        beyond = [t for t in time_indices if t >= ref_T]
+        if beyond:
+            raise RunError(
+                f"timepoints {beyond} are past the reference store, which has {ref_T} "
+                f"timepoints ({reference})"
+            )
+
+    # a mask_box past its volume would fail every job: refuse the run once, here
+    shapes = {
+        "moving": (Z, Y, X),
+        "reference": tuple(ref_shape) if settings.reference.frame == "cross" else (Z, Y, X),
+    }
+    for block in settings.stack_settings():
+        try:
+            check_boxes(block.preprocess, shapes)
+        except ValueError as error:
+            raise RunError(str(error)) from None
+
+    settings = settings.model_copy(deep=True)
+    init = settings.transform.initial
+    if init is not None and init.from_ == "shapes":
+        # the run's settings hold the matrix it computed, so every job reads the same one
+        method = ShapesEstimator(mov_voxel_size, ref_voxel_size, init.rotate90, init.fliplr)
+        shapes = method.transform_for((Z, Y, X), tuple(ref_shape))
+        settings.transform.initial = InitialTransformSettings(
+            from_="matrix",
+            matrix=shapes.to_list(),
+            direction="forward",
+            propagate=init.propagate,
+        )
+        click.echo(
+            f"Computed the initial transform from the store shapes (forward):\n{shapes.matrix}"
+        )
+    # built once here so a config it cannot build fails at --init, not in every job
+    build_estimator(settings, (Z, Y, X), mov_voxel_size, ref_voxel_size)
+    initial_transforms = (
+        None
+        if settings.transform.initial_file is None
+        else initial_transforms_from_file(
+            settings.transform.initial_file, position_key(moving), time_indices
+        )
+    )
+    start_run(work_dir, settings, moving, reference, resume)
+    model_to_yaml(settings, work_dir / ENGINE_SETTINGS_FILENAME)
+    if initial_transforms is not None:
+        write_json(work_dir / INITIAL_FILENAME, initial_transforms, indent=2)
+
+    propagated = settings.transform.propagates
+    # a neighbour median holds 2 x window frames, the one being read and the median,
+    # besides the method's volumes
+    reference_volumes = (
+        2 * settings.reference.window + 2 if settings.reference.frame == "neighbours" else 0
+    )
+    # each volume sized as the larger grid: the warped moving volume, the reference and
+    # the scores' arrays live on the reference grid
+    volume_zyx = max((Z, Y, X), tuple(ref_shape), key=np.prod)
+
+    def job_size(blocks) -> tuple[int, int]:
+        """(CPUs, GB per CPU) of a job running every one of `blocks`: the heaviest's."""
+        return max(
+            (
+                _estimate_job_resources(
+                    block.method,
+                    volume_zyx,
+                    _ram_volumes(block) + reference_volumes,
+                    at_least=LEFTOVER_MOTION_VOLUMES
+                    if settings.reference.leftover_motion
+                    else 0,
+                )
+                for block in blocks
+            ),
+            key=lambda r: r[0] * r[1],
+        )
+
+    trials = settings.sweep_trials() if settings.fallback.sweep is not None else {}
+    run_size = job_size(settings.stack_settings())
+    # a sweep job runs every trial, which may change what sizes a job (e.g. upsampling)
+    sweep_size = job_size(
+        [
+            *settings.stack_settings(),
+            *(block for trial in trials.values() for block in trial.stack_settings()),
+        ]
+    )
+
+    def resources(minutes: int, size: tuple[int, int] = run_size) -> dict:
+        num_cpus, gb_ram_per_cpu = size
+        return {
+            "cpus": num_cpus,
+            "mem_gb": num_cpus * gb_ram_per_cpu,
+            "gb_ram_per_cpu": gb_ram_per_cpu,
+            "time_minutes": minutes,
+        }
+
+    plan = {
+        "time_indices": time_indices,
+        "frame_shape": [Z, Y, X],
+        "voxel_um": list(mov_voxel_size),
+        "propagated": propagated,
+        "interactive": "manual" in settings.method_names,
+        "resources": {
+            "estimate": resources(
+                estimate_minutes(len(settings.method_names), len(time_indices), propagated)
+            ),
+            "repair": resources(REPAIR_MINUTES),
+            "sweep": resources(_sweep_minutes(len(trials)), sweep_size),
+        },
+    }
+    write_json(work_dir / RUN_PLAN_FILENAME, plan, indent=2)
+    return plan
+
+
+def flag_run(
+    work_dir: Path,
+    records: dict[int, dict] | None = None,
+    failures: dict[int, str] | None = None,
+    from_disk: Iterable[int] | None = None,
+) -> tuple[SeriesResult, dict]:
+    """Load the estimates and decide which timepoints to repair and sweep.
+
+    Records come from `records` (this call's jobs) and, for the timepoints in
+    `from_disk` (all of them when None), from the run's record files. Writes and returns
+    the flags (`flags.json`): flagged, repair and sweep timepoints, and the scores they
+    were decided on.
+    """
+    work_dir = Path(work_dir)
+    settings, plan = read_run_settings(work_dir), read_run_plan(work_dir)
+    time_indices = plan["time_indices"]
+    timepoints_dir, _, _ = run_record_dirs(work_dir)
+    result = load_series(
+        timepoints_dir,
+        time_indices,
+        settings.transform.type,
+        records=records,
+        resumed=time_indices if from_disk is None else from_disk,
+    )
+    for t, error in (failures or {}).items():
+        result.errors[t] = error
+    for t in time_indices:
+        line = f"t={t}: score={result.scores[t]:.4f}"
+        if t in result.errors:
+            line += f"  estimate failed: {result.errors[t]}"
+        elif failure := block_failure(result.blocks.get(t)):
+            line += f"  WARNING {failure}"
+        click.echo(line)
+
+    thresholds = settings.fallback_thresholds()
+    flagged = flag_series(
+        result,
+        k_mad=settings.fallback.flag.k_mad,
+        floor=thresholds.floor,
+        hard_fail=thresholds.hard_fail,
+    )
+    base_scores = dict(result.scores)
+    repair_settings, sweep_settings = settings.fallback.repair, settings.fallback.sweep
+    repair_ts = (
+        cap_worst(flagged, base_scores, repair_settings.max_timepoints)
+        if repair_settings is not None
+        else []
+    )
+    sweep_ts = (
+        cap_worst(flagged, base_scores, sweep_settings.max_timepoints)
+        if sweep_settings is not None
+        else []
+    )
+    if flagged and repair_settings is None and sweep_settings is None:
+        click.echo(
+            f"flag: repair and sweep are off; the {len(flagged)} flagged timepoint(s) are "
+            "written as they are, marked unreliable where still below "
+            + ("hard_fail" if thresholds.hard_fail is not None else "the run's line")
+        )
+    flags = {
+        "flagged": flagged,
+        "repair": repair_ts,
+        "sweep": sweep_ts,
+        "base_scores": {str(t): finite_or_none(v) for t, v in base_scores.items()},
+        "line": finite_or_none(result.flag_line),
+    }
+    write_json(work_dir / FLAGS_FILENAME, flags, indent=2)
+    return result, flags
+
+
+def finalize_run(
+    work_dir: Path,
+    result: SeriesResult | None = None,
+    flags: dict | None = None,
+    repair_records: dict[int, dict] | None = None,
+    sweep_records: dict[int, dict] | None = None,
+    repaired: Iterable[int] = (),
+    swept: Iterable[int] = (),
+) -> tuple[SeriesResult, list[int], list[Transform]]:
+    """Fold the repairs and sweeps into the series; write the report and journal.
+
+    `result` and `flags` default to what is on disk (the estimates, `flags.json`).
+    Repair and sweep outcomes come from the records given, else from the record files --
+    except for the timepoints `repaired` / `swept` by this call: a job that failed this
+    call is never filled from an earlier record. Returns the series, its
+    timepoints and one forward transform per timepoint.
+    """
+    work_dir = Path(work_dir)
+    settings, plan = read_run_settings(work_dir), read_run_plan(work_dir)
+    time_indices = plan["time_indices"]
+    transform_type = settings.transform.type
+    # a timepoint without a transform of its own falls back to where it started: the
+    # initial transform file's transform for it, else the config initial transform
+    initial = build_initial_policy(settings, work_dir)
+    _, repairs_dir, sweeps_dir = run_record_dirs(work_dir)
+    if flags is None:
+        flags = read_flags(work_dir)
+    if result is None:
+        timepoints_dir, _, _ = run_record_dirs(work_dir)
+        result = load_series(
+            timepoints_dir, time_indices, transform_type, resumed=time_indices
+        )
+        result.flagged = list(flags["flagged"])
+        result.flag_line = flags.get("line")
+    base_scores = {
+        int(t): float("nan") if v is None else v for t, v in flags["base_scores"].items()
+    }
+
+    def outcome_for(t: int, records: dict[int, dict] | None, records_dir: Path, ran: set):
+        record = (records or {}).get(t)
+        if record is None:
+            if t in ran:  # failed this call
+                return None
+            record = read_record(records_dir / f"{t}.json")
+            if record is None:  # never ran (or unreadable)
+                return None
+        return PassRecord.from_dict(record).to_result(
+            transform_type, fallback=result.transforms.get(t, initial.initial_for(t))
+        )
+
+    journal = RunJournal()  # this finalize's fallback attempts, from the records
+    for t in flags["repair"]:
+        outcome = outcome_for(t, repair_records, repairs_dir, set(repaired))
+        if outcome is None:
+            continue
+        result.repairs[t] = outcome
+        repair_transform_score = (
+            outcome.score
+            if outcome.repair_transform_score is None
+            else outcome.repair_transform_score
+        )
+        journal.record(
+            t=t,
+            pass_name="repair",
+            before_score=result.scores[t],
+            after_score=repair_transform_score,
+            accepted=outcome.accepted,
+            failures=outcome.failures,
+        )
+        if outcome.repair_transform_score is not None:
+            journal.record(
+                t=t,
+                pass_name="polish",
+                before_score=repair_transform_score,
+                after_score=outcome.score,
+                accepted=outcome.polish_rounds > 0,
+            )
+        # As a fresh repair is judged (and as the sweep fold does): only if it beats the
+        # current estimate -- a repair kept by resume may predate a redone, better one.
+        if outcome.accepted and is_higher(outcome.score, result.scores.get(t)):
+            accept_result(
+                result,
+                t,
+                outcome.transform,
+                outcome.score,
+                outcome.repaired_from,
+                outcome.report,
+            )
+        click.echo(f"repair t={t}: {outcome.repaired_from} -> {outcome.score:.4f}")
+
+    # The sweep competes with repair rather than following it: it starts from each
+    # timepoint's pre-fallback estimate, and the better of the two is kept.
+    for t in flags["sweep"]:
+        outcome = outcome_for(t, sweep_records, sweeps_dir, set(swept))
+        if outcome is None:
+            continue
+        journal.record(
+            t=t,
+            pass_name="sweep",
+            before_score=base_scores[t],
+            after_score=outcome.score,
+            accepted=outcome.accepted,
+            failures=outcome.failures,
+        )
+        fold_sweep(result, t, outcome)
+        click.echo(
+            f"sweep t={t}: {outcome.repaired_from} -> {outcome.score:.4f}"
+            + ("" if result.repaired_from.get(t, "").startswith("sweep:") else " (not kept)")
+        )
+
+    # Before the report: this records which timepoints got a stand-in.
+    transforms = transforms_for_file(result, time_indices, initial, settings.reference.frame)
+    if settings.reference.anchor is not None:
+        transforms = anchor_transforms(
+            result, time_indices, transforms, settings.reference.anchor, plan["frame_shape"]
+        )
+    if settings.reference.leftover_motion is not None:
+        result.leftover_motion = leftover_motion_report(
+            result, time_indices, transforms, plan["voxel_um"]
+        )
+    journal.save(work_dir / "run_journal.json")
+    write_json(
+        work_dir / "estimate_transform_report.json",
+        _report(result, time_indices, journal.current_run_id),
+        indent=2,
+    )
+    return result, time_indices, transforms
+
+
+def transforms_for_file(
+    result: SeriesResult,
+    time_indices: list[int],
+    initial: Transform | InitialTransformPolicy,
+    frame: str,
+) -> list[Transform]:
+    """One transform per timepoint, onto the reference grid, for the transforms file.
+
+    `cross` / `first` transforms are absolute, so a timepoint with none takes the input
+    initial transform. `previous` transforms are relative steps (t -> t-1): a
+    missing step is identity -- reusing a neighbour's step would add its drift again to
+    every later timepoint -- and the steps are chained onto the first frame.
+    """
+    if frame != "previous":
+        return _one_transform_per_timepoint(result, time_indices, initial)
+    for t in time_indices:
+        if t not in result.transforms:
+            result.filled_from[t] = "identity"
+    steps = [result.transforms.get(t, Transform.identity()) for t in time_indices]
+    return chain_to_first_frame(steps, time_indices)
+
+
+def anchor_transforms(
+    result: SeriesResult,
+    time_indices: list[int],
+    transforms: list[Transform],
+    anchor: AnchorSettings,
+    frame_shape: list[int],
+) -> list[Transform]:
+    """Add the centroid anchor to each timepoint's transform: the sample to the centre.
+
+    The neighbour median follows slow drift, so its transforms hold only the jumps. The
+    centroids (a timepoint without one is interpolated) are smoothed over the run's
+    timepoints, in order, and the translation (frame centre - smoothed centroid) is
+    composed after each transform, stand-ins included -- a forward translation is the
+    shift applied to the volume. Records each timepoint's anchor in `result.anchors`.
+    """
+    track = [result.centroids.get(t) or [np.nan] * 3 for t in time_indices]
+    smoothed = smooth_track(track, median=anchor.smooth_median, sigma=anchor.smooth_sigma)
+    centre = (np.asarray(frame_shape, dtype=float) - 1) / 2
+    out = []
+    for t, transform, slow in zip(time_indices, transforms, smoothed, strict=True):
+        out.append(Transform.from_translation(centre - slow) @ transform)
+        result.anchors[t] = {
+            "centroid": result.centroids.get(t),
+            "smoothed": slow.tolist(),
+            "translation": (centre - slow).tolist(),
+        }
+    return out
+
+
+def leftover_motion_report(
+    result: SeriesResult,
+    time_indices: list[int],
+    transforms: list[Transform],
+    voxel_um: list[float],
+) -> dict:
+    """Return the frame-to-frame motion left by `transforms`, and by none, from the raw shifts.
+
+    Pairs are each timepoint's raw shift from the run's previous timepoint (a job that
+    failed has none: its pair is skipped and listed). The corrections are the transforms'
+    translations; `approximate` when any also rotates or scales, which the derivation
+    leaves out.
+    """
+    pairs = [
+        (record["from"], t, record["shift"])
+        for t, record in sorted(result.raw_shifts.items())
+        if t in time_indices
+    ]
+    corrections = {t: m.translation for t, m in zip(time_indices, transforms, strict=True)}
+    approximate = any(not np.allclose(m.linear, np.eye(3), atol=1e-6) for m in transforms)
+    report = {
+        "approximate": approximate,
+        "transforms": leftover_motion(pairs, corrections, voxel_um),
+        "unregistered": leftover_motion(pairs, None, voxel_um),
+        "no_raw_shift": [t for t in time_indices[1:] if t not in result.raw_shifts],
+    }
+    for name in ("transforms", "unregistered"):
+        r = report[name]
+        if r["mean_um"] is not None:
+            click.echo(
+                f"leftover motion, {name}: mean {r['mean_um']:.3f} µm, max {r['max_um']:.3f} µm"
+                f" over {len(r['pairs'])} pairs" + (" (approximate)" if approximate else "")
+            )
+    return report
+
+
+def chain_to_first_frame(
+    transforms: list[Transform], time_indices: list[int]
+) -> list[Transform]:
+    """Compose t -> t-1 transforms into t -> first-frame transforms.
+
+    `reference: previous` estimates each timepoint against the one before it, which is
+    what makes the estimate robust on slowly drifting data, but apply-transform puts
+    every timepoint on one grid, so the file must hold the cumulative transform:
+    F_t = F_{t-1} @ (t -> t-1). That needs every link, hence contiguous timepoints.
+    """
+    if list(time_indices) != list(range(time_indices[0], time_indices[-1] + 1)):
+        raise RunError(
+            "reference 'previous' needs contiguous time_indices (each timepoint is chained "
+            f"through the one before it); got {time_indices}"
+        )
+    chained, cumulative = [], Transform.identity()
+    for transform in transforms:
+        cumulative = cumulative @ transform
+        chained.append(cumulative)
+    return chained

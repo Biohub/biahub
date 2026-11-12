@@ -45,7 +45,7 @@ def test_bead_metrics_are_continuous_where_overlap_ties(pair):
     peaks = DetectPeaksSettings(
         threshold_abs=100, nms_distance=4, min_distance=0, block_size=[8, 8, 8]
     )
-    settings = BeadsMatchSettings(source_peaks_settings=peaks, target_peaks_settings=peaks)
+    settings = BeadsMatchSettings(moving_peaks_settings=peaks, reference_peaks_settings=peaks)
 
     good = bead_alignment_metrics(truth, mov, ref, settings)
     off = bead_alignment_metrics(wrong, mov, ref, settings)
@@ -110,3 +110,192 @@ def test_residual_shift_measures_the_remaining_displacement_in_voxels(pair):
     assert normalized_mutual_information(
         truth, mov, ref, sobel=True
     ) > normalized_mutual_information(wrong, mov, ref, sobel=True)
+
+
+def test_residual_shift_in_um_scales_each_axis(pair):
+    # anisotropic voxels: 3 voxels off on every axis is 0.6 µm in z but 0.3 µm in y and x
+    mov, ref, _truth, wrong = pair
+    voxel_um = (0.2, 0.1, 0.1)
+    in_vox = residual_shift(wrong, mov, ref)
+    assert residual_shift(wrong, mov, ref, ref_um=voxel_um) == pytest.approx(
+        np.sqrt(0.6**2 + 0.3**2 + 0.3**2), abs=0.2
+    )
+    assert residual_shift(wrong, mov, ref, ref_um=None) == in_vox  # the default: voxels
+
+
+def test_bead_residuals_in_um_scale_each_axis_and_pair_the_same_beads(pair):
+    mov, ref, _truth, wrong = pair
+    peaks = DetectPeaksSettings(
+        threshold_abs=100, nms_distance=4, min_distance=0, block_size=[8, 8, 8]
+    )
+    settings = BeadsMatchSettings(moving_peaks_settings=peaks, reference_peaks_settings=peaks)
+    in_vox = bead_alignment_metrics(wrong, mov, ref, settings)
+    in_um = bead_alignment_metrics(wrong, mov, ref, settings, ref_um=(0.2, 0.1, 0.1))
+    # matching stays on the configured radius in voxels: the same beads pair up
+    assert (in_um.n_matched, in_um.overlap) == (in_vox.n_matched, in_vox.overlap)
+    # 3 voxels off on every axis: 0.6 µm in z, 0.3 µm in y and x
+    assert in_um.median_residual == pytest.approx(np.sqrt(0.6**2 + 0.3**2 + 0.3**2), abs=0.15)
+    assert in_vox.median_residual == pytest.approx(np.sqrt(3 * 3.0**2), abs=1.0)
+
+
+def _drifting_series(T=12):
+    """A blob volume drifting (random walk) with one-frame jumps; returns (series, where)."""
+    from tests.test_registration_estimators import _synthetic_blob_volume
+
+    rng = np.random.default_rng(7)
+    first = _synthetic_blob_volume(
+        np.random.default_rng(3), (16, 96, 96), n_blobs=80, sigma=2.0
+    )
+    where = np.cumsum(rng.normal(0, 0.3, size=(T, 3)), axis=0)
+    for t, jump in {3: (0.0, 4.0, 0.0), 5: (1.0, 0.0, -3.0), 8: (0.0, -2.5, 2.5)}.items():
+        if t < T:
+            where[t] += jump
+    frames = [ndi_shift(first + 100.0, w, order=1, mode="nearest") for w in where]
+    return np.stack(frames).astype(np.float32), where
+
+
+def test_leftover_motion_is_the_raw_shift_less_the_change_in_correction():
+    # Checked against the truth: the stabilized sample sits at where[t] + c[t], so the
+    # shift moving frame t onto t-1 is -(where[t] + c[t] - where[t-1] - c[t-1]). The
+    # corrections are far off (+-5 voxels) on purpose: no warp, so nothing aliases.
+    from biahub.registration.metrics import leftover_motion, raw_shift
+
+    series, where = _drifting_series()
+    um = np.array([0.5, 0.25, 0.25])
+    corrections = np.random.default_rng(1).uniform(-5, 5, size=(len(series), 3))
+    pairs = [(t - 1, t, raw_shift(series[t - 1], series[t])) for t in range(1, len(series))]
+    result = leftover_motion(pairs, dict(enumerate(corrections)), um)
+    truth = -((where[1:] + corrections[1:]) - (where[:-1] + corrections[:-1])) * um
+    got = np.asarray(
+        [[p["shift_z_um"], p["shift_y_um"], p["shift_x_um"]] for p in result["pairs"]]
+    )
+    np.testing.assert_allclose(got, truth, atol=0.15 * um.max())
+    np.testing.assert_allclose(
+        result["mean_um"], np.linalg.norm(truth, axis=1).mean(), atol=0.05
+    )
+    # unregistered: the raw shifts themselves
+    raw = leftover_motion(pairs, None, um)
+    np.testing.assert_allclose(
+        raw["max_um"], np.linalg.norm(-(where[1:] - where[:-1]) * um, axis=1).max(), atol=0.05
+    )
+
+
+def test_leftover_motion_skips_pairs_without_a_raw_shift():
+    from biahub.registration.metrics import leftover_motion, raw_shift
+
+    series, _ = _drifting_series(T=4)
+    empty = np.zeros_like(series[0])
+    assert raw_shift(series[0], empty) is None  # nothing to correlate
+    pairs = [
+        (0, 1, raw_shift(series[0], series[1])),
+        (1, 2, None),
+        (2, 3, raw_shift(series[2], series[3])),
+    ]
+    result = leftover_motion(pairs, None, (1.0, 1.0, 1.0))
+    assert [(p["t_from"], p["t_to"]) for p in result["pairs"]] == [(0, 1), (2, 3)]
+    assert result["skipped"] == [[1, 2]]
+
+
+def test_a_raw_shift_holds_at_most_18_frames():
+    # each estimate job measures it on full volumes (0.4 GB on the neuromast): the job plan
+    # reserves LEFTOVER_MOTION_VOLUMES frames for it
+    import tracemalloc
+
+    from biahub.registration.metrics import LEFTOVER_MOTION_VOLUMES, raw_shift
+
+    frames = np.random.default_rng(0).random((2, 32, 128, 128)).astype(np.float32)
+    tracemalloc.start()
+    raw_shift(frames[0], frames[1])
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert LEFTOVER_MOTION_VOLUMES == 18
+    assert peak <= LEFTOVER_MOTION_VOLUMES * frames[0].nbytes
+
+
+def test_an_intensity_centroid_finds_the_sample_above_its_background():
+    # the prototype's measure: binned, blurred, weighted by intensity above a percentile
+    from biahub.registration.metrics import intensity_centroid
+
+    volume = np.full((20, 40, 40), 10.0, dtype=np.float32)  # a flat background
+    volume[8:12, 20:26, 10:14] = 100.0  # its centre is (9.5, 22.5, 11.5) in full-res voxels
+    centroid = intensity_centroid(volume, bg_percentile=90, downsample=2, blur_sigma=1.0)
+    np.testing.assert_allclose(centroid, (9.5, 22.5, 11.5), atol=0.3)
+    # a projection (Z = 1) is binned in yx only, and its z is 0
+    projected = volume.max(axis=0, keepdims=True)
+    centroid = intensity_centroid(projected, bg_percentile=90, downsample=2, blur_sigma=1.0)
+    np.testing.assert_allclose(centroid, (0.0, 22.5, 11.5), atol=0.3)
+    # nothing above the background: no centroid
+    flat = np.full((20, 40, 40), 10.0, dtype=np.float32)
+    assert np.isnan(
+        intensity_centroid(flat, bg_percentile=90, downsample=2, blur_sigma=1.0)
+    ).all()
+
+
+def test_a_smoothed_track_drops_single_frame_jumps_and_fills_gaps():
+    from biahub.registration.metrics import smooth_track
+
+    track = np.column_stack([np.linspace(0.0, 10.0, 21)] * 3)  # a slow drift, 0.5 / frame
+    track[10] += 50.0  # a one-frame jump
+    track[5] = np.nan  # a frame with no centroid
+    smoothed = smooth_track(track, median=3, sigma=1.0)
+    assert np.isfinite(smoothed).all()
+    # the jump is gone; the median skips its frame, so t=10 lands within a frame's drift
+    np.testing.assert_allclose(smoothed[10], 5.0, atol=0.5)
+    np.testing.assert_allclose(smoothed[5], 2.5, atol=0.3)
+    np.testing.assert_allclose(smoothed[3:18, 0], np.linspace(1.5, 8.5, 15), atol=0.5)
+
+
+def test_mutual_information_counts_its_joint_histogram_in_chunks(monkeypatch):
+    # one histogram2d over the whole overlap held ~10 volumes of float64 and int64
+    # copies; counted chunk by chunk the counts, and so the score, are the same
+    from biahub.registration import metrics
+
+    rng = np.random.default_rng(5)
+    ref = rng.normal(100, 20, size=(8, 64, 64)).astype(np.float32)
+    mov = (0.5 * ref + rng.normal(0, 10, size=ref.shape)).astype(np.float32)
+    transform = Transform.from_translation([0.0, 1.0, -1.0])
+    whole = normalized_mutual_information(transform, mov, ref)
+    monkeypatch.setattr(metrics, "HISTOGRAM_CHUNK", 1000)  # many chunks, a partial last one
+    assert normalized_mutual_information(transform, mov, ref) == whole
+
+
+def test_metrics_read_nan_as_no_data():
+    # NaN != 0, so NaN voxels joined the overlap: mutual information raised (crashing the
+    # estimate) and raw_shift fed NaN to the FFT
+    from biahub.registration.metrics import raw_shift
+
+    rng = np.random.default_rng(12)
+    ref = rng.random((8, 32, 32)).astype(np.float32) + 1.0
+    holed = ref.copy()
+    holed[:, :4] = np.nan
+    identity = Transform.identity(3)
+    assert np.isfinite(normalized_mutual_information(identity, holed, ref))
+    assert np.isfinite(correlation_score(identity, holed, ref))
+    assert np.all(np.isfinite(raw_shift(ref, holed)))
+
+
+def test_a_bead_metric_needs_bead_settings_and_takes_no_score_blocks():
+    # it failed at the first score (an AttributeError on None), and dropped the blocks
+    from biahub.registration.metrics import metric_fn
+
+    with pytest.raises(ValueError, match="needs the beads method's settings"):
+        metric_fn("overlap")
+    with pytest.raises(ValueError, match="score blocks are for intensity metrics"):
+        metric_fn("residual", BeadsMatchSettings(), prepare=lambda w, r, o: (w, r))
+    with pytest.raises(ValueError, match="unknown score metric"):
+        metric_fn("sharpness")
+
+
+def test_a_bead_at_the_radius_pairs_in_the_overlap_and_the_residuals_alike(monkeypatch):
+    # the overlap counted a bead exactly at the radius; the residual pairing did not
+    from biahub.registration import metrics
+
+    ref_peaks = np.array([[10.0, 10.0, 10.0], [10.0, 30.0, 30.0], [30.0, 10.0, 30.0]])
+    mov_peaks = ref_peaks + [6.0, 0.0, 0.0]  # every bead exactly at the radius (6)
+    monkeypatch.setattr(metrics, "bead_peaks", lambda volume, settings: ref_peaks)
+    monkeypatch.setattr(metrics, "warped_bead_peaks", lambda *a: mov_peaks)
+    settings = BeadsMatchSettings()
+    assert settings.qc_settings.score_centroid_mask_radius == 6
+    vol = np.zeros((4, 4, 4))
+    m = bead_alignment_metrics(Transform.identity(3), vol, vol, settings)
+    assert m.overlap == 1.0 and m.n_matched == 3 and m.median_residual == pytest.approx(6.0)

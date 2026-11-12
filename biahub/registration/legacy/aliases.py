@@ -15,6 +15,7 @@ import shlex
 from pathlib import Path
 
 import click
+import yaml
 
 from biahub.apply_transform import apply_transform
 from biahub.cli.option_eat_all import OptionEatAll
@@ -35,7 +36,7 @@ from biahub.registration.legacy.convert_settings import (
     load_legacy_settings,
     per_position_stabilization,
 )
-from biahub.settings import TransformSettings, load_transform_settings
+from biahub.settings import LEGACY_CONFIG_KEYS, TransformSettings, load_transform_settings
 from biahub.utils.config import model_to_yaml
 
 
@@ -66,7 +67,7 @@ def _instead(command: str, *options) -> None:
 
 
 def _time_indices_arg(time_indices) -> str:
-    """Return `--time-indices` as apply-transform takes it: 'all', one index, or 'a,b,c'."""
+    """Return `--timepoints` as apply-transform takes it: 'all', one index, or 'a,b,c'."""
     if isinstance(time_indices, (list, tuple)):
         return ",".join(str(t) for t in time_indices)
     return str(time_indices)
@@ -149,12 +150,11 @@ def _transforms_config(config_filepaths: list[Path], next_to: Path) -> tuple[Pat
     or several per-position stabilize configs (folded into one file per position).
     """
     paths = [Path(p) for p in config_filepaths]
-    if len(paths) == 1:
-        try:
-            load_transform_settings(paths[0])
-            return paths[0], {}
-        except ValueError:
-            pass
+    if len(paths) == 1 and not LEGACY_CONFIG_KEYS & set(
+        yaml.safe_load(paths[0].read_text()) or {}
+    ):
+        load_transform_settings(paths[0])  # a new transforms file: its own errors, if any
+        return paths[0], {}
     legacy = [load_legacy_settings(p) for p in paths]
     options = {
         key: getattr(legacy[0], key)
@@ -281,7 +281,7 @@ def register_alias(
         None if keep_overhang else ("--crop-to-overlap", True),
         None
         if options.get("time_indices", "all") == "all"
-        else ("--time-indices", _time_indices_arg(options["time_indices"])),
+        else ("--timepoints", _time_indices_arg(options["time_indices"])),
         None
         if options.get("interpolation", "linear") == "linear"
         else ("--interpolation", options["interpolation"]),
@@ -331,7 +331,7 @@ def stabilize_alias(
         ("-o", output_dirpath),
         None
         if options.get("time_indices", "all") == "all"
-        else ("--time-indices", _time_indices_arg(options["time_indices"])),
+        else ("--timepoints", _time_indices_arg(options["time_indices"])),
     )
     apply_transform(
         input_position_dirpaths,

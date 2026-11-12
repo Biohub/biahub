@@ -159,9 +159,10 @@ def test_deskew_settings():
 def test_ants_settings_are_all_consumed_by_the_engine():
     """Every AntsRegistrationSettings field must be read by AntsEstimator.from_settings
     (which is what the config-driven ANTs path runs), so a config knob can't be silently
-    ignored."""
+    ignored. The block has no fields today (ANTs' options are DEFAULT_ANTS_KWARGS): this
+    guards the ones added later."""
     from biahub.registration.engine import build_estimator
-    from biahub.registration.methods.ants import AntsEstimator
+    from biahub.registration.methods.intensity.ants import AntsEstimator
     from biahub.settings import AntsRegistrationSettings
 
     source = inspect.getsource(AntsEstimator.from_settings) + inspect.getsource(
@@ -170,29 +171,6 @@ def test_ants_settings_are_all_consumed_by_the_engine():
     read = set(re.findall(r"ants_(?:registration_)?settings\.(\w+)", source))
     missing = set(AntsRegistrationSettings.model_fields) - read
     assert not missing, f"AntsRegistrationSettings fields nothing reads: {missing}"
-
-
-def test_ants_settings_defaults_match_preprocess_zyx():
-    """Preprocessing defaults must agree with ``preprocess_zyx``, which consumes them."""
-    from biahub.registration.methods.ants import preprocess_zyx
-    from biahub.settings import AntsRegistrationSettings
-
-    settings = AntsRegistrationSettings()
-    params = inspect.signature(preprocess_zyx).parameters
-    for field in AntsRegistrationSettings.model_fields:
-        assert field in params, f"{field} is not a preprocess_zyx parameter"
-        assert getattr(settings, field) == params[field].default, (
-            f"default mismatch for {field}: settings={getattr(settings, field)} "
-            f"preprocess_zyx={params[field].default}"
-        )
-
-
-@pytest.mark.parametrize("radius", [0, -0.2, 1.5])
-def test_ants_ref_mask_radius_rejects_out_of_range(radius):
-    from biahub.settings import AntsRegistrationSettings
-
-    with pytest.raises(ValidationError):
-        AntsRegistrationSettings(ref_mask_radius=radius)
 
 
 def test_example_stitch_settings(example_stitch_settings):
@@ -257,8 +235,10 @@ def test_skill_config_templates_load():
     from biahub.settings import load_estimate_transform_settings
 
     root = Path(__file__).resolve().parents[1] / ".claude" / "skills"
+    # the method templates and the benchmark's pipelines
     templates = sorted(root.glob("*/templates/estimate-transform*.yml"))
-    assert templates
+    templates += sorted(root.glob("*/templates/pipelines/*.yml"))
+    assert any(t.parent.name == "pipelines" for t in templates)
     for template in templates:
         load_estimate_transform_settings(template)
 

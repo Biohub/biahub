@@ -117,6 +117,7 @@ Some steps include an `estimate-*` command that writes a YAML of parameters you 
 | | |
 | `estimate-transform` | Estimate a transform series: registration between arms or stabilization over time |
 | `apply-transform` | Apply a transform series to positions |
+| `evaluate-transform` | Evaluate a transforms file in µm on held-out positions, against the unregistered pair |
 | `estimate-crop` | Estimate the crop region for dual-channel alignment |
 | | |
 | `estimate-stitch` | Estimate stitching parameters for positions |
@@ -158,7 +159,7 @@ biahub apply-transform    -m ./labelfree.zarr/*/*/* -c ./stabilization/transform
                           -o ./labelfree_stabilized.zarr
 
 # REGISTER (moving light-sheet onto the label-free reference; refine an existing transform
-# by giving it as `transform.seed` in the config)
+# by giving it as `transform.initial` in the config)
 biahub estimate-transform -m ./lightsheet_deskewed.zarr/0/0/0 \
                           -r ./labelfree_reconstructed.zarr/0/0/0 \
                           -c ./estimate-registration.yml -o ./registration/transforms.yml

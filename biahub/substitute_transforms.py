@@ -21,6 +21,9 @@ from biahub.cli.parsing import config_filepath, output_filepath
 from biahub.settings import TransformEntry, TransformSettings, load_transform_settings
 from biahub.utils.config import model_to_yaml
 
+# stored as a substitute's method when its file recorded none (None is the base's)
+NOT_RECORDED = "not recorded"
+
 
 def _timepoint_of(entry: TransformEntry, source: str) -> int:
     """Return the timepoint a substitute entry replaces: its `t`, else where it was estimated."""
@@ -58,13 +61,16 @@ def _substitute_list(
                 f"(it has {min(by_t)}..{max(by_t)}); pass --allow-new to add it"
             )
         old = by_t.get(t)
-        method = entry.method or sub.method
+        method = entry.method or sub.method  # None: not recorded
         by_t[t] = TransformEntry(
             t=t,
             matrix=sub._as(entry.matrix, base.direction).tolist(),  # in the base's direction
             score=entry.score,
+            report=entry.report,
             repaired_from=entry.repaired_from,
-            method=method if method != base.method else None,
+            # None reads as the base's method: say so when it is another, or unknown
+            method=None if method == base.method else method or NOT_RECORDED,
+            initialized_from=entry.initialized_from,
             # a stand-in stays one, so apply-transform still reports it
             status=entry.status,
             filled_from=entry.filled_from,
@@ -73,10 +79,11 @@ def _substitute_list(
         before = (
             "new"
             if old is None
-            else f"{old.method or base.method} (score {old.score if old.score is not None else 'n/a'})"
+            else f"{old.method or base.method or 'method not recorded'} "
+            f"(score {old.score if old.score is not None else 'n/a'})"
         )
         log.append(
-            f"{where} t={t}: {before} -> {method} (score {entry.score if entry.score is not None else 'n/a'}) from {source}"
+            f"{where} t={t}: {before} -> {method or 'method not recorded'} (score {entry.score if entry.score is not None else 'n/a'}) from {source}"
         )
     return [by_t[t] for t in sorted(by_t)]
 
