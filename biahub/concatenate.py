@@ -6,9 +6,9 @@ from typing import Annotated
 import numpy as np
 import submitit
 import typer
-import yaml
 
 from iohub import open_ome_zarr
+from iohub.ngff import Plate
 from iohub.ngff.utils import create_empty_plate, process_single_position
 from natsort import natsorted
 
@@ -18,15 +18,21 @@ from biahub.cli.parsing import (
     OutputDirpath,
     SbatchFilepath,
     cluster,
+    eat_all_groups,
     init_only,
     monitor,
     resume,
     sbatch_to_submitit,
 )
-from biahub.settings import ConcatenateSettings
+from biahub.settings import ConcatenateSettings, TimeRange
 from biahub.utils.array_ops import copy_n_paste
-from biahub.utils.cluster import echo_resources, estimate_resources, get_submitit_cluster
-from biahub.utils.config import model_to_yaml, settings_fingerprint, yaml_to_model
+from biahub.utils.cluster import (
+    apply_sbatch_overrides,
+    echo_resources,
+    estimate_resources,
+    get_submitit_cluster,
+)
+from biahub.utils.config import settings_fingerprint, yaml_to_model
 from biahub.utils.ngff import (
     PROVENANCE_METADATA_KEYS,
     get_output_paths,
@@ -46,18 +52,24 @@ def _unique_source_plates(data_paths: list[Path]) -> list[Path]:
     return plates
 
 
-def get_path_slice_param(slice_param, path_index, total_paths):
-    """
-    Determine the slice parameter for a specific path.
+def _path_slice_param(slice_param, path_index, total_paths):
+    """Select the slice specification that applies to one source.
 
-    Args:
-        slice_param: The slice parameter from settings (can be 'all', a single slice range, or per-path specifications)
-        path_index: The index of the current path
-        total_paths: The total number of paths
+    Parameters
+    ----------
+    slice_param : str | list
+        The setting for one axis: ``"all"``, a single ``[start, end]`` range that
+        applies to every source, or a list with one entry per source.
+    path_index : int
+        Index of the source among the per-source entries.
+    total_paths : int
+        Number of sources.
 
     Returns
     -------
-        The slice parameter for the current path
+    str | list
+        ``"all"`` or the ``[start, end]`` range for this source. A per-source list
+        shorter than ``total_paths`` repeats its last entry.
     """
     # Handle 'all' case
     if slice_param == "all":
@@ -76,42 +88,90 @@ def get_path_slice_param(slice_param, path_index, total_paths):
     return slice_param
 
 
-def create_path_slicing_params(path_z_slice, path_y_slice, path_x_slice, dataset_shape):
-    """
-    Create slicing parameters for a specific path.
+def _path_slicing_params(path_z_slice, path_y_slice, path_x_slice, dataset_shape):
+    """Build the ZYX slice objects for one source.
 
-    Args:
-        path_z_slice: The Z slice parameter for the path
-        path_y_slice: The Y slice parameter for the path
-        path_x_slice: The X slice parameter for the path
-        dataset_shape: The shape of the dataset
+    Parameters
+    ----------
+    path_z_slice, path_y_slice, path_x_slice : str | list
+        Per-axis specification for this source, ``"all"`` or ``[start, end]``.
+    dataset_shape : tuple[int, ...]
+        TCZYX shape of the source, which bounds an ``"all"`` slice.
 
     Returns
     -------
-        A list of slice objects [z_slice, y_slice, x_slice]
+    list[slice]
+        ``[z_slice, y_slice, x_slice]``.
     """
-    z_slice = get_slice(path_z_slice, dataset_shape[2])
-    y_slice = get_slice(path_y_slice, dataset_shape[3])
-    x_slice = get_slice(path_x_slice, dataset_shape[4])
+    z_slice = _slice(path_z_slice, dataset_shape[2])
+    y_slice = _slice(path_y_slice, dataset_shape[3])
+    x_slice = _slice(path_x_slice, dataset_shape[4])
     return [z_slice, y_slice, x_slice]
 
 
-def get_channel_combiner_metadata(
-    data_paths_list: list[str],
-    processing_channel_names: list[str],
+def _expand_source_globs(concat_data_paths: list[str]) -> list[list[Path]]:
+    """Expand the config's per-source globs into per-source position lists.
+
+    Filters to directories so that per-group ``zarr.json`` metadata files
+    (OME-Zarr v0.5 / zarr v3) aren't picked up by wildcards like ``*/*/*``.
+    """
+    groups = []
+    for pattern in concat_data_paths:
+        group = [Path(p) for p in natsorted(glob.glob(pattern)) if Path(p).is_dir()]
+        if not group:
+            raise ValueError(f"No positions matched concat_data_paths entry {pattern!r}.")
+        groups.append(group)
+    return groups
+
+
+def _validate_per_source_lengths(settings: ConcatenateSettings, num_sources: int) -> None:
+    """Per-source lists must have one entry per source.
+
+    ``ConcatenateSettings`` can only check this against ``concat_data_paths``;
+    when the sources come from ``-i`` the count is first known here.
+    """
+    if isinstance(settings.channel_names, list) and len(settings.channel_names) != num_sources:
+        raise ValueError(
+            f"channel_names has {len(settings.channel_names)} entries for {num_sources} "
+            "sources. Use 'all' or one entry per source."
+        )
+    for name in ("Z_slice", "Y_slice", "X_slice"):
+        value = getattr(settings, name)
+        is_single_range = (
+            isinstance(value, list)
+            and len(value) == 2
+            and all(isinstance(i, int) for i in value)
+        )
+        if isinstance(value, list) and not is_single_range and len(value) != num_sources:
+            raise ValueError(
+                f"{name} has {len(value)} entries for {num_sources} sources. Use 'all', "
+                "a single [start, end] range, or one entry per source."
+            )
+
+
+def _channel_combiner_metadata(
+    source_groups: list[list[Path]],
+    processing_channel_names: list[str | list[str]] | str,
     slicing_params: list,
 ):
-    """
-    Get metadata for channel combination.
+    """Resolve which channels of which source go where in the output.
 
-    Args:
-        data_paths_list: List of data paths
-        processing_channel_names: List of channel names to process
-        slicing_params: List of slicing parameters [Z_slice, Y_slice, X_slice]
+    Parameters
+    ----------
+    source_groups : list[list[Path]]
+        One list of position paths per source store.
+    processing_channel_names : str | list[str | list[str]]
+        ``"all"`` (every channel of every source) or one entry per source, each
+        ``"all"`` or the channel names to take from it.
+    slicing_params : list
+        ``[Z_slice, Y_slice, X_slice]`` settings.
 
     Returns
     -------
-        Tuple of (all_data_paths, all_channel_names, input_channel_idx, output_channel_idx, all_slicing_params)
+    tuple
+        ``(all_data_paths, all_channel_names, input_channel_idx, output_channel_idx,
+        all_slicing_params)``, each per source position except the output
+        channel names.
     """
     all_data_paths = []
     all_channel_names = []
@@ -123,34 +183,28 @@ def get_channel_combiner_metadata(
     # Unpack slicing parameters
     z_slice_param, y_slice_param, x_slice_param = slicing_params
 
-    # Expand the data paths. Filter to directories so that per-group
-    # `zarr.json` metadata files (OME-Zarr v0.5 / zarr v3) aren't picked up
-    # by wildcards like "*/*/*".
-    expanded_paths = []
-    for paths in data_paths_list:
-        expanded_paths.append(
-            [Path(path) for path in natsorted(glob.glob(paths)) if Path(path).is_dir()]
-        )
+    if processing_channel_names == "all":
+        processing_channel_names = ["all"] * len(source_groups)
 
     # Flatten the expanded paths
-    all_data_paths = [path for paths in expanded_paths for path in paths]
+    all_data_paths = [path for paths in source_groups for path in paths]
 
     # For each original path, determine the appropriate slice specifications
     for i, (paths, per_datapath_channels) in enumerate(
-        zip(expanded_paths, processing_channel_names, strict=True)
+        zip(source_groups, processing_channel_names, strict=True)
     ):
         # NOTE: taking first file as sample to get the channel names
         dataset = open_ome_zarr(paths[0])
         channel_names = dataset.channel_names
 
         # Determine the slice specifications for this path
-        path_z_slice = get_path_slice_param(z_slice_param, i, len(data_paths_list))
-        path_y_slice = get_path_slice_param(y_slice_param, i, len(data_paths_list))
-        path_x_slice = get_path_slice_param(x_slice_param, i, len(data_paths_list))
+        path_z_slice = _path_slice_param(z_slice_param, i, len(source_groups))
+        path_y_slice = _path_slice_param(y_slice_param, i, len(source_groups))
+        path_x_slice = _path_slice_param(x_slice_param, i, len(source_groups))
 
         # Create slicing parameters for each path in this group
         for _ in range(len(paths)):
-            slicing_params = create_path_slicing_params(
+            slicing_params = _path_slicing_params(
                 path_z_slice, path_y_slice, path_x_slice, dataset.data.shape
             )
             all_slicing_params.append(slicing_params)
@@ -170,12 +224,14 @@ def get_channel_combiner_metadata(
                     output_channel_indices.append(out_chan_idx_counter)
                     out_chan_idx_counter += 1
                 else:
+                    # A channel name seen in an earlier source shares that
+                    # source's output channel. Only valid when the two write
+                    # different positions; _check_no_overwrites() enforces it.
                     typer.echo(
-                        f"Warning: Channel {channel} already exists. Skipping and using index from the first entry."
+                        f"Warning: Channel {channel} appears in more than one source; "
+                        "they share one output channel."
                     )
-                    # Set the out_chan_idx_counter to the index of the channel in the all_channel_names list
-                    out_chan_idx_counter = all_channel_names.index(channel)
-                    output_channel_indices.append(out_chan_idx_counter)
+                    output_channel_indices.append(all_channel_names.index(channel))
                 input_channel_indices.append(channel_names.index(channel))
 
         dataset.close()
@@ -186,7 +242,7 @@ def get_channel_combiner_metadata(
 
     # Validate that all slicing parameters produce the same output size
     if len(all_slicing_params) > 1:
-        validate_slicing_params_zyx(all_slicing_params)
+        _validate_slicing_params_zyx(all_slicing_params)
 
     typer.echo(f"Channel names: {all_channel_names}")
     typer.echo(f"Input channel indices: {input_channel_idx}")
@@ -201,17 +257,24 @@ def get_channel_combiner_metadata(
     )
 
 
-def get_slice(slice_param, max_value: int):
-    """
-    Convert slice parameters to slice objects.
+def _slice(slice_param, max_value: int) -> slice:
+    """Convert one axis specification to a slice object.
 
-    Args:
-        slice_param: Can be 'all' or a single slice range [start, end]
-        max_value: Maximum value for the dimension
+    Parameters
+    ----------
+    slice_param : str | list
+        ``"all"`` or a single ``[start, end]`` range.
+    max_value : int
+        Extent of the axis, the stop of an ``"all"`` slice.
 
     Returns
     -------
-        A slice object
+    slice
+
+    Raises
+    ------
+    ValueError
+        If ``slice_param`` is neither ``"all"`` nor a two-integer list.
     """
     # Handle 'all' case
     if slice_param == "all":
@@ -228,11 +291,22 @@ def get_slice(slice_param, max_value: int):
     raise ValueError(f"Invalid slice parameter: {slice_param}")
 
 
-def validate_slicing_params_zyx(slicing_params_zyx_list: list[list[slice, slice, slice]]):
-    """Validate that all slicing parameters are the same for a given dimension."""
-    first_slice_size = calculate_cropped_size(slicing_params_zyx_list[0])
+def _validate_slicing_params_zyx(slicing_params_zyx_list: list[list[slice]]) -> None:
+    """Check that every source crops to the same ZYX size.
+
+    Parameters
+    ----------
+    slicing_params_zyx_list : list[list[slice]]
+        One ``[z_slice, y_slice, x_slice]`` per source position.
+
+    Raises
+    ------
+    ValueError
+        If any source's cropped size differs from the first's.
+    """
+    first_slice_size = _cropped_size(slicing_params_zyx_list[0])
     for i, slice_obj in enumerate(slicing_params_zyx_list[1:], 1):
-        slice_size = calculate_cropped_size(slice_obj)
+        slice_size = _cropped_size(slice_obj)
         if slice_size != first_slice_size:
             raise ValueError(
                 f"Inconsistent slice sizes detected. Path 0 has size {first_slice_size}, "
@@ -240,18 +314,18 @@ def validate_slicing_params_zyx(slicing_params_zyx_list: list[list[slice, slice,
             )
 
 
-def calculate_cropped_size(
-    slice_params_zyx: list[slice, slice, slice],
-) -> tuple[int, int, int]:
-    """
-    Calculate the size of a dimension after cropping.
+def _cropped_size(slice_params_zyx: list[slice]) -> tuple[int, int, int]:
+    """Size of a volume after cropping.
 
-    Args:
-        slice_params_zyx: A list of slice parameters for the Z, Y, and X dimensions
+    Parameters
+    ----------
+    slice_params_zyx : list[slice]
+        ``[z_slice, y_slice, x_slice]``.
 
     Returns
     -------
-        A tuple of the size of the dimension after cropping for the Z, Y, and X dimensions
+    tuple[int, int, int]
+        The cropped ZYX shape.
     """
     # Calculate the size of each dimension by taking the absolute difference between stop and start
     z_size = abs(slice_params_zyx[0].stop - slice_params_zyx[0].start)
@@ -264,33 +338,157 @@ def calculate_cropped_size(
     return cropped_shape_zyx
 
 
-def _resolve_time_indices(settings: ConcatenateSettings, all_shapes: list[tuple]) -> list[int]:
-    """Resolve input time indices from settings and shapes."""
-    T = all_shapes[0][0]
+def _time_indices_label(time_indices) -> str:
+    """``time_indices`` as written in the config, for log messages."""
+    if isinstance(time_indices, TimeRange):
+        step = f", step: {time_indices.step}" if time_indices.step != 1 else ""
+        return f"{{start: {time_indices.start}, stop: {time_indices.stop}{step}}}"
+    return str(time_indices)
+
+
+def _resolve_time_indices(
+    settings: ConcatenateSettings, all_shapes: list[tuple], all_data_paths: list[Path]
+) -> list[int]:
+    """Resolve the output plate's time points from settings and shapes.
+
+    ``"all"`` means every time point of every source, so the sources must all
+    have the same number. When they differ, the choice has to be explicit:
+    ``"min"`` crops to the shortest source, ``"max"`` keeps the longest, and a
+    range, list or single index picks the time points. A source that lacks a
+    time point the plate has leaves it unwritten (the fill value, 0); see
+    ``_resolve_concatenate_inputs``, which also checks explicit indices
+    against the longest source.
+
+    Raises
+    ------
+    ValueError
+        If ``time_indices`` is ``"all"`` and the sources' numbers of time points
+        differ.
+    """
+    source_T = [shape[0] for shape in all_shapes]
+    T = min(source_T)
     if settings.time_indices == "all":
-        if not all(s[0] == T for s in all_shapes):
-            typer.echo(
-                "Warning: Datasets have different number of time points. "
-                "Taking the smallest number of time points."
+        if len(set(source_T)) > 1:
+            example_path = {}
+            for path, num_t in zip(all_data_paths, source_T, strict=True):
+                example_path.setdefault(num_t, path)
+            listing = "\n".join(
+                f"  {num_t} time points, e.g. {path}"
+                for num_t, path in sorted(example_path.items())
             )
-        T = min(s[0] for s in all_shapes)
+            raise ValueError(
+                "time_indices is 'all' but the sources have different numbers of time "
+                f"points:\n{listing}\nSet time_indices: min to crop to the first {T}, "
+                f"or time_indices: {{start: 0, stop: {T}}} (with an optional step); or "
+                "time_indices: max to keep them all and pad the shorter sources with "
+                "zeros."
+            )
         return list(range(T))
-    elif isinstance(settings.time_indices, list):
+    if settings.time_indices == "min":
+        return list(range(T))
+    if settings.time_indices == "max":
+        return list(range(max(source_T)))
+    if isinstance(settings.time_indices, TimeRange):
+        time_range = settings.time_indices
+        return list(range(time_range.start, time_range.stop, time_range.step))
+    if isinstance(settings.time_indices, list):
         return settings.time_indices
-    elif isinstance(settings.time_indices, int):
-        return [settings.time_indices]
-    return list(range(T))
+    return [settings.time_indices]
 
 
-def _prepare_concatenate(settings: ConcatenateSettings, output_dirpath: Path) -> dict:
-    """Derive metadata and create the output plate.
+def _check_no_overwrites(
+    all_data_paths: list[Path],
+    output_position_paths: list[Path],
+    output_channel_idx_list: list[list[int]],
+    all_channel_names: list[str],
+) -> None:
+    """Refuse a mapping that writes one channel of one output position twice.
+
+    Sources may share a channel name: they then share that output channel,
+    which is how positions from several stores are merged into one plate. When
+    two of them also land on the same output position, the second write would
+    silently overwrite the first.
+
+    Raises
+    ------
+    ValueError
+        If two source positions write the same channel of the same output position.
+    """
+    writer = {}
+    for source, output_position, output_channels in zip(
+        all_data_paths, output_position_paths, output_channel_idx_list, strict=True
+    ):
+        for channel_idx in output_channels:
+            key = (output_position, channel_idx)
+            if key in writer:
+                raise ValueError(
+                    f"Channel {all_channel_names[channel_idx]!r} of output position "
+                    f"{'/'.join(output_position.parts[-3:])} would be written by both "
+                    f"{writer[key]} and {source}, and the second would overwrite the "
+                    "first. Take the channel from only one source (channel_names), or "
+                    "set ensure_unique_positions: true to keep them as separate positions."
+                )
+            writer[key] = source
+
+
+@eat_all_groups
+def _validate_source_groups(value: list[tuple[str, ...]] | None) -> list[list[Path]] | None:
+    """Each ``-i`` occurrence is one source store's positions."""
+    if not value:
+        return None
+    groups = []
+    for group in value:
+        paths = [p for p in map(Path, natsorted(group)) if p.is_dir()]
+        if not paths:
+            raise typer.BadParameter(f"No position directories in {list(group)}")
+        with open_ome_zarr(paths[0], mode="r") as dataset:
+            if isinstance(dataset, Plate):
+                raise typer.BadParameter(
+                    f"{paths[0]} is an HCS plate; supply positions, e.g. {paths[0]}/*/*/*"
+                )
+        groups.append(paths)
+    return groups
+
+
+# ``-i``, repeated once per source store.
+#
+# Concatenate's own variant of ``biahub.cli.parsing.InputPositionDirpaths``: that one
+# flattens every ``-i`` into a single list, whereas here the i-th ``-i`` is the i-th
+# source and pairs with the i-th per-source entry of the config (channel_names,
+# X/Y/Z_slice). Each occurrence eats the paths a shell glob expands to, up to the next
+# option, so ``-i a.zarr/*/*/* -i b.zarr/*/*/*`` and ``-i a.zarr/A/1/0 -i b.zarr/A/1/0``
+# both parse as two groups.
+SourceGroupDirpaths = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--input-position-dirpaths",
+        "-i",
+        callback=_validate_source_groups,
+        help=(
+            "Positions of ONE source store; repeat once per store, in the order of "
+            'the config\'s per-source entries. For example "-i a.zarr/*/*/* -i b.zarr/*/*/*" '
+            'or, for a single position, "-i a.zarr/A/1/0 -i b.zarr/A/1/0". Overrides '
+            "concat_data_paths in the config."
+        ),
+    ),
+]
+
+
+def _resolve_concatenate_inputs(
+    settings: ConcatenateSettings,
+    output_dirpath: Path,
+    source_groups: list[list[Path]],
+) -> dict:
+    """Resolve the per-source-position work list and the output plate geometry.
 
     Runs the channel/slice metadata resolution (the expensive
-    ``get_channel_combiner_metadata`` call), creates the output plate, and
-    returns everything the submit loop needs plus the input ``shape`` used by
-    ``concatenate`` to estimate SLURM resources. ``create_empty_plate`` is
-    idempotent, so calling this from both ``--init`` and the full run is safe.
+    ``_channel_combiner_metadata`` call) and reads each source position's
+    shape, dtype and scale. It reads METADATA only and writes nothing, so every
+    mode calls it: the full run and ``--init`` hand the result to
+    ``_init_output_plate``; a per-position worker (``-i`` naming one position
+    per source) gets a one-position work list from the same code.
     """
+    _validate_per_source_lengths(settings, len(source_groups))
     slicing_params = [settings.Z_slice, settings.Y_slice, settings.X_slice]
     (
         all_data_paths,
@@ -298,14 +496,15 @@ def _prepare_concatenate(settings: ConcatenateSettings, output_dirpath: Path) ->
         input_channel_idx_list,
         output_channel_idx_list,
         all_slicing_params,
-    ) = get_channel_combiner_metadata(
-        settings.concat_data_paths, settings.channel_names, slicing_params
-    )
+    ) = _channel_combiner_metadata(source_groups, settings.channel_names, slicing_params)
 
     output_position_paths = get_output_paths(
         all_data_paths,
         output_dirpath,
         ensure_unique_positions=settings.ensure_unique_positions,
+    )
+    _check_no_overwrites(
+        all_data_paths, output_position_paths, output_channel_idx_list, all_channel_names
     )
 
     all_shapes = []
@@ -347,7 +546,84 @@ def _prepare_concatenate(settings: ConcatenateSettings, output_dirpath: Path) ->
         typer.echo("Warning: not all dtypes match. Casting data at float32.")
         dtype = np.float32
 
-    input_time_indices = _resolve_time_indices(settings, all_shapes)
+    input_time_indices = _resolve_time_indices(settings, all_shapes, all_data_paths)
+
+    # Explicit indices are checked against the longest source when the plate
+    # is created. A per-position worker only sees its own sources, so it
+    # cannot tell what T the other positions have: the plate that --init
+    # created over every position is the authority. Its own sources may have
+    # fewer time points than the plate under "max" or an explicit selection
+    # (padded below) and more under "min"; anything else means the plate was
+    # not made from these sources.
+    #
+    # The upper bound is only relaxed for the selection the plate was created
+    # with, which its `biahub-concatenate` record holds: that one was checked
+    # against every source. Any other selection into an existing plate (a
+    # changed config, or a plate from before the record) is checked against
+    # the sources this run sees.
+    label = _time_indices_label(settings.time_indices)
+    mode = settings.time_indices if settings.time_indices in ("all", "min", "max") else None
+    first_output = output_position_paths[0]
+    validated_at_init = False
+    if first_output.is_dir():
+        with open_ome_zarr(first_output, mode="r") as existing:
+            plate_T = existing.data.shape[0]
+            record = existing.zattrs.get("biahub-concatenate") or {}
+        validated_at_init = record.get("time_indices") == settings.model_dump()["time_indices"]
+    if not validated_at_init:
+        longest = max(shape[0] for shape in all_shapes)
+        out_of_range = [t for t in input_time_indices if t >= longest]
+        if out_of_range:
+            raise ValueError(
+                f"time_indices {out_of_range} are out of range: the longest source has "
+                f"{longest} time points (0 to {longest - 1})."
+            )
+    if first_output.is_dir():
+        num_t = len(input_time_indices)
+        mismatch = {
+            "all": num_t != plate_T,
+            "min": num_t < plate_T,
+            "max": num_t > plate_T,
+            None: num_t != plate_T,
+        }
+        if mismatch[mode]:
+            raise ValueError(
+                f"Sources have {num_t} time points with time_indices {label} but "
+                f"{output_dirpath} was created with {plate_T}."
+            )
+        if mode is not None:
+            input_time_indices = list(range(plate_T))
+
+    # Each source position copies the plate's time points it has; the ones it
+    # lacks stay at the fill value. Log both ways data does not go one-to-one:
+    # a source padded at the end, and time points a source has that are not
+    # taken.
+    input_time_indices_list = []
+    output_time_indices_list = []
+    padded_time_indices_list = []
+    num_cropped = 0
+    for path, shape in zip(all_data_paths, all_shapes, strict=True):
+        kept = [(t, i) for i, t in enumerate(input_time_indices) if t < shape[0]]
+        input_time_indices_list.append([t for t, _ in kept])
+        output_time_indices_list.append([i for _, i in kept])
+        padded_time_indices_list.append(
+            [i for i, t in enumerate(input_time_indices) if t >= shape[0]]
+        )
+        if len(kept) < len(input_time_indices):
+            typer.echo(
+                f"time_indices {label}: padding {path}: it has {shape[0]} time points, "
+                f"so {len(input_time_indices) - len(kept)} of the {len(input_time_indices)} "
+                "taken stay zero."
+            )
+        if len(kept) < shape[0]:
+            num_cropped += 1
+    if num_cropped:
+        typer.echo(
+            f"time_indices {label}: cropping: {num_cropped} of {len(all_data_paths)} source "
+            f"positions have time points that are not taken (up to "
+            f"{max(shape[0] for shape in all_shapes)}; {len(input_time_indices)} taken), "
+            "and those are left out."
+        )
 
     # If input shapes differ but slicing is specified, inform the user
     if not all(shape[-3:] == all_shapes[0][-3:] for shape in all_shapes):
@@ -355,7 +631,7 @@ def _prepare_concatenate(settings: ConcatenateSettings, output_dirpath: Path) ->
             "Warning: Datasets have different shapes, but slicing parameters are specified. Will validate output shapes after cropping."
         )
 
-    cropped_shape_zyx = calculate_cropped_size(all_slicing_params[0])
+    cropped_shape_zyx = _cropped_size(all_slicing_params[0])
     if cropped_shape_zyx[0] > Z or cropped_shape_zyx[1] > Y or cropped_shape_zyx[2] > X:
         raise ValueError("The cropped shape is larger than the original shape.")
 
@@ -367,7 +643,7 @@ def _prepare_concatenate(settings: ConcatenateSettings, output_dirpath: Path) ->
     output_metadata = {
         "shape": (len(input_time_indices), len(all_channel_names)) + tuple(cropped_shape_zyx),
         "chunks": chunk_size,
-        "shards_ratio": settings.shards_ratio,
+        "shards": settings.shards,
         "version": resolve_ome_zarr_version(
             all_data_paths[0], settings.output_ome_zarr_version
         ),
@@ -376,105 +652,160 @@ def _prepare_concatenate(settings: ConcatenateSettings, output_dirpath: Path) ->
         "dtype": dtype,
     }
 
-    source_plates = _unique_source_plates(all_data_paths)
-    create_empty_plate(
-        store_path=output_dirpath,
-        position_keys=[p.parts[-3:] for p in output_position_paths],
-        metadata_sources=list(reversed(source_plates)),
-        metadata_keys=PROVENANCE_METADATA_KEYS,
-        **output_metadata,
-    )
-    typer.echo(f"Created {output_dirpath} ({len(output_position_paths)} positions)")
-
     return {
         "all_data_paths": all_data_paths,
         "output_position_paths": output_position_paths,
         "input_channel_idx_list": input_channel_idx_list,
         "output_channel_idx_list": output_channel_idx_list,
         "all_slicing_params": all_slicing_params,
-        "input_time_indices": input_time_indices,
+        "input_time_indices_list": input_time_indices_list,
+        "output_time_indices_list": output_time_indices_list,
+        "padded_time_indices_list": padded_time_indices_list,
+        # Before this run touches the plate: only a position that already
+        # existed can hold data in a slot this run pads.
+        "preexisting_outputs": {p for p in output_position_paths if p.is_dir()},
         "shape": (T, C, Z, Y, X),
+        "output_metadata": output_metadata,
     }
 
 
-def _resolve_concatenate_config(
-    config_path: Path,
-    output_config: Path,
-    concat_data_paths: tuple[str, ...],
-):
-    """Fill in concat_data_paths and write the resolved config.
+def _init_output_plate(
+    prep: dict, settings: ConcatenateSettings, output_dirpath: Path
+) -> None:
+    """Create the output positions that do not exist yet, stamping provenance once.
 
-    The source config's ``concat_data_paths`` is a placeholder — typically left
-    blank so Nextflow can inject the upstream store paths at runtime — so the
-    override is applied to the raw YAML *before* validation. ConcatenateSettings
-    requires ``concat_data_paths`` to be a non-empty list, which a blank
-    placeholder is not.
+    Only positions missing from the plate are created, so the
+    ``biahub-concatenate`` record is written exactly once per position: by the
+    full run or by ``--init``. A per-position Nextflow worker finds its position
+    already scaffolded and writes nothing here. (``create_empty_plate`` would
+    otherwise re-stamp every position it is handed on every call, and N
+    workers re-stamping is N writes per position racing on the same zattrs.)
     """
-    with open(config_path) as f:
-        raw = yaml.safe_load(f)
-    raw["concat_data_paths"] = list(concat_data_paths)
-    settings = ConcatenateSettings(**raw)
-    model_to_yaml(settings, output_config)
-    typer.echo(f"Resolved config written to {output_config}")
+    missing = {p.parts[-3:] for p in prep["output_position_paths"] if not p.is_dir()}
+    if not missing:
+        return
+    source_plates = _unique_source_plates(prep["all_data_paths"])
+    create_empty_plate(
+        store_path=output_dirpath,
+        position_keys=sorted(missing),
+        metadata_sources=list(reversed(source_plates)),
+        metadata_keys=PROVENANCE_METADATA_KEYS,
+        extra_metadata={"biahub-concatenate": settings.model_dump()},
+        **prep["output_metadata"],
+    )
+    typer.echo(f"Created {len(missing)} positions in {output_dirpath}")
+
+
+def _clear_padding(prep: dict) -> None:
+    """Zero the padded slots of output positions that existed before this run.
+
+    Padding is the time points a source lacks, left unwritten so they read as
+    the fill value. That only holds in a fresh position: one written by an
+    earlier run, with another time selection or a source that has since
+    shrunk, keeps whatever that run put there. So in an existing position each
+    source's output channels are cleared at the time points it pads.
+    """
+    for output_position_path, output_channel_idx, padded_time_indices in zip(
+        prep["output_position_paths"],
+        prep["output_channel_idx_list"],
+        prep["padded_time_indices_list"],
+        strict=True,
+    ):
+        if not padded_time_indices or output_position_path not in prep["preexisting_outputs"]:
+            continue
+        with open_ome_zarr(output_position_path, mode="r+") as position:
+            for t in padded_time_indices:
+                for c in output_channel_idx:
+                    position.data[t, c] = 0
+        typer.echo(
+            f"Cleared padded time points {padded_time_indices} of channels "
+            f"{output_channel_idx} in existing {output_position_path}"
+        )
 
 
 def concatenate(
-    settings: ConcatenateSettings,
+    input_position_dirpaths: list[list[Path]] | None,
+    config_filepath: Path,
     output_dirpath: Path,
     sbatch_filepath: str | None = None,
     cluster: str = "slurm",
-    block: bool = False,
     monitor: bool = True,
     init_only: bool = False,
     resume: bool = False,
 ):
-    """Concatenate datasets (with optional cropping).
+    """Concatenate datasets channel-wise (with optional cropping).
 
     Parameters
     ----------
-    settings : ConcatenateSettings
-        Configuration settings for concatenation
+    input_position_dirpaths : list[list[Path]] | None
+        Source positions, one list per source store, in the order of the config's
+        per-source entries (channel_names, X/Y/Z_slice). Takes precedence over
+        ``concat_data_paths`` in the config; None expands the config's globs.
+        One position per store is the per-position worker mode Nextflow fans
+        out over.
+    config_filepath : Path
+        Path to YAML configuration file.
     output_dirpath : Path
-        Path to the output dataset
-    sbatch_filepath : str | None, optional
-        Path to the SLURM batch file, by default None
+        Path to "output.zarr" directory.
+    sbatch_filepath : str, optional
+        SBATCH filepath that contains slurm parameters to overwrite defaults.
+        For example, '#SBATCH --mem-per-cpu=16G' will override the default memory per CPU.
     cluster : str, optional
-        Execution cluster: 'slurm' submits to a Slurm cluster, 'local' runs jobs
-        as subprocesses on this machine, 'debug' runs jobs in-process in the
-        foreground. By default 'slurm'.
-    block : bool, optional
-        Whether to block until all the jobs are complete,
-        by default False
+        Execution cluster: 'slurm' submits to a Slurm cluster, 'local' runs jobs as
+        subprocesses on this machine, 'debug' runs jobs in-process in the foreground.
     monitor : bool, optional
-        Whether to monitor the jobs, by default True
+        Monitor of submitted SLURM jobs.
     init_only : bool, optional
-        Only create the output store and emit RESOURCES, then exit; skip the
-        per-position copy. By default False.
+        Only initialize the output store and exit; skip per-position processing.
     resume : bool, optional
         Skip the (time, channel) units a previous attempt already finished,
-        rather than recopying the whole plate. This step is a single long job
-        covering every position, so a preemption or walltime kill near the end
-        otherwise discards hours of work. See
-        ``iohub.ngff.utils.process_single_position``.
+        rather than recopying the position. For retrying an interrupted run;
+        see ``iohub.ngff.utils.process_single_position``.
     """
+    output_dirpath = Path(output_dirpath)
     slurm_out_path = output_dirpath.parent / "slurm_output"
 
-    prep = _prepare_concatenate(settings, output_dirpath)
-    input_time_indices = prep["input_time_indices"]
+    settings = yaml_to_model(config_filepath, ConcatenateSettings)
+    if input_position_dirpaths is not None:
+        source_groups = [list(map(Path, group)) for group in input_position_dirpaths]
+    elif settings.concat_data_paths:
+        source_groups = _expand_source_globs(settings.concat_data_paths)
+    else:
+        raise ValueError(
+            "No sources: pass one -i per source store, or set concat_data_paths in the config."
+        )
 
-    T, C, Z, Y, X = prep["shape"]
-    batch_size = settings.shards_ratio[0] if settings.shards_ratio else 1
-    _, num_cpus, gb_ram_per_cpu = estimate_resources(
-        shape=(T // batch_size, C, Z, Y, X),
+    prep = _resolve_concatenate_inputs(settings, output_dirpath, source_groups)
+    _init_output_plate(prep, settings, output_dirpath)
+
+    # Per-position resources, estimated once. Calibrated on 2026_08_11 A549
+    # SEC61B (67 T x 6 C, 5-T shards): RAM tracks the worker count (~16 GB per
+    # in-flight shard unit), and the fan-out is bound by shared filesystem
+    # bandwidth, not cores (<3 of 16 busy), so 8 workers per task suffice.
+    # 16-worker tasks took 7-26 min; 0.15 min/volume budgets 60 min here.
+    T_out, C_out, _, _, _ = prep["output_metadata"]["shape"]
+    _, _, Z, Y, X = prep["shape"]
+    # iohub writes one shard's timepoints per unit, so the shard's T extent is the
+    # batch a worker holds. Read it back from the plate init just created rather than
+    # predicting it: the config may give the shards as a size target.
+    with open_ome_zarr(output_dirpath, layout="hcs", mode="r") as output_plate:
+        _, first_position = next(output_plate.positions())
+        batch_size = (first_position.data.shards or first_position.data.chunks)[0]
+    time_minutes, num_cpus, gb_ram_per_cpu = estimate_resources(
+        shape=(max(T_out // batch_size, 1), C_out, Z, Y, X),
         ram_multiplier=8 * batch_size,
-        max_num_cpus=16,
+        time_multiplier=0.15 * batch_size,
+        max_num_cpus=8,
     )
     mem_gb = num_cpus * gb_ram_per_cpu
-    time_minutes = 360
-    echo_resources(num_cpus, mem_gb, time_minutes=time_minutes)
+    echo_resources(num_cpus, mem_gb, time_minutes)
 
     if init_only:
+        num_positions = len({p.parts[-3:] for p in prep["output_position_paths"]})
+        typer.echo(f"Initialized {output_dirpath} ({num_positions} positions)")
         return
+
+    _clear_padding(prep)
 
     # Prepare SLURM arguments
     slurm_args = {
@@ -488,15 +819,20 @@ def concatenate(
 
     # Override defaults if sbatch_filepath is provided
     if sbatch_filepath:
-        slurm_args.update(sbatch_to_submitit(sbatch_filepath))
+        slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
     resolved_cluster = get_submitit_cluster(cluster=cluster)
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     executor.update_parameters(**slurm_args)
 
-    typer.echo(f"Submitting {resolved_cluster} jobs...")
+    typer.echo("Submitting jobs...")
     jobs = []
+    job_paths = []
 
+    # One job per SOURCE position: with three source stores an output position
+    # is written by three jobs, each owning the disjoint channel range it
+    # contributes. A per-position worker runs exactly those jobs.
     with submitit.helpers.clean_env(), executor.batch():
         for (
             input_position_path,
@@ -504,25 +840,21 @@ def concatenate(
             input_channel_idx,
             output_channel_idx,
             zyx_slicing_params,
+            input_time_indices,
+            output_time_indices,
         ) in zip(
             prep["all_data_paths"],
             prep["output_position_paths"],
             prep["input_channel_idx_list"],
             prep["output_channel_idx_list"],
             prep["all_slicing_params"],
+            prep["input_time_indices_list"],
+            prep["output_time_indices_list"],
             strict=True,
         ):
-            # Preserve extra_metadata written by create_empty_plate's
-            # metadata_sources — process_single_position overwrites it with None
-            # when the kwarg is absent (iohub <= 0.3.7) — and record this step's
-            # own provenance alongside it.
-            with open_ome_zarr(str(output_position_path), layout="fov", mode="r") as pos:
-                existing_extra = pos.zattrs.get("extra_metadata")
-            merged_extra = {
-                **(existing_extra or {}),
-                "biahub-concatenate": settings.model_dump(),
-            }
-
+            if not input_time_indices:
+                # The source has none of the time points taken: all padding.
+                continue
             job = executor.submit(
                 process_single_position,
                 copy_n_paste,
@@ -531,14 +863,14 @@ def concatenate(
                 input_channel_indices=input_channel_idx,
                 output_channel_indices=output_channel_idx,
                 input_time_indices=input_time_indices,
-                output_time_indices=list(range(len(input_time_indices))),
+                output_time_indices=output_time_indices,
                 num_workers=slurm_args["slurm_cpus_per_task"],
                 resume=resume,
                 resume_token=settings_fingerprint(settings),
-                extra_metadata=merged_extra,
                 zyx_slicing_params=zyx_slicing_params,
             )
             jobs.append(job)
+            job_paths.append(input_position_path)
 
     job_ids = [job.job_id for job in jobs]  # Access job IDs after batch submission
 
@@ -547,14 +879,23 @@ def concatenate(
     with log_path.open("w") as log_file:
         log_file.write("\n".join(job_ids))
 
-    if block:
-        _ = [job.result() for job in jobs]
+    # submitit's DebugExecutor is lazy: .submit() wraps the callable in a
+    # DebugJob but execution only happens when .wait()/.done()/.result() is
+    # called. Run each one in the foreground and stream progress; monitor's
+    # async polling UI is pointless against synchronous in-process jobs.
+    if resolved_cluster == "debug":
+        for job, path in zip(jobs, job_paths, strict=True):
+            job.wait()
+            typer.echo(f"Concatenate complete: {path}")
+        return
 
     if monitor:
-        monitor_jobs(jobs, prep["all_data_paths"])
+        monitor_jobs(jobs, job_paths)
 
 
 def concatenate_cli(
+    *,
+    input_position_dirpaths: SourceGroupDirpaths = None,
     config_filepath: ConfigFilepath,
     output_dirpath: OutputDirpath,
     sbatch_filepath: SbatchFilepath = None,
@@ -562,69 +903,29 @@ def concatenate_cli(
     monitor: monitor = False,
     init_only: init_only = False,
     resume: resume = False,
-    *,
-    concat_data_paths: Annotated[
-        list[str],
-        typer.Option(
-            "--concat-data-paths",
-            default_factory=list,
-            help=(
-                "Resolve mode: inject these concat_data_paths into the config and write "
-                "the resolved config to -o (a YAML file), then exit. Repeat the flag once "
-                "per source store."
-            ),
-        ),
-    ],
 ):
-    r"""Concatenate datasets (with optional cropping).
+    """Concatenate datasets channel-wise (with optional cropping).
+
+    Sources come from one -i per store (or from concat_data_paths in the config).
 
     \b
-    Full end-to-end (SLURM fan-out):
-    >>> biahub concatenate -c ./concat.yml -o ./output.zarr
+    SLURM fan-out of positions across whole plates:
+    >>> biahub concatenate -i ./deskew.zarr/*/*/* -i ./phase.zarr/*/*/* -c ./concat.yml -o ./output.zarr
 
     \b
-    Resolve placeholder paths (Nextflow config prep, runs on the login node).
-    Passing --concat-data-paths selects resolve mode; -o is the resolved YAML:
-    >>> biahub concatenate \
-        -c concat.yml -o resolved.yml \
-        --concat-data-paths "deskew.zarr/*/*/*" \
-        --concat-data-paths "reconstruct.zarr/*/*/*"
+    Initialize the output plate only (e.g. before running per-position Nextflow workers):
+    >>> biahub concatenate --init -i ./deskew.zarr/*/*/* -i ./phase.zarr/*/*/* -c ./concat.yml -o ./output.zarr
 
     \b
-    Emit RESOURCES + create the output plate (Nextflow init, login node):
-    >>> biahub concatenate --init -c resolved.yml -o output.zarr
-
-    \b
-    Single-shot run on a reserved compute node (Nextflow assemble step):
-    'debug' iterates every position in-process; the CLI blocks until done.
-    >>> biahub concatenate --cluster debug -c resolved.yml -o output.zarr
-    """
-    config_path = config_filepath
-    output_path = output_dirpath
-
-    # Passing --concat-data-paths means "resolve the config": inject the paths
-    # and write the resolved config to -o (a YAML file), then exit. This is the
-    # only use of --concat-data-paths, so its presence selects resolve mode.
-    if concat_data_paths:
-        _resolve_concatenate_config(config_path, output_path, concat_data_paths)
-        return
-
-    settings = yaml_to_model(config_path, ConcatenateSettings)
-
-    # Default: full end-to-end concatenation (or --init to only create the plate
-    # and emit RESOURCES).
-    # For in-node clusters ('debug' runs in-process, 'local' spawns
-    # subprocesses) the jobs execute lazily and only run when their result is
-    # awaited, so block here — otherwise the command would return before any
-    # data is written. 'slurm' keeps the submit-and-detach behaviour (optionally
-    # followed with --monitor), matching the other CLIs.
-    block = cluster in ("debug", "local")
+    In-process run of a single position (e.g. from a Nextflow worker):
+    >>> biahub concatenate --cluster debug -i ./deskew.zarr/A/1/0 -i ./phase.zarr/A/1/0 -c ./concat.yml -o ./output.zarr
+    """  # noqa: D301
     concatenate(
-        settings=settings,
-        output_dirpath=output_path,
+        input_position_dirpaths=input_position_dirpaths,
+        config_filepath=config_filepath,
+        output_dirpath=output_dirpath,
         sbatch_filepath=sbatch_filepath,
         cluster=cluster,
-        block=block,
         monitor=monitor,
         init_only=init_only,
         resume=resume,

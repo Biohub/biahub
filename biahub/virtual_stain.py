@@ -1,5 +1,6 @@
 import json
 import time
+import warnings
 
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,12 @@ import torch
 import typer
 
 from iohub.ngff import open_ome_zarr
+from iohub.ngff._write_units import (
+    plan_write_unit,
+    progress_dir_for,
+    tracking_available,
+    unit_is_complete,
+)
 from iohub.ngff.utils import create_empty_plate
 
 from biahub.cli.monitor import monitor_jobs
@@ -21,9 +28,17 @@ from biahub.cli.parsing import (
     cluster,
     init_only,
     monitor,
+    resume,
     sbatch_to_submitit,
 )
-from biahub.utils.cluster import echo_resources, estimate_resources, get_submitit_cluster
+from biahub.utils.cluster import (
+    apply_sbatch_overrides,
+    echo_resources,
+    estimate_resources,
+    get_submitit_cluster,
+    local_executor_parameters,
+)
+from biahub.utils.config import settings_fingerprint
 from biahub.utils.ngff import (
     PROVENANCE_METADATA_KEYS,
     get_output_paths,
@@ -81,6 +96,12 @@ def load_predict_config(config_filepath: Path, data_path: Path):
     -------
     tuple
         ``(parser, cfg)`` where ``cfg`` is the validated config namespace.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``ckpt_path`` does not point to an existing file. Checked here so a
+        stale path fails at submit time rather than on the GPU node.
     """
     parser = build_predict_parser()
     cfg = parser.parse_args(
@@ -91,13 +112,108 @@ def load_predict_config(config_filepath: Path, data_path: Path):
             str(data_path),
         ]
     )
+    if not Path(cfg.ckpt_path).is_file():
+        raise FileNotFoundError(
+            f"ckpt_path does not exist or is not a file: {cfg.ckpt_path} "
+            f"(from {config_filepath})"
+        )
     return parser, cfg
+
+
+def predict_config_metadata(parser, cfg) -> dict:
+    """Return the validated predict config as a JSON-serializable dict.
+
+    What the output plate records as provenance, and what ``--resume`` keys a
+    position's finished timepoints on. ``data.init_args.data_path`` is dropped:
+    biahub injects it per position, and it is not part of the config the user
+    supplied.
+    """
+    metadata = json.loads(parser.dump(cfg, format="json"))
+    metadata.get("data", {}).get("init_args", {}).pop("data_path", None)
+    return metadata
+
+
+def _write_timepoints(
+    predict_timepoint,
+    output_position_path: Path,
+    num_timepoints: int,
+    resume: bool = False,
+    resume_token: str = "",
+) -> None:
+    """Write ``predict_timepoint(t)`` for every timepoint, one shard at a time.
+
+    Each unit is one shard's worth of timepoints across all channels, tracked
+    with iohub's write units, the same records ``process_single_position``
+    keeps for the other steps: a unit's shards are cleared before it is
+    written, so a shard torn by a killed job is replaced rather than read back,
+    and a marker beside the store records the unit once its shards are synced.
+    With ``resume=True`` a unit whose marker matches ``resume_token`` is skipped,
+    so a retry recomputes only what an interrupted attempt had not finished,
+    and a changed config recomputes everything.
+
+    ``predict_timepoint`` returns the ``(C, Z, Y, X)`` prediction for one
+    timepoint. Predictions are batched per unit, which is one timepoint for the
+    default ``(1, 1, Z, Y, X)`` shard.
+    """
+    with open_ome_zarr(str(output_position_path), mode="r") as output_dataset:
+        array = output_dataset.data
+        if resume and not tracking_available(array):
+            warnings.warn(
+                f"resume=True was requested but progress cannot be tracked for "
+                f"{output_position_path}, so every timepoint will be recomputed. "
+                "Tracking requires a local Zarr v3 (OME-Zarr v0.5) store.",
+                stacklevel=2,
+            )
+        shard_t = (array.shards or array.chunks)[0]
+        progress_dir = progress_dir_for(output_position_path)
+        plan = []
+        for start in range(0, num_timepoints, shard_t):
+            time_indices = list(range(start, min(start + shard_t, num_timepoints)))
+            unit = plan_write_unit(
+                array,
+                time_indices,
+                slice(None),
+                token=resume_token,
+                progress_dir=progress_dir,
+            )
+            done = resume and unit is not None and unit_is_complete(unit, array)
+            plan.append((time_indices, unit, done))
+
+    for time_indices, unit, done in plan:
+        if done:
+            typer.echo(f"Skipping t={time_indices}: already written")
+            continue
+        predictions = np.stack([predict_timepoint(t) for t in time_indices])
+        with open_ome_zarr(str(output_position_path), mode="r+") as output_dataset:
+            if unit is not None:
+                unit.begin()
+            output_dataset.data[time_indices[0] : time_indices[-1] + 1] = predictions
+        # Recorded only after the store is closed, as process_single_position
+        # does, so everything the write buffered has been released before
+        # `complete` syncs the shards and writes the marker.
+        if unit is not None:
+            unit.complete()
+
+
+def _normalize_timepoint(normalize, source_channel: str, source, norm_meta: dict, t: int):
+    """Apply VisCy's configured normalization to one timepoint's source volume.
+
+    ``NormalizeSampled`` expects ``timepoint_statistics`` already resolved to the
+    current timepoint, but the store nests that level by timepoint index
+    (``{"0": {...}, "1": {...}}``). Resolve it with the same helper VisCy's
+    ``SlidingWindowDataset`` uses for ``viscy predict``, so both paths match.
+    """
+    from viscy_data.sliding_window import SlidingWindowDataset
+
+    resolved = SlidingWindowDataset._resolve_timepoint_norm_meta(norm_meta, t)
+    return normalize({source_channel: source, "norm_meta": resolved})[source_channel]
 
 
 def virtual_stain_position(
     config_filepath: Path,
     input_position_path: Path,
     output_position_path: Path,
+    resume: bool = False,
 ):
     """Run cytoland virtual staining on a single position, looping over time.
 
@@ -120,6 +236,10 @@ def virtual_stain_position(
         Input position (label-free source) to virtually stain.
     output_position_path : Path
         Output position to write predictions into.
+    resume : bool, optional
+        Skip the timepoints an earlier, interrupted attempt already finished.
+        Keyed on the validated predict config, so a changed config recomputes
+        instead of being skipped.
     """
     from cytoland.engine import AugmentedPredictionVSUNet
     from monai.transforms import Compose
@@ -201,26 +321,31 @@ def virtual_stain_position(
             f"{n_windows} sliding windows/timepoint (step={step})"
         )
 
-        with open_ome_zarr(str(output_position_path), mode="r+") as output_dataset:
-            for t in range(T):
-                t_start = time.perf_counter()
-                # (1, 1, Z, Y, X) source volume for this timepoint
-                volume = np.asarray(
-                    input_dataset.data[t : t + 1, channel_index : channel_index + 1]
+        def predict_timepoint(t):
+            t_start = time.perf_counter()
+            # (1, 1, Z, Y, X) source volume for this timepoint
+            volume = np.asarray(
+                input_dataset.data[t : t + 1, channel_index : channel_index + 1]
+            )
+            source = torch.from_numpy(volume).float().to(device)
+            source = _normalize_timepoint(normalize, source_channel, source, norm_meta, t)
+            with torch.inference_mode():
+                prediction = predictor.predict_sliding_windows(
+                    source, out_channel=out_channel, step=step
                 )
-                source = torch.from_numpy(volume).float().to(device)
-                # Apply VisCy's configured normalization via a sample dict.
-                sample = normalize({source_channel: source, "norm_meta": norm_meta})
-                source = sample[source_channel]
-                with torch.inference_mode():
-                    prediction = predictor.predict_sliding_windows(
-                        source, out_channel=out_channel, step=step
-                    )
-                output_dataset.data[t] = prediction[0].cpu().numpy()
-                typer.echo(
-                    f"[{position_name}] timepoint {t + 1}/{T} done "
-                    f"({time.perf_counter() - t_start:.1f}s)"
-                )
+            typer.echo(
+                f"[{position_name}] timepoint {t + 1}/{T} done "
+                f"({time.perf_counter() - t_start:.1f}s)"
+            )
+            return prediction[0].cpu().numpy()
+
+        _write_timepoints(
+            predict_timepoint,
+            output_position_path,
+            T,
+            resume=resume,
+            resume_token=settings_fingerprint(predict_config_metadata(parser, cfg)),
+        )
 
     typer.echo(
         f"[{position_name}] Completed {T} timepoints in "
@@ -271,16 +396,8 @@ def _init_output_plate(
         version=resolve_ome_zarr_version(input_position_dirpaths[0], output_ome_zarr_version),
         metadata_sources=input_plate,
         metadata_keys=PROVENANCE_METADATA_KEYS,
+        extra_metadata=extra_metadata,
     )
-
-    if extra_metadata:
-        for input_position_dirpath in input_position_dirpaths:
-            position_key = Path(input_position_dirpath).parts[-3:]
-            with open_ome_zarr(
-                str(Path(output_dirpath).joinpath(*position_key)), mode="r+"
-            ) as output_position:
-                for key, value in extra_metadata.items():
-                    output_position.zattrs[key] = value
 
     return (T, C, Z, Y, X)
 
@@ -293,6 +410,7 @@ def virtual_stain(
     cluster: str = "slurm",
     monitor: bool = True,
     init_only: bool = False,
+    resume: bool = False,
 ):
     """Run cytoland virtual staining on a plate, one GPU job per position.
 
@@ -319,6 +437,9 @@ def virtual_stain(
         Monitor submitted jobs.
     init_only : bool, optional
         Only initialize the output store and exit; skip per-position processing.
+    resume : bool, optional
+        Skip the timepoints each position already finished in an earlier,
+        interrupted attempt; see ``virtual_stain_position``.
     """
     # The 'local' cluster launches every position as a concurrent subprocess
     # (submitit's LocalExecutor ignores `slurm_array_parallelism`, so there is no
@@ -349,8 +470,7 @@ def virtual_stain(
     # a JSON-serializable dict) as provenance on each output position. Drop the
     # per-position data_path biahub injected for submit-time validation; it is
     # not part of the config the user supplied.
-    config_metadata = json.loads(parser.dump(cfg, format="json"))
-    config_metadata.get("data", {}).get("init_args", {}).pop("data_path", None)
+    config_metadata = predict_config_metadata(parser, cfg)
 
     input_shape = _init_output_plate(
         input_position_dirpaths,
@@ -362,8 +482,14 @@ def virtual_stain(
 
     # Timepoints are processed sequentially on a single GPU, so CPU and RAM
     # needs are fixed (independent of dataset size); only wall-time scales with
-    # the data (see the T*Z budget below).
-    num_cpus, mem_gb = 16, 64
+    # the data (see the T*Z budget below). Measured: ~1 core (0.94-1.14 cores
+    # averaged over each job, from `sacct` TotalCPU/Elapsed and the Nextflow
+    # trace) and <= 6.1 GB peak RSS, on A549 (67 x 86 x 1664 x 1193) and
+    # dynatrack (1418 x 171 x 768 x 794, 14-22 h jobs). There is no DataLoader
+    # here -- each timepoint is read directly -- so `data.init_args.num_workers`
+    # does not apply. 4 CPUs / 16 GB keeps ~4x / ~2.5x headroom and lets a job
+    # fit beside other work on a 16-CPU GPU workstation.
+    num_cpus, mem_gb = 4, 16
     # Wall-clock budget for GPU prediction, on the same min/volume currency as
     # the CPU steps. A per-window (T*Z) budget was tried first and fits worse:
     # seconds/window spans 0.31 (neuromast) to 1.58 (A549) because a window's
@@ -400,11 +526,15 @@ def virtual_stain(
 
     # Override defaults if sbatch_filepath is provided
     if sbatch_filepath:
-        slurm_args.update(sbatch_to_submitit(sbatch_filepath))
+        slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
     resolved_cluster = get_submitit_cluster(cluster=cluster)
     typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
+    if resolved_cluster == "local":
+        # Explicit --sbatch-filepath values (e.g. '#LOCAL --timeout-min') win over
+        # the computed local executor parameters.
+        slurm_args = {**local_executor_parameters(time_minutes), **slurm_args}
     executor.update_parameters(**slurm_args)
 
     typer.echo("Submitting jobs...")
@@ -419,6 +549,7 @@ def virtual_stain(
                     config_filepath,
                     input_position_path,
                     output_position_path,
+                    resume=resume,
                 )
             )
 
@@ -451,6 +582,7 @@ def virtual_stain_cli(
     cluster: cluster = "slurm",
     monitor: monitor = False,
     init_only: init_only = False,
+    resume: resume = False,
 ):
     """Virtually stain a label-free dataset using a cytoland (VisCy) model.
 
@@ -468,7 +600,7 @@ def virtual_stain_cli(
 
     \b
     In-process run of a single position (e.g. from a Nextflow worker):
-    >>> biahub virtual-stain --cluster debug -i ./input.zarr/A/1/0 -c ./virtual_stain_params.yml -o ./output.zarr
+    >>> biahub virtual-stain --cluster debug --resume -i ./input.zarr/A/1/0 -c ./virtual_stain_params.yml -o ./output.zarr
     """  # noqa: D301
     virtual_stain(
         input_position_dirpaths=input_position_dirpaths,
@@ -478,4 +610,5 @@ def virtual_stain_cli(
         cluster=cluster,
         monitor=monitor,
         init_only=init_only,
+        resume=resume,
     )

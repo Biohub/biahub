@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Run the mantis-v2 reconstruction pipeline (biahub nextflow/mantis-v2.nf):
-#   flat-field -> deskew -> reconstruct -> virtual-stain -> assemble -> track -> QC
+#   flat-field -> deskew -> reconstruct -> virtual-stain -> assemble -> project
+#   -> segment -> track -> QC
 #
-# The last three are OPTIONAL: a step runs only if its config is passed. A549
-# runs assemble + track + QC; neuromast runs assemble + QC and no tracking. See
-# the note above the `nextflow run` call at the bottom.
+# The last five are OPTIONAL: a step runs only if its config is passed. A549
+# runs assemble + project + segment + track + QC; neuromast runs assemble + QC and
+# no projection, segmentation or tracking. See the note above the `nextflow run`
+# call at the bottom.
 #
 # Copy this into the project output directory and fill in the five variables
 # below. Keep it there: it is the run's provenance record of the exact command.
 #
 # --output is the project root, so each step writes a sibling directory:
-#   0-flatfield/ 1-deskew/ 2-reconstruct/ 3-virtual-stain/ 4-assemble/ 5-track/
-# The number is the step's POSITION among the steps this run performs, so a run
-# without tracking ends at 4-assemble and one that also skipped a step earlier
-# shifts everything after it down.
+#   0-flatfield/ 1-deskew/ 2-reconstruct/ 3-virtual-stain/ 4-assemble/
+# Project writes its plate beside the assembled one as 4-assemble/<DATASET>_proj.zarr;
+# segment writes labels/<model> into each position of that plate and tracking
+# labels/tracks_<model>, tracks.geff and a tracks CSV; none has a directory of its own.
+# The number is the step's POSITION among the steps this run performs that
+# write a directory, so a run that skips a step shifts everything after it down.
 # The work dir defaults to <output>/nextflow/work; override with `-work-dir`.
 #
 # Any extra arguments are forwarded to nextflow, e.g.
@@ -50,9 +54,25 @@ BIAHUB_PROJECT=""          # e.g. /hpc/mydata/<user>/biahub
 OUTPUT_DIR=""
 
 # The 0-convert plate, for acquisitions with no HCS plate (neuromast /
-# zebrafish / dynatrack). Leave empty to read the raw store directly. Resolved
-# after OUTPUT_DIR below, so it may reference it.
-CONVERTED_ZARR=""          # e.g. ${OUTPUT_DIR}/0-convert/${DATASET}.zarr
+# zebrafish / dynatrack). Usually leave it empty: the script then uses
+# ${OUTPUT_DIR}/0-convert/${DATASET}.zarr when that exists, and the raw store
+# otherwise. Set it only for a plate somewhere else, as a full path. It is
+# expanded right here, before OUTPUT_DIR gets its default below, so do not build
+# it from ${OUTPUT_DIR} unless OUTPUT_DIR is set explicitly above.
+CONVERTED_ZARR=""          # e.g. /hpc/projects/<project>/<dataset>/0-convert/<dataset>.zarr
+
+# Delete the intermediates once the last step (QC) finishes: the flat-field,
+# deskew, reconstruct and virtual-stain directories, the final stores'
+# slurm_output/ and resume markers, and the Nextflow work directory
+# (biahub#292), recorded in nextflow/intermediates_cleaned.txt. A cleaned run
+# is FINAL — any rerun recomputes everything from the raw input.
+#   auto    on when concatenate.yml takes all the data (all, or time_indices:
+#           max), off if it crops
+#   true    on, even if concatenate.yml crops (the cropped-out data is lost)
+#   false   off: keep every intermediate
+# The pipeline resolves `auto` at launch (cleanup_decision in
+# nextflow/modules/cleanup.nf) and logs the outcome and why.
+CLEANUP_INTERMEDIATES="auto"
 
 # ---------------------------------------------------------------------------
 
@@ -103,6 +123,13 @@ INPUT_ZARR="${CONVERTED_ZARR:-${DATA_DIR}/${DATASET}/${RAW_STORE}}"
 [[ -d "${INPUT_ZARR}" ]] || { echo "input not found: ${INPUT_ZARR}" >&2; exit 1; }
 [[ -d "${CONFIGS}"    ]] || { echo "configs not found: ${CONFIGS}"  >&2; exit 1; }
 
+# Keep the scaffolded files group-writable so the rest of the lab can edit and
+# relaunch. The project dirs carry a default ACL, which overrides umask: a copied
+# file's group bits follow the SOURCE file's mode, so `cp` from the repo (644)
+# yields rw-r--r--. Setgid on the dirs already supplies the group. -f because
+# only the owner can chmod; a teammate's relaunch must not fail here.
+chmod -f g+w "${BASH_SOURCE[0]}" "${CONFIGS}"/* "${OUTPUT_DIR}"/*.py 2>/dev/null || true
+
 # Record which code and inputs this run used, to a FILE as well as the console.
 #
 # The file is the durable record. The launch is deliberately not piped through
@@ -122,6 +149,7 @@ mkdir -p "${OUTPUT_DIR}/nextflow"
     echo "commit    ${BIAHUB_COMMIT}"
     echo "host      $(hostname)"
     echo "slack_id  ${BIAHUB_SLACK_ID:-<unset>}"
+    echo "cleanup   ${CLEANUP_INTERMEDIATES} (requested; resolved in .nextflow.log)"
     echo "nextflow  $(nextflow -version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
     if [[ -n "${BIAHUB_DIRTY}" ]]; then
         echo "dirty     YES — not reproducible from the commit above:"
@@ -135,6 +163,7 @@ mkdir -p "${OUTPUT_DIR}/nextflow"
 echo "biahub: ${BIAHUB_PROJECT}"
 echo "  branch ${BIAHUB_BRANCH}  ${BIAHUB_COMMIT%% *}"
 echo "  provenance appended to ${PROVENANCE}"
+echo "cleanup intermediates: ${CLEANUP_INTERMEDIATES} (requested)"
 if [[ -n "${BIAHUB_DIRTY}" ]]; then
     echo "  WARNING: uncommitted changes — this run is not reproducible from the commit above" >&2
 fi
@@ -168,18 +197,27 @@ fi
 # Harmless when unset already, and nothing in the pipeline reads it.
 unset CLAUDECODE
 
-# The last four flags are the OPTIONAL steps: a step runs only if its config is
-# passed (biahub#306). Defaults by family —
+# The six config flags from --concatenate_config down are the OPTIONAL steps:
+# a step runs only if its config is passed (biahub#306). Defaults by family —
 #
-#   A549 / cell-line   assemble + track + QC   (all four, as written)
-#   zebrafish / neuromast   assemble + QC      (delete --track_config and
-#                                               --qc_track_config)
+#   A549 / cell-line        assemble + project + segment + track + QC (all six, as written)
+#   zebrafish / neuromast   assemble + QC   (delete --project_config, --segment_config,
+#                                            --track_config and --qc_project_config)
+#
+# --qc_track_config was removed: qc_project.yaml counts the labels tracking writes
+# into the projected plate, so passing the old flag errors at launch.
+#
+# Pyramids are not a flag here: the assembled and projected plates get 3
+# resolution levels (images mean-pooled, labels max-pooled; DCA v0.2, biahub#359)
+# after tracking by default, and QC runs last, after them. Add
+# `--pyramid_levels 1` to skip them.
 #
 # TO SKIP A STEP, DELETE ITS LINE. Do not comment it out: `#` inside a
 # backslash-continued command does not start a comment line — the continuation
 # swallows it, every flag below it is dropped including `-resume`, and bash then
 # tries to run the remainder as a command. Note the skip in a comment above this
 # call instead, so the provenance record still says what this run did and why.
+# --cleanup_intermediates is not a step: set CLEANUP_INTERMEDIATES above instead.
 nextflow run "${PIPELINE}" \
     -c "${NF_CONFIG}" \
     -profile slurm \
@@ -190,8 +228,11 @@ nextflow run "${PIPELINE}" \
     --reconstruct_config   "${CONFIGS}/reconstruct.yml" \
     --virtual_stain_config "${CONFIGS}/virtual_stain.yml" \
     --concatenate_config   "${CONFIGS}/concatenate.yml" \
+    --project_config       "${CONFIGS}/project.yml" \
+    --segment_config       "${CONFIGS}/segment.yml" \
     --track_config         "${CONFIGS}/track.yml" \
     --qc_config            "${CONFIGS}/qc.yaml" \
-    --qc_track_config      "${CONFIGS}/qc_track.yaml" \
+    --qc_project_config    "${CONFIGS}/qc_project.yaml" \
+    --cleanup_intermediates "${CLEANUP_INTERMEDIATES}" \
     -resume \
     "$@"

@@ -22,9 +22,11 @@ The real traceback is **not** in the work dir (`caveats.md` §9) — it is in
 | exit 143 / 137 / 140, no traceback | SLURM preemption, timeout, or OOM | none — Nextflow retries (exit 130–145, `maxRetries = 5`). Expected on the `preempted` partition. |
 | exit 143 repeatedly on the *same* position until retries exhaust | task too slow or too large for its resource envelope | check `trace.txt` for realized time/RSS; the run may need a wall-time or memory bump |
 | `RuntimeError: the checksum is invalid` / `encoded shard is smaller than ... its index` / `blosc encoded value is invalid` | torn shard from a killed write | **rerun with `-resume` first** — see below |
+| exit 1, traceback ending in a bare `OSError: [Errno N] ...` (EIO, `[Errno 71] Protocol error` from `os.fsync`) | transient Lustre client/server fault | none at first — nextflow.config retries it after `oserror_retry_delay_minutes` (10), sharing `maxRetries` with preemption. If the run still aborts on it, the monitoring pass relaunches once with `-resume` (SKILL.md §9a); the same failure again escalates. |
 | `OSError` / `IOError` / "Input/output error" on a `.zarr` path, or a truncated read while decoding a chunk | Lustre EIO — usually the same torn-shard condition | same |
 | `FileNotFoundError: Dataset directory not found at .../<zarr>/ROW/COL/FOV` | a previous cleanup deleted the metadata scaffold too | **job-io-error-repair agent** (recreates the scaffold from a sibling) |
 | exit 1/2 with a Python traceback (pydantic validation, `TypeError`, `KeyError`) | bad config or a real bug | Nextflow terminates deliberately. Fix, relaunch with `-resume`. |
+| `time_indices is 'all' but the sources have different numbers of time points` at assemble's init | positions (or stores) disagree on T, and concatenate refuses to crop silently | ask the user whether to crop to the smallest T (`time_indices: {start: 0, stop: <T>}`) or pad to the largest (`time_indices: max`) in `configs/concatenate.yml` — `SKILL.md` §5c. Relaunch with `-resume`. |
 | `Expected a 'RESOURCES:' line in command output but none was found` | the biahub CLI crashed during its init step | read the init step's `slurm_output` log; usually a config validation error |
 | `list_positions` returns nothing | input has no HCS plate | build `0-convert` — `caveats.md` §1 |
 | a `(Pdb)` prompt in the task output, task never exits | `--cluster debug` post-mortem debugger inside the SLURM job | **kill the run** — see below |
@@ -89,11 +91,27 @@ input may need re-export from the instrument.
 ## Restarting
 
 Always: `cd <OUTPUT> && bash ./run_mantis_v2.sh`, relaunched in the tmux
-session. `-resume` is invalidated by editing the biahub checkout, editing a
-config, or changing a `--param` — if a resume unexpectedly recomputes
-everything, one of those changed. To force one step to recompute, delete that
-step's output for the affected positions and their work dirs — not the whole
-`.nextflow/` cache.
+session. What `-resume` does after a change:
+
+- **Editing a step's config** (any byte, even a comment, or a `touch`) reruns
+  that step's tasks. Steps whose CLI runs with `--resume` (flat-field, deskew,
+  virtual-stain, assemble) key their per-unit progress on the validated
+  settings, so after an edit that changes no setting they skip every unit and
+  finish in seconds. Reconstruct, track and QC recompute.
+- **The steps downstream of an edited config are NOT rerun**: they stay cached
+  on the old upstream output (biahub#406). After changing a step's config,
+  delete the outputs and work dirs of every step after it before relaunching.
+- **Changing a `--param`** that a task takes reruns that task.
+- **Editing biahub's Python code** invalidates nothing; only editing a
+  `script:` block in `nextflow/modules/*.nf` does.
+
+To force one step to recompute, delete that step's output for the affected
+positions and their work dirs — not the whole `.nextflow/` cache. Track's
+output is inside the assembled plate: per position, `labels/<target_channel>`,
+`tracks.geff` and `tracks_<row>_<col>_<fov>.csv` (its Ultrack database lives in
+the node's `$TMPDIR` and is deleted after export). A rerun overwrites all of
+these in place, so for track deleting the work dirs is what forces it; never
+delete the assembled plate to clear tracking output.
 
 ## When to escalate to the user
 

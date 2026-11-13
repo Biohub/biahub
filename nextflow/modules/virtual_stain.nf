@@ -1,7 +1,8 @@
-// Virtual-stain subworkflow: init + preprocess → fan-out run × N positions.
+// Virtual-stain subworkflows: init (scaffold + resources) and run (preprocess +
+// fan-out × N).
 //
-// This subworkflow is PATH-AGNOSTIC. Callers pass the input zarr, output zarr,
-// and config explicitly; the module has no idea where it sits in the pipeline
+// This module is PATH-AGNOSTIC. Callers pass the input zarr, output zarr, and
+// config explicitly; the module has no idea where it sits in the pipeline
 // directory layout. The orchestrating pipeline (see mantis-v2.nf) owns the
 // layout and the order of steps; this module just virtually stains whatever
 // it's handed.
@@ -15,14 +16,18 @@
 // own SLURM jobs. See:
 // examples/submitit_debug_nextflow/2026-05-27-submitit-debug-nextflow-concerns.md
 //
-// Three-phase pattern:
-// 1. init_virtual_stain: validates the config, creates the output plate with
-//    the predicted channels, emits RESOURCES:
+// Three phases, split across TWO subworkflows by whether they need DATA:
+// 1. init_virtual_stain: validates the predict config against VisCy's schema,
+//    creates the output plate with the predicted channels, emits RESOURCES.
+//    Metadata-only, so it joins the pipeline's up-front init phase.
 // 2. run_virtual_stain_preprocess: `viscy preprocess` over the whole input
 //    plate. virtual_stain_position reads precomputed normalization statistics
 //    from the input store (viscy_data.read_norm_meta) and errors if they are
 //    missing, so this must run before fan-out. NOTE: this MUTATES the input
-//    store by writing normalization metadata into it.
+//    store by writing normalization metadata into it, and it reads every
+//    position's PIXELS — so unlike the other one-shot steps it cannot be
+//    hoisted, and it is what keeps a whole-plate barrier ahead of this step
+//    (biahub#304).
 // 3. run_virtual_stain: per-position GPU prediction using RESOURCES.
 //
 // Both `biahub virtual-stain` and `viscy` live in biahub's optional `stain`
@@ -32,7 +37,7 @@
 // See the ENVIRONMENT CONTRACT note in common.nf; these tasks call `biahub` and
 // `viscy` bare, exactly like every other step.
 
-include { parse_resources; slurm_logs; slurm_log_dir } from './common'
+include { parse_resources; slurm_logs; slurm_log_dir; slurm_output_readme; retry_time; retry_memory } from './common'
 
 
 process init_virtual_stain {
@@ -42,6 +47,7 @@ process init_virtual_stain {
     val input_zarr
     val output_zarr
     val config
+    path config_file  // staged only for the task hash: see common.nf, #397
     val trigger
 
     output:
@@ -50,6 +56,7 @@ process init_virtual_stain {
     script:
     """
     mkdir -p "${slurm_log_dir('virtual_stain')}"
+    ${slurm_output_readme('virtual_stain', output_zarr)}
     biahub virtual-stain --init \
         -i "${input_zarr}"/*/*/* \
         -o "${output_zarr}" \
@@ -61,8 +68,8 @@ process run_virtual_stain_preprocess {
     label 'cpu'
     clusterOptions { slurm_logs('virtual_stain') }
     cpus 16
-    memory { "${64 * task.attempt} GB" }
-    time '1h'
+    memory { retry_memory(64, task) }
+    time { retry_time(60, task) }
 
     input:
     val input_zarr
@@ -96,24 +103,35 @@ process run_virtual_stain_preprocess {
 
 process run_virtual_stain {
     tag "${position}"
-    label 'gpu'
+    // Preemptable: `--resume` (below) makes a reclaimed task cost at most the
+    // timepoint it was predicting. See the slurm profile in nextflow.config.
+    label 'gpu_preempted'
+    // Any GPU node of `preempted`, including the single-A40 workstations
+    // (48 GB, the same GA102 as the A6000s A549 and dynatrack prediction already
+    // ran on). Add `--constraint=gpu` to stay on the `gpu` partition's nodes.
     clusterOptions { "--gres=gpu:1 " + slurm_logs('virtual_stain') }
     cpus { meta.cpus }
-    memory { "${meta.mem_gb} GB" }
-    time { "${meta.time_minutes * task.attempt} min" }
+    memory { retry_memory(meta.mem_gb, task) }
+    time { retry_time(meta.time_minutes, task) }
 
     input:
     tuple val(position), val(meta)
     val input_zarr
     val output_zarr
     val config
+    path config_file  // staged only for the task hash: see common.nf, #397
 
     output:
     val position
 
     script:
+    // --resume: the retry of an interrupted task (or a later `nextflow -resume`)
+    // recomputes only the timepoints this position had not finished; a timepoint
+    // torn by the kill is replaced, not read back. The completion record is keyed
+    // by the validated predict config, so a config change recomputes instead of
+    // being skipped.
     """
-    biahub virtual-stain --cluster debug \
+    biahub virtual-stain --cluster debug --resume \
         -i "${input_zarr}/${position}" \
         -o "${output_zarr}" \
         -c "${config}"
@@ -121,35 +139,63 @@ process run_virtual_stain {
 }
 
 
+// Validate the predict config and scaffold the output plate. Metadata-only and
+// cheap, so it belongs in the pipeline's up-front init phase.
+//
+// take:
+//   input_zarr   path to the input plate.zarr (reconstruct output)
+//   output_zarr  path to the virtual-stain output plate.zarr
+//   config       path to the virtual-stain (viscy predict) settings YAML
+//   trigger      gating channel — init starts once this emits
+// emit:
+//   resources    the RESOURCES payload sizing one position's task
+//   done         fires once the output plate exists
+workflow virtual_stain_init_wf {
+    take:
+    input_zarr
+    output_zarr
+    config
+    trigger
+
+    main:
+    init_out = init_virtual_stain(input_zarr, output_zarr, config, file(config), trigger.collect().map { 'done' })
+
+    emit:
+    resources = init_out.map { stdout_text -> parse_resources(stdout_text) }
+    done      = init_out.map { 'done' }
+}
+
+
+// Compute normalization statistics over the whole input plate, then fan out one
+// GPU prediction per position.
+//
 // take:
 //   positions    collected channel of position keys (e.g. ['A/1/0', 'B/1/0'])
 //   input_zarr   path to the input plate.zarr (reconstruct output)
 //   output_zarr  path to the virtual-stain output plate.zarr
 //   config       path to the virtual-stain (viscy predict) settings YAML
-//   prev_done    gating channel — virtual stain starts once this emits
-workflow virtual_stain_wf {
+//   resources    RESOURCES payload from virtual_stain_init_wf
+//   prev_done    gating channel — the input store holds data for EVERY position,
+//                which preprocess requires
+workflow virtual_stain_run_wf {
     take:
     positions
     input_zarr
     output_zarr
     config
+    resources
     prev_done
 
     main:
-    init_out = init_virtual_stain(input_zarr, output_zarr, config, prev_done.map { 'done' })
-    resources = init_out.map { stdout_text -> parse_resources(stdout_text) }
-
-    // Preprocess the whole plate in parallel with init; both gate the fan-out.
-    vs_preprocess = run_virtual_stain_preprocess(input_zarr, prev_done.map { 'done' })
-
-    ready = resources.combine(vs_preprocess)
+    vs_preprocess = run_virtual_stain_preprocess(input_zarr, prev_done.collect().map { 'done' })
 
     pos_meta = positions
         .flatMap { items -> items }
-        .combine(ready)
+        .combine(resources)
+        .combine(vs_preprocess)
         .map { pos, meta, _preprocess_done -> [pos, meta] }
 
-    vs_done = run_virtual_stain(pos_meta, input_zarr, output_zarr, config) | collect
+    vs_done = run_virtual_stain(pos_meta, input_zarr, output_zarr, config, file(config)) | collect
 
     emit:
     done = vs_done

@@ -1,7 +1,7 @@
 // QC stage execution and reporting: the processes that call the external
 // `imaging-qc` CLI, and the two workflows that wire them. One file, as every
 // other step module in this directory is.
-include { slurm_logs; slurm_log_dir } from './common'
+include { slurm_logs; slurm_log_dir; retry_memory; retry_time } from './common'
 
 
 process plan_stage {
@@ -9,7 +9,7 @@ process plan_stage {
     tag "${zarr_path}"
 
     input:
-    tuple val(zarr_path), val(config_path)
+    tuple val(zarr_path), val(config_path), path(config_file)  // config_file: staged only for the task hash, see common.nf (#397)
 
     output:
     tuple val(zarr_path), val(config_path), stdout
@@ -34,7 +34,7 @@ process estimate_resources {
     tag "${zarr_path}"
 
     input:
-    tuple val(zarr_path), val(config_path)
+    tuple val(zarr_path), val(config_path), path(config_file)  // config_file: staged only for the task hash, see common.nf (#397)
 
     output:
     tuple val(zarr_path), val(config_path), stdout
@@ -56,21 +56,16 @@ process compute_step {
     label 'cpu'
     clusterOptions { slurm_logs('qc') }
     cpus { params.qc_cpus as int }
-    memory { "${(meta?.memory_gb ?: 16).toFloat() * task.attempt} GB" }
-    time '2h'
-    // NO errorStrategy here on purpose — inherit the one in nextflow.config.
-    // This used to carry its own `task.exitStatus in [137, 140, 143]` copy, which
-    // is the same idea with a narrower list and, like the config rule before it,
-    // missed the case that matters most on the `preempted` partition: a job SLURM
-    // cancels before it can write .exitcode, whose status is unreadable rather
-    // than any code at all. A process-body directive BEATS the config selector,
-    // so the copy silently reintroduced the abort for QC even once config was
-    // fixed. `maxRetries` is still overridden — only the strategy is shared.
-    maxRetries 1
+    memory { retry_memory(meta?.memory_gb ?: 16, task) }
+    // 120 min, hardcoded rather than a param. An item is now a CHUNK of
+    // `params.qc_chunk_size` timepoints, not a whole position (see the note on
+    // that param), so the budget no longer has to scale with T
+    time { retry_time(120, task) }
 
     input:
     tuple val(zarr_path), val(config_path), val(step_id),
-          val(position), val(chunk_id), val(time_indices), val(meta)
+          val(position), val(chunk_id), val(time_indices), val(meta),
+          path(config_file)  // config_file: staged only for the task hash, see common.nf (#397)
 
     output:
     tuple val(zarr_path), val(step_id), val(position)
@@ -88,14 +83,14 @@ process compute_step {
 process finalize_stage {
     label 'cpu'
     clusterOptions { slurm_logs('qc') }
-    memory { task.attempt == 1 ? '32 GB' : '48 GB' }
-    time '1h'
+    memory { retry_memory(32, task) }
+    time { retry_time(60, task) }
     // Inherits nextflow.config's errorStrategy — see compute_step above.
     maxRetries 1
     tag "${zarr_path}"
 
     input:
-    tuple val(zarr_path), val(config_path)
+    tuple val(zarr_path), val(config_path), path(config_file)  // config_file: staged only for the task hash, see common.nf (#397)
 
     output:
     tuple val(zarr_path), val(config_path), stdout
@@ -118,8 +113,8 @@ process generate_unified_report {
     label 'cpu'
     clusterOptions { slurm_logs('qc') }
     cpus 2
-    memory '32 GB'
-    time '1h'
+    memory { retry_memory(64, task) }
+    time { retry_time(60, task) }
 
     input:
     tuple path(report_spec), val(report_dir)
@@ -139,7 +134,7 @@ process generate_unified_report {
 
 
 // ---------------------------------------------------------------------------
-//  qc_stage_wf: plan-driven QC stage execution
+//  QC stage execution, split into a PLAN half and a COMPUTE half.
 //
 //  plan-stage emits plan.json v5 to stdout: {version, stage, items[]}, one flat
 //  list. Nextflow fans every item out to a compute task, counts them as the
@@ -149,26 +144,53 @@ process generate_unified_report {
 //  finding nothing could ever put a second wave in a plan.
 //
 //  Only the items keys are read, so additive schema bumps stay compatible.
+//
+//  THE SPLIT IS THE SAME ONE THE STEP MODULES MAKE, for the same reason. Both
+//  planning verbs read only the store's STRUCTURE — position list, T extent,
+//  shape and dtype; imaging-qc's own comment in cli/planning.py is "Neither
+//  reads a pixel" — and they validate the config before opening the store at
+//  all (`validate_plan_config` for plan-stage, `build_stage_config` for
+//  estimate-resources, which is the stricter of the two). So a QC config can be
+//  checked against a store that has been SCAFFOLDED but not yet filled, which
+//  in mantis-v2 is the run's first minutes rather than after the step that
+//  produces the store has finished. Only `compute` needs pixels.
+//
+//  Channel names are checked here too, as of imaging-qc#226: `plan-stage`
+//  refuses a `channels:` or `per_channel_params` name that no position in the
+//  store has, at exit 2 and writing nothing. That matters most for the tracking
+//  store, whose QC config names `<target_channel>_labels` — a name that only
+//  matches if it agrees with `track.yml`, two configs with no shared source of
+//  truth. Before #226 an unmatched filter was a legitimate zero: the metric
+//  silently did not run, and unless it was gated, nothing ever said so.
 // ---------------------------------------------------------------------------
 
-workflow qc_stage_wf {
+// take:
+//   plan_inputs   Channel of tuple(zarr_path, config_path); the stores must
+//                 EXIST, but need not hold data
+// emit:
+//   items         one entry per work item, [zarr, config, step_id, position,
+//                 chunk_id, time_indices, meta]
+//   stores        one [zarr, config] per planned store, for the merge
+//   done          fires once every config has planned — "the QC configs are good"
+workflow qc_plan_wf {
     take:
-    plan_inputs      // Channel of tuple(zarr_path, config_path)
+    plan_inputs
 
     main:
-    plan_out = plan_stage(plan_inputs)
+    staged_inputs = plan_inputs.map { z, cfg -> tuple(z, cfg, file(cfg)) }
+    plan_out = plan_stage(staged_inputs)
 
     // Per-(zarr,config) memory estimate from imaging-qc's estimate-resources CLI.
     // Keyed by [zarr, config] and joined 1:1 into the plan so every work item
     // carries `mem` (GB), which becomes compute_step's meta.memory_gb.
-    est_mem = estimate_resources(plan_inputs)
+    est_mem = estimate_resources(staged_inputs)
         .map { z, cfg, est_json ->
             def line = est_json.trim().readLines().findAll { line -> line.trim().startsWith('{') }.last()
             def r = new groovy.json.JsonSlurper().parseText(line)
             tuple([z, cfg], (r.estimate_gb ?: 16) as Double)
         }
 
-    items = plan_out
+    plan_items = plan_out
         .map { z, cfg, json_text -> tuple([z, cfg], json_text) }
         .join(est_mem)
         .flatMap { key, json_text, mem ->
@@ -190,14 +212,45 @@ workflow qc_stage_wf {
             }
         }
 
-    done = compute_step(items)
+    emit:
+    items  = plan_items
+    stores = plan_out.map { z, cfg, _json -> [z, cfg] }
+    done   = plan_out.collect().map { 'done' }
+}
+
+
+// take:
+//   items          from qc_plan_wf
+//   stores         from qc_plan_wf
+//   compute_ready  Channel of tuple(zarr_path, config_path), one per store,
+//                  emitted once that store HOLDS DATA
+workflow qc_compute_wf {
+    take:
+    items
+    stores
+    compute_ready
+
+    main:
+    // Planning ran as soon as the store existed; the compute it planned still
+    // has to wait for the step that fills that store. `combine(..., by: 0)` on
+    // the [zarr, config] key rather than `join`, because a plan contributes MANY
+    // items per store and `join` is 1:1 — it would release one work item per
+    // store and silently drop the rest.
+    ready_items = items
+        .map { z, cfg, step_id, position, chunk_id, time_indices, meta ->
+            tuple([z, cfg], [step_id, position, chunk_id, time_indices, meta])
+        }
+        .combine(compute_ready.map { z, cfg -> tuple([z, cfg], 'ready') }, by: 0)
+        .map { key, item, _ready -> [key[0], key[1]] + item + [file(key[1])] }
+
+    done = compute_step(ready_items)
 
     // `.count()` is the barrier: every item's shard is on disk before the stage
     // merge reads them. finalize_stage consolidates, then gates — one merge per
     // stage, which is all there is now that waves are gone.
-    merged = plan_out.map { z, cfg, _json -> [z, cfg] }
+    merged = stores
         .combine(done.count())
-        .map { z, cfg, _n -> [z, cfg] }
+        .map { z, cfg, _n -> [z, cfg, file(cfg)] }
         | finalize_stage
 
     emit:
@@ -222,7 +275,7 @@ workflow qc_stage_wf {
 //
 // `tabs` is a list of maps: [label: <tab label>, zarr: <store>, config: <stage config>].
 // Labels must be unique within a spec; a step directory name gives that for free,
-// and it is also what identifies the tab to a reader — "4-assemble", "5-track" —
+// and it is also what identifies the tab to a reader — e.g. "4-assemble" —
 // rather than the stage number, which is imaging-qc's internal table namespace.
 def qc_report_spec(tabs, spec_path, title) {
     def spec = file(spec_path)

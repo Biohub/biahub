@@ -69,15 +69,23 @@ cd <OUTPUT>/<N>-assemble        # 4-assemble on a standard run
 DATASET=<DATASET> <BIAHUB>/.venv/bin/python rename_channels.py
 ```
 
+Copy the template in with `cp` then `chmod 664 rename_channels.py`, so the
+copy is group-writable like every other file the skill places in `<OUTPUT>`
+(SKILL.md §7).
+
 `nuclei` → `nuclei_prediction` bridges [biahub#288](https://github.com/czbiohub-sf/biahub/issues/288):
 `biahub virtual-stain` names outputs verbatim from `target_channel`, but the
 rest of biahub keys off the `_prediction` suffix.
 
-**⚠ Ordering.** tracking runs *inside* the pipeline and reads the assembled
-plate, so **track sees the pre-rename names**. The shipped templates avoid the
-trap by putting the suffix directly in the VS `target_channel`
-(`nuclei_prediction`/`membrane_prediction`), making the rename a no-op for
-those channels.
+**⚠ Ordering.** project and tracking run *inside* the pipeline and read the
+assembled plate, so **project.yml and track.yml see the pre-rename names**
+(`project.yml`'s keys are `BF`, `GFP EX488 EM525-45`, ...). The
+shipped templates avoid the trap for the predictions by putting the suffix
+directly in the VS `target_channel` (`nuclei_prediction`/`membrane_prediction`),
+making the rename a no-op for those channels. The projected plate inherits the
+pre-rename names too: it lives beside the assembled plate as
+`<N>-assemble/<DATASET>_proj.zarr`, so run `rename_channels.py` a second time
+from the same directory with `DATASET=<DATASET>_proj`.
 
 **Stopgap:** PRs [#260](https://github.com/czbiohub-sf/biahub/pull/260) and
 [#250](https://github.com/czbiohub-sf/biahub/pull/250) carry a `rename-channels`
@@ -93,10 +101,30 @@ lateral pixel size of the *input* store (no longer read from the zarr);
 `scan_step_um` comes from the acquisition — read
 `/hpc/instruments/cm.mantis/<DATASET>/config.yaml`, do not assume 0.150.
 
-**`reconstruct.yml` — `input_channel_names`.** Must name the brightfield
-channel exactly as it appears in the deskewed store (`["BF - Oblique"]`
-today). A mismatch fails at `compute_transfer_function`, after flat-field and
-deskew have already burned hours.
+**`reconstruct.yml` — `input_channel_names`, and `project.yml`'s brightfield
+key.** Must name the brightfield channel exactly as it appears in the deskewed
+store. The templates say `BF` (current acquisitions); older acquisitions name it
+`BF - Oblique` (e.g. `2026_08_11_A549_SEC61B_DENV`, so a v9 rerun of it too).
+Read the raw store's channel names and, when it says `BF - Oblique`, suggest
+that edit in **both** `reconstruct.yml` and `project.yml` — §5a's check flags
+the project.yml side; a reconstruct.yml mismatch fails at
+`compute_transfer_function`, after flat-field and deskew have already burned
+hours.
+
+**`reconstruct.yml` — `phase.transfer_function.{yx,z}_pixel_size`.** These are
+the voxel sizes of the *deskewed* store, so they follow from `deskew.yml`:
+
+```
+yx_pixel_size = pixel_size_um
+z_pixel_size  = average_n_slices * sin(ls_angle_deg) * pixel_size_um
+```
+
+(yx = 0.1133, z = 3 × sin 30° × 0.1133 ≈ 0.17 for the shipped templates; `scan_step_um`
+does not enter.) waveorder does **not** read pixel sizes from the zarr — if
+omitted they default to 0.1 / 0.25, and a mismatch only emits a
+`PixelSizeMismatchWarning` at apply time while the transfer function is
+already wrong. Every downstream store (VS, assemble, QC) inherits the error.
+SKILL.md §5b checks this before launch.
 
 **`virtual_stain.yml` — `ckpt_path` and model geometry.** The model/data
 fields must agree with the checkpoint:
@@ -115,31 +143,77 @@ model silently stalls. Top level may contain **only** `model`, `data`,
 per-position — leave it out. `target_channel` carries the `_prediction` suffix
 deliberately (§2).
 
+**`segment.yml` — schema.** `SegmentationSettings`: `models.<name>` with
+`pretrained_model`, `channels` (projected-plate channel names, at most 3) and
+`eval_args` (cellpose `CellposeModel.eval` arguments: `diameter`,
+`cellprob_threshold`, `flow_threshold`, `min_size`, ...). Segment reads the
+**projected** (Z=1) plate and writes one label image per model INTO it,
+`labels/<name>`; it does not project (a model without `eval_args.do_3D` needs a
+Z=1 input). The A549 template runs cpsam_v2 at native resolution (`diameter: null`,
+`min_size: 300`), validated against annotated divisions; the earlier diameter 80
+(37.5 % resize) lost small daughter nuclei.
+
 **`track.yml` — schema.** `TrackingSettings` forbids extra keys. Current
-fields: `output_mode`, `z_slicing`, `target_channel`, `fov`, `input_images`,
-`segmentation_method`, `cellpose_config`, `tracking_config`. Old configs under
+fields: `output_mode`, `fov`, `blank_frames_path`, `segmentation_method`
+(`labels`, the default, or the legacy `foreground_contour`), `labels`,
+`labels_sigma`, `output_label` (optional; another name for the tracked label
+image, which also renames the GEFF and CSV to `tracks_<output_label>.*`),
+`min_sibling_length`, `tracking_config` (plus `target_channel` and
+`input_images` on the legacy path). Track neither segments nor selects or
+projects Z-planes: it reads the label image `biahub segment` wrote into the
+**projected** plate (`labels: <segment.yml model name>`), writes the tracked
+labels beside it as `labels/tracks_<labels>` with `tracks.geff` and a tracks
+CSV, and a 3D input with `output_mode: 2D` is an error. Old configs under
 `/hpc/projects/tlg2_mantis/` still carry rejected fields — migrate:
 
 ```
-mode                            -> output_mode
-z_range + focus_config.z_window -> z_slicing.{method, window_size, focus_channel}
+mode                                  -> output_mode
+z_slicing / z_range / focus_config    -> project.yml: channels.<name>.z {center: focus, below, above}, focus.channel
+input_images np.mean step             -> project.yml: channels.<name>.method: mean
+cellpose_config (model, diameter, thresholds, min_size, input_channel)
+                                      -> segment.yml: models.<name>
+cellpose_config.labels_sigma          -> labels_sigma
+target_channel                        -> labels: <segment.yml model name>
+output_ome_zarr_version               -> (delete: labels take the projected plate's version)
 ```
 
-(`focus_config`'s `NA_det`/`lambda_ill`/`pixel_size` have no equivalent.)
-`target_channel` and `cellpose_config.input_channel` must match **pre-rename**
-names in the **assembled** plate (§2, §5).
+(`focus_config`'s `NA_det`/`lambda_ill` are `project.yml`'s `focus.na_det` /
+`focus.lambda_ill`; the pixel size comes from the store.) `segment.yml`'s model
+`channels` must match channels `project.yml` writes, which carry the
+**pre-rename** names of the **assembled** plate (§2, §5). `qc_project.yaml`'s
+`instance_count.label` must be `tracks_<track.yml labels>` and its anchor
+`channels:` entry the segment model's channel — SKILL.md §5a checks these
+couplings before launch.
 
-**`z_slicing.focus_channel` resolves against `input_images`, not the store.**
-`apply_focus_slicing` raises if the focus channel is not among the loaded
-channels, even when it exists in the plate — a template declaring
-`focus_channel: Phase3D` while loading only `nuclei_prediction` failed all
-positions after every other step had succeeded. Both shipped templates use
-`method: all` (falls back to the first loaded channel), the safe default.
+**QC configs reject `upstream_qc_dir`.** The imaging-qc pin (f5ae656) dropped
+the key; a `qc.yaml` copied from an older run that still carries
+`upstream_qc_dir: null` fails at `plan-stage`. Delete the line.
 
-**`concatenate.yml` — `concat_data_paths` stay as `placeholder`.** The
-assemble subworkflow injects the real source paths via `--concat-data-paths`.
-Three placeholder entries and three `channel_names` entries (deskew,
-reconstruct, virtual-stain). Do not "fix" them to real paths.
+**`project.yml` — every channel name must be in the assembled plate, and every
+assembled channel should be in `project.yml`.** `biahub project --init`
+resolves every listed channel (and `focus.channel`) against the plate and fails
+there, in the init phase, rather than after every other step; a plate channel
+the config does not list is dropped with a warning. The pipeline's intention is
+that every assembled channel is projected unless the user decided otherwise, so
+SKILL.md §5a's check prints the unlisted ones and the pre-run plan asks about
+them. The A549 template lists a typical plate (brightfield, two raw
+fluorescence channels, Phase3D, the two predictions) under the **PRE-rename
+names**, because project runs inside the pipeline before the §2 rename: the
+brightfield key is `BF`, the same name as `reconstruct.yml`'s
+`input_channel_names` (edit both to `BF - Oblique` for the older acquisitions,
+see above), and **the fluorescence names are the camera/filter strings**
+(`GFP EX488 EM525-45`, `mCherry EX561 EM600-37` on the reference datasets, one
+or two markers per dataset) — edit or remove them to match the raw store.
+Label-free channels take the
+one in-focus plane, fluorescence the full-stack max, the virtual-stain
+predictions the mean over the 60-plane focus window; the focus is found per
+timepoint on `Phase3D`.
+
+**`concatenate.yml` holds parameters only — no source paths.** The assemble
+subworkflow passes the three source stores on the command line, one `-i` per
+store (deskew, reconstruct, virtual-stain), so there is no `concat_data_paths`
+to fill in. `channel_names: all` takes every channel of every source; to pick
+channels, give one entry per source in that order.
 
 ---
 
@@ -150,8 +224,9 @@ assembled store, and track's parameters (cellpose `diameter`, `min_area`/
 `max_area`, linking `max_distance`) are tuned for A549 cells and do not
 transfer. So simply do not run it:
 
-- Omit `--track_config` — delete that line, and `--qc_track_config` with it,
-  from the `nextflow run` call in the run script. A step runs only if its config
+- Omit `--track_config` — delete that line, and `--project_config` and
+  `--qc_project_config` with it, from the `nextflow run` call in the run
+  script. A step runs only if its config
   is passed ([biahub#306](https://github.com/czbiohub-sf/biahub/issues/306),
   fixed). Delete rather than comment: `#` inside a backslash-continued command
   drops every flag below it, `-resume` included.
@@ -161,13 +236,27 @@ transfer. So simply do not run it:
 - Do not report tracking results or tune the track config for these datasets
   unless the user asks for neuromast tracking explicitly.
 - QC still runs: a neuromast run does image QC of the assembled store
-  (`--qc_config`). Only the tracking tab is absent.
+  (`--qc_config`). `zebrafish/qc.yaml` has no `instance_count` block, since
+  there are no labels to count; do not copy A549's `qc.yaml` over it — its
+  `instance_count` names a label image that only tracking creates, and
+  `plan-stage` refuses it.
 
 ## 5. Track reads the assembled plate, not the intermediates
 
-`track_wf` takes the assembled `<DATASET>.zarr` for *both* inputs. So any Z/Y/X
-crop or `time_indices` subset in `concatenate.yml` is what tracking sees, and
-tracking starts only after the whole plate assembles.
+`track_wf` takes the assembled `<DATASET>.zarr` for *both* inputs, and writes
+its output back INTO it: per position, `labels/<target_channel>` (uint32, (T, 1, Z, Y, X)
+at the image's full Z; 2D-tracking masks sit in the middle plane of the tracked
+z-window), `tracks.geff`, and `tracks_<row>_<col>_<fov>.csv`. Nothing else is
+kept: the pipeline passes no `-o`, so each worker builds its Ultrack database in
+the node's `$TMPDIR` and deletes it after export, and track has no step
+directory (pass `-o` to `biahub track` by hand to keep the databases, e.g. to
+re-solve with other weights). The full Ultrack config is recorded under
+`biahub-track.ultrack_config` on each label image. So any Z/Y/X crop or `time_indices` subset in
+`concatenate.yml` is what tracking sees, and tracking starts only after the
+whole plate assembles. `track --init` creates the empty label image in every
+position during the init phase, and with tracking on, QC is planned after that
+init and computes after tracking finishes — not concurrently with it, so QC
+now sits on the critical path behind tracking.
 
 ## 6. Assemble is a single job on one reserved node
 
@@ -176,18 +265,22 @@ Assemble is one large SLURM job — the single longest step.
 `biahub concatenate --resume` (passed by the Nextflow task) makes a late kill
 recoverable per (t, c) unit.
 
-## 7. Shard geometry and `shards_ratio`
+## 7. Shard geometry and `shards`
 
-`shards_ratio` is a ratio over the **chunk** shape
-(`shards = chunks * shards_ratio`, elementwise TCZYX), not an absolute shard
-shape — changing T without recomputing ZYX silently changes the spatial extent.
-Larger T shards mean a larger RAM request and a worse blast radius when one
-tears; leave the T ratio alone without a measured reason. Channels cannot be
-sharded — keep C at 1. Auto-sizing is
-[iohub#458](https://github.com/czbiohub-sf/iohub/issues/458); most of this
-section goes away when it lands.
+`shards` in `concatenate.yml` and `project.yml` is a **size target**
+(`shards: 5GB`, `shards: 200MB`): iohub builds the largest chunk-aligned shard
+under it, filling X, Y and Z first and then timepoints, and never spans
+channels ([iohub#461](https://github.com/czbiohub-sf/iohub/pull/461)). Nothing
+is recomputed per dataset: the same `5GB` gives 5 timepoints by the full volume
+on the A549 plate and 9 on the dynatrack one. `"XY"` / `"XYZ"` (one shard per
+plane / volume) and an explicit TCZYX shape in array elements are also accepted.
+The old `shards_ratio` (a multiplier over the chunk shape) is refused with a
+message naming the new key. A larger target means more timepoints per shard,
+hence a larger RAM request (concatenate reads the T extent back from the plate it
+initialised to size its workers) and a worse blast radius when one tears; leave
+the templates' values alone without a measured reason.
 
-**A T ratio above 1 needs [iohub#460](https://github.com/czbiohub-sf/iohub/pull/460),
+**Shards spanning several timepoints need [iohub#460](https://github.com/czbiohub-sf/iohub/pull/460),
 which shipped in iohub 0.3.11** — the floor `pyproject.toml` already requires, so a
 synced checkout has it.
 
@@ -195,7 +288,7 @@ Before that fix, `concatenate` aborted with a message that points nowhere near t
 cause — `numpy ... Unable to allocate 651. TiB for an array with shape
 (1048576, 86, 1664, 1193)`, whose first axis is not T, not a shard, not
 anything. It is **not** evidence that the shard buffer is too large, and
-unsetting `shards_ratio` "fixes" it for the wrong reason. What happens: a
+unsetting `shards` "fixes" it for the wrong reason. What happens: a
 shard-aligned batch writes a whole shard's worth of timepoints in one call,
 iohub drops the blank ones (`Skipping t=1, c=0 due to all zeros or nans` in the
 step's `.command.out`), and the surviving indices are left with a *gap* — which
@@ -220,6 +313,13 @@ routinely (exit 143) and Nextflow resubmits (retry on exit 130–145,
 when retries are exhausted or the same position fails *identically* every time
 — the torn-shard signature, see `recovery.md`.
 
+A transient storage error is retried the same way, after a wait. A task that
+exits 1 with a traceback ending in a bare `OSError` (Lustre EIO, `[Errno 71]
+Protocol error` from `os.fsync`) is resubmitted after
+`params.oserror_retry_delay_minutes` (10) instead of terminating the run. An
+`OSError` subclass such as `FileNotFoundError` still terminates. The run-end
+message counts those attempts as "retried after an error", not as failures.
+
 ## 9. SLURM log files look inverted
 
 `slurm_logs()` in `nextflow/modules/common.nf` deliberately crosses
@@ -230,9 +330,11 @@ files.
 
 ## 10. Do not edit the biahub checkout during a live run
 
-Editing files in `$BIAHUB_PROJECT` changes Nextflow task hashes and
-invalidates `-resume`. Get the branch right before launching, then leave it
-alone. (Editing this skill is *mostly* fine — but the notification path now runs
+Editing a `script:` block in `nextflow/modules/*.nf` changes Nextflow task
+hashes and invalidates `-resume` for that process. Editing biahub's Python code
+invalidates nothing, which is worse: tasks started after the edit run the new
+code, cached ones keep the old results, and the run silently mixes the two. Get
+the branch right before launching, then leave it alone. (Editing this skill is *mostly* fine — but the notification path now runs
 through `biahub/utils/notify.py` and `nextflow/modules/notify.nf`, which ARE part
 of the pipeline, so fixing a notification bug mid-run is a pipeline edit. The
 notify task hashes are the only ones affected, and re-running six sub-second local
@@ -291,6 +393,12 @@ plate for *all* positions with data in only the first — correct and expected.
 Do not treat such a store as a deliverable, and delete it before a real run so
 `-resume` cannot reuse it.
 
+Since the init phase moved to the front of the run, this is visible sooner and
+for every step at once: a smoke test creates the full-width plate for
+flat-field, deskew, reconstruct, virtual-stain, assemble AND track within the
+first minutes, before a single position has been computed. Nothing changed
+about what ends up on disk — only when it appears.
+
 (Related, for pipeline developers: a param passed as `--foo 1` on the command
 line arrives as a String; coerce numeric params at the point of use and test
 via the CLI — see the comments in `nextflow/modules/common.nf`.)
@@ -332,3 +440,19 @@ Consequences worth knowing:
   differ" means nothing here; `corr` and max abs diff are the measures that do. A
   real virtual-stain regression moves the distribution, not the last bit. Deskew,
   reconstruct and assemble are fully deterministic.
+
+## 15. Pyramids follow tracking and precede QC, and resume per shard
+
+`biahub pyramid` rewrites each position's `zarr.json` (the multiscales list and
+its `biahub-pyramid` record), as do tracking and imaging-qc, so the pipeline
+runs it after tracking and holds QC, the very last step, until it has finished.
+The module passes `--resume`: each shard of each level is a unit recorded under
+`.iohub-progress/` beside the plate, so a preempted task's retry recomputes only
+the shards it had not finished. A relaunch that recomputes earlier steps
+rewrites level 0 only, and the pyramid tasks are then cached by Nextflow: run
+`biahub pyramid --no-resume -i <plate>/*/*/* --levels 3` by hand in that case,
+since nothing else recomputes the coarser levels from the new level 0. A plate
+that already carries a pyramid of another depth is refused at init
+(`already has a pyramid of a different depth`); the fix is iohub's
+`delete_pyramid` on each position or matching `--pyramid_levels`.
+

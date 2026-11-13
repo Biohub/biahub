@@ -16,8 +16,96 @@ def parse_resources(stdout_text, prefix = 'RESOURCES:') {
     return [cpus: res.cpus as int, mem_gb: res.mem_gb as int, time_minutes: res.time_minutes as int]
 }
 
+// RETRY RESOURCES. Preemption is the ordinary reason a task is retried on the
+// `preempted` partition, and it says nothing about the task's size, so a retry
+// asks for the SAME resources as the attempt before it. Only an attempt that
+// demonstrably ran out is given more, read from `task.previousTrace` (the
+// previous attempt's trace record, available inside a directive closure):
+//
+//   time    doubles when the previous attempt hit its wall-time — exit 140, the
+//           SIGUSR2 Nextflow's `--signal B:USR2@30` delivers 30 s before the
+//           SLURM limit, or exit 143 after running >= 90% of the requested time
+//           (a SIGTERM that arrived with the limit; a preemption's arrives at an
+//           arbitrary point). Capped at the partition's 2-00:00:00 limit: sbatch
+//           rejects a larger request with exit 1, which is not retried, so an
+//           estimate above 24 h used to take the whole run down on its first
+//           preemption (2026_08_14_dynatrack, flat-field 27 h -> 54 h).
+//   memory  doubles when the previous attempt was OOM-killed — exit 137, the
+//           cgroup's SIGKILL. Capped at 244 GB (see retry_memory), which fits
+//           118 of the 122 `preempted` nodes, so a doubled request never waits
+//           for the few big-memory nodes and is never refused by sbatch (an
+//           exit 1, which terminates the run). A request already above the cap
+//           is kept, never lowered: the init estimate put it there, and less
+//           would be OOM-killed again.
+//
+// An escalation persists: attempt 3 after a preemption keeps attempt 2's
+// doubled request rather than falling back to the base. A preemption that
+// records no exit status at all (the usual form here — see nextflow.config)
+// has an unreadable exit, matches neither signature, and keeps the request.
+def hit_walltime(prev) {
+    if (prev == null || prev.exit == null) return false
+    if (prev.exit == 140) return true
+    return prev.exit == 143 && prev.time && prev.realtime && prev.realtime >= 0.9 * prev.time
+}
+
+def hit_memory(prev) {
+    return prev != null && prev.exit == 137
+}
+
+def retry_time(base_minutes, task) {
+    def preempted_max_minutes = 2880.0d
+    def prev = task.previousTrace
+    def minutes = (task.attempt == 1 || !prev?.time) ? (base_minutes as double) : prev.time / 60000.0d
+    if (task.attempt > 1 && hit_walltime(prev)) minutes *= 2
+    return "${Math.min(minutes, preempted_max_minutes) as long} min"
+}
+
+def retry_memory(base_gb, task) {
+    // Bruno's `preempted` partition, where every `cpu` and `gpu_preempted` task
+    // runs, by node memory (2026-10-22): 4 nodes at 120000 MiB (cpu-c-[1-4]),
+    // 40 at 250000 (the gpu-sm01/02 workstations), and 78 at 500000 or more. The
+    // cap is the second tier: Nextflow's GB is GiB, so 244 GB = 249856 MiB fits a
+    // 250000 node. Retries above 117 GB skip only the four cpu-c nodes; one near
+    // the cap takes a whole gpu-sm node's memory, idling its GPU meanwhile. The
+    // `gpu` partition's nodes are all >= 500000. Re-check when nodes change:
+    //     sinfo -h -p preempted -N -o "%m" | sort -n | uniq -c
+    def max_retry_gb = 244.0d
+    def prev = task.previousTrace
+    def gb = (task.attempt == 1 || !prev?.memory) ? (base_gb as double) : prev.memory / (1024.0d ** 3)
+    if (task.attempt > 1 && hit_memory(prev)) gb = Math.max(gb, Math.min(gb * 2, max_retry_gb))
+    return Math.rint(gb) == gb ? "${gb as long} GB" : "${gb} GB"
+}
+
 def slurm_log_dir(step_name) {
     return "${params.output}/nextflow/slurm_output/${step_name}"
+}
+
+// Shell snippet for a step's init process: writes a README into the
+// `slurm_output/` the CLI creates next to its output store. Tasks run the CLI
+// with `--cluster debug`, so that directory only ever holds submitit's
+// DebugJob placeholder logs; the real per-task logs land in slurm_log_dir().
+// The heredoc body sits at column 0 so its terminator is found after the
+// script's indentation is stripped.
+def slurm_output_readme(step_name, output_zarr) {
+    def step_slurm_dir = "${new File(output_zarr as String).parent}/slurm_output"
+    def log_dir = slurm_log_dir(step_name)
+    return """mkdir -p "${step_slurm_dir}"
+cat > "${step_slurm_dir}/README.md" <<'EOF'
+# Where are the logs?
+
+This step was run by the biahub Nextflow pipeline, which calls the biahub CLI
+with `--cluster debug` so that the work runs inside the Nextflow task. In that
+mode submitit writes only placeholder files here (`DEBUG_*_log.out/.err`), and
+they contain no progress or tracebacks.
+
+The real per-task logs are in:
+
+    ${log_dir}/
+
+one `<job-name>_<slurm-job-id>.out` / `.err` pair per task. A directory that
+holds more than one step's store (assemble and project) shares this
+slurm_output/; each step's logs are in its own directory beside the one above.
+EOF"""
 }
 
 def slurm_logs(step_name) {
@@ -34,6 +122,32 @@ def slurm_logs(step_name) {
     return "--output=${dir}/%x_%j.err --error=${dir}/%x_%j.out"
 }
 
+// A CONFIG EDIT INVALIDATES THE TASK (biahub#397)
+//
+// Every process that reads a step config takes it TWICE: `val config`, the path
+// the command line uses, and `path config_file`, the same file staged into the
+// task directory and never read. Nextflow hashes a `val` path as a string, so an
+// edited config used to come back CACHED with results made from the old one. A
+// `path` input's size and mtime are part of the task hash, so an edit (or a
+// `touch`) now reruns every task that reads the file.
+//
+// Rerunning is cheap where nothing really changed: the per-position commands run
+// with `--resume`, keyed by the hash of the VALIDATED settings model
+// (biahub.utils.config.settings_fingerprint), so after a comment-only edit they
+// find their units finished and skip them. Steps without `--resume` recompute:
+// track, QC and compute-tf by design, reconstruct until its CLI gains it
+// (biahub#387).
+//
+// Why not `path config` alone: the staged copy is a symlink under the work dir.
+// The command would then record that path in its logs and provenance, and QC
+// uses [zarr, config] as a join key across processes, so a staged path there
+// would stop matching the plain string the pipeline passes and silently drop
+// work items.
+//
+// What this does NOT cover: an edit to a step's config does not invalidate the
+// steps downstream of it (biahub#406), and an edit to biahub's code invalidates
+// nothing.
+
 // ENVIRONMENT CONTRACT
 //
 // Every process calls its CLI as a BARE command: `biahub`, plus `viscy` in
@@ -49,7 +163,7 @@ def slurm_logs(step_name) {
 //
 // This replaced the `biahub_cmd()` and `qc_cmd()` helpers that prefixed every
 // task with `uv run --project <path>` (and, for QC, `uv run --from <git-url>`).
-// Those wrappers made each of up to `maxForks` tasks re-resolve and
+// Those wrappers made each of up to `max_jobs` concurrent tasks re-resolve and
 // re-materialize the environment concurrently against one shared site-packages
 // — the QC form additionally re-fetching a git dependency per task. Resolving
 // the environment once, up front, is both faster and free of that write

@@ -15,6 +15,9 @@ Bio-image analysis hub supporting high-throughput data reconstruction on HPC clu
 
 `biahub` was originally developed to reconstruct data acquired on the [mantis](https://doi.org/10.1093/pnasnexus/pgae323) microscope using the [shrimPy](https://github.com/czbiohub-sf/shrimPy) acquisition engine, and has since been extended to process diverse multimodal datasets. `biahub` reconstruction workflows rely on OME-ZARR datasets (for example, as created with [iohub](https://github.com/czbiohub-sf/iohub)) which enable efficient parallelization across compute nodes.
 
+> **Project status:** Active development. biahub is alpha software, and its
+> APIs, CLI, and configuration formats may change between releases.
+
 <!-- --8<-- [end:intro] -->
 
 <img src="docs/figures/dynacell_fig2.webp" alt="FOV reconstruction" width="80%">
@@ -99,7 +102,7 @@ Some steps include an `estimate-*` command that writes a YAML of parameters you 
 | | |
 | `flat-field` | Apply flat-field correction to selected channels |
 | `flip` | Flip images in a dataset |
-| `pyramid` | Create multiscale pyramid levels |
+| `pyramid` | Compute multiscale pyramids of images and label images, in place |
 | `process-with-config` | Apply arbitrary YAML-defined functions to a dataset |
 | | |
 | `estimate-deskew` | Estimate deskewing parameters |
@@ -112,21 +115,18 @@ Some steps include an `estimate-*` command that writes a YAML of parameters you 
 | `apply-inv-tf` | Apply an inverse transfer function to a dataset |
 | `reconstruct` | Reconstruct phase/birefringence in one step |
 | | |
-| `estimate-registration` | Estimate the affine transform between arms or timepoints |
-| `optimize-registration` | Refine a transform via match filtering |
-| `register` | Apply an affine transform to positions |
+| `estimate-transform` | Estimate a transform series: registration between arms or stabilization over time |
+| `apply-transform` | Apply a transform series to positions |
 | `estimate-crop` | Estimate the crop region for dual-channel alignment |
-| | |
-| `estimate-stabilization` | Estimate XYZ translation matrices |
-| `stabilize` | Apply stabilization transforms |
 | | |
 | `estimate-stitch` | Estimate stitching parameters for positions |
 | `stitch` | Stitch positions within wells |
 | `concatenate` | Concatenate datasets channel-wise, with optional cropping |
 | | |
-| `segment` | Segment positions with a pretrained model or pipeline |
+| `project` | Project a 3D plate to 2D: max, mean, sum or one plane per channel, optionally around the in-focus plane |
+| `segment` | Segment positions with cellpose 4; writes one label image per model into the plate |
 | `virtual-stain` | Run VisCy/cytoland virtual staining |
-| `track` | Track objects in 2D/3D time-lapse data |
+| `track` | Track the instance labels of a label image (ultrack); writes tracked labels and tracks.geff into the plate |
 | | |
 | `nf list-positions` | List position keys of a plate zarr (used for Nextflow fan-out) |
 
@@ -150,21 +150,25 @@ biahub deskew          -i ./lightsheet.zarr/*/*/* -c ./deskew.yml -o ./lightshee
 # RECONSTRUCT PHASE/BIREFRINGENCE
 biahub reconstruct -i ./labelfree.zarr/*/*/* -c ./recon.yml -o ./labelfree_reconstructed.zarr
 
-# STABILIZE
-biahub estimate-stabilization -i ./labelfree.zarr/*/*/* -o ./stabilization.yml \
-                              --stabilize-xy --stabilize-z
-biahub stabilize              -i ./labelfree.zarr/*/*/* -c ./stabilization.yml \
-                              -o ./labelfree_stabilized.zarr
+# STABILIZE (the moving channel against its own first / previous timepoint; every position
+# drifts differently, so each gets its own transform list)
+biahub estimate-transform -m ./labelfree.zarr/*/*/* -c ./estimate-stabilization.yml \
+                          -o ./stabilization/transforms.yml
+biahub apply-transform    -m ./labelfree.zarr/*/*/* -c ./stabilization/transforms.yml \
+                          -o ./labelfree_stabilized.zarr
 
-# REGISTER
-biahub estimate-registration -s ./labelfree_reconstructed.zarr/0/0/0 \
-                             -t ./lightsheet_deskewed.zarr/0/0/0 -o ./register.yml
-biahub optimize-registration -s ./labelfree_reconstructed.zarr/0/0/0 \
-                             -t ./lightsheet_deskewed.zarr/0/0/0 \
-                             -c ./register.yml -o ./register_optimized.yml
-biahub register              -s ./labelfree_reconstructed.zarr/*/*/* \
-                             -t ./lightsheet_deskewed.zarr/*/*/* \
-                             -c ./register_optimized.yml -o ./registered.zarr
+# REGISTER (moving light-sheet onto the label-free reference; refine an existing transform
+# by giving it as `transform.seed` in the config)
+biahub estimate-transform -m ./lightsheet_deskewed.zarr/0/0/0 \
+                          -r ./labelfree_reconstructed.zarr/0/0/0 \
+                          -c ./estimate-registration.yml -o ./registration/transforms.yml
+biahub apply-transform    -m ./lightsheet_deskewed.zarr/*/*/* \
+                          -r ./labelfree_reconstructed.zarr/*/*/* \
+                          -c ./registration/transforms.yml -o ./registered.zarr
+
+# Old estimate-registration / estimate-stabilization / register / stabilize configs and
+# command names still run (deprecated); convert a config once with
+biahub convert-settings -c ./old-estimate-registration.yml -o ./estimate-registration.yml
 
 # CONCATENATE CHANNELS
 biahub concatenate -c ./concatenate.yml -o ./concatenated.zarr
@@ -186,6 +190,8 @@ nextflow/
 ```
 
 Each step module runs the same CLI you would run by hand, in two phases: `biahub <step> --init` creates the output store and reports the CPU/memory/time a single position needs, then Nextflow fans out one `biahub <step> --cluster debug` task per position with those resources. `--cluster debug` makes the CLI do the work in-process, so Nextflow — not `submitit` — owns job submission.
+
+**A run does every step's `--init` first, before any compute.** Each `--init` is metadata-only — it reads the input store's channel names, shape and scale, derives the output geometry from the config, and creates the output plate — so it needs its input store to exist, not to hold data. That lets the inits chain: flat-field's scaffolds the plate deskew's reads, and so on down to tracking, whose init reads the assembled plate `concatenate --init` created. The whole chain runs on the head node in the run's first minutes, so a typo in `track.yml` stops the run there instead of after every reconstruction step has been paid for. QC's `plan-stage` and `estimate-resources` join the same phase for the same reason.
 
 ### Running a pipeline
 
@@ -213,14 +219,15 @@ nextflow run mantis-v2.nf \
 | `--*_config` | Per-step YAML settings, as passed to the CLI via `-c` |
 | `--biahub_project` | Path to a `biahub` checkout to run tasks from |
 | `--max_positions` | Process only the first N positions (`0` = all) |
-| `--max_workers` | Cap on concurrently submitted Slurm jobs (default 100) |
+| `--max_jobs` | Cap on concurrently submitted Slurm jobs (default 60) |
+| `--cleanup_intermediates` | `auto`, `true` or `false` (default). Once the last step finishes, delete the intermediate stores and the work directory; `auto` does so only when `concatenate.yml` takes all the data (every field `all`; `time_indices: max` also counts) |
 
 With `--biahub_project`, each task runs as `uv run --project <path> biahub ...`; omit it to use whatever `biahub` is on `PATH` on the compute node. `--max_positions` is useful for smoke tests on a handful of positions.
 
 Profiles select *where* work runs:
 
 - `-profile local` — everything on the current machine. Good for debugging and single-node runs.
-- `-profile slurm` — per-position work goes to the `preempted` partition, virtual-stain prediction to the `gpu` partition, and lightweight init steps stay local. Preempted, timed-out, and OOM-killed tasks are retried automatically (up to 5 times, with escalating time/memory); genuine errors fail fast instead of burning retries.
+- `-profile slurm` — per-position work goes to the `preempted` partition, virtual-stain prediction and segmentation to the `preempted` partition on GPU nodes (both resume where a reclaimed task stopped), tracking to the `preempted` partition as well (ultrack cannot resume, but a position tracks in minutes), and lightweight init steps stay local. Preempted, timed-out, and OOM-killed tasks are retried automatically (up to 5 times, with escalating time/memory); genuine errors fail fast instead of burning retries.
 
 Nextflow's own flags still apply — most usefully `-resume` to reuse completed tasks after a failure or a config tweak, and `-w /fast/scratch` to move the work directory off the output filesystem.
 
@@ -231,14 +238,19 @@ Each step writes `<dataset>.zarr` into its own numbered subdirectory of `--outpu
 ```
 output/
 ├── 0-flatfield/     1-deskew/     2-reconstruct/
-├── 3-virtual-stain/ 4-track/      5-assemble/
+├── 3-virtual-stain/ 4-assemble/   # <ds>.zarr and, with --project_config, <ds>_proj.zarr
+│   └── slurm_output/README.md      # (in each step) points to the real logs
 └── nextflow/
     ├── report.html  timeline.html  dag.html  trace.txt
     ├── slurm_output/<step>/        # per-task Slurm logs
     └── work/                       # Nextflow work directory
 ```
 
-The pipeline runs flat-field → deskew → reconstruct → virtual-stain → assemble → track; `5-assemble` concatenates the deskew, reconstruct, and virtual-stain channels into one plate, which tracking then consumes.
+Per-task logs (progress and tracebacks) are in `nextflow/slurm_output/<step>/`. The `slurm_output/` inside each step directory is created by the CLI, but because tasks run it with `--cluster debug`, it only holds submitit placeholder files; each step's init writes a `README.md` there that points to the real logs.
+
+With cleanup on (`--cleanup_intermediates true`, or `auto` when `concatenate.yml` crops nothing), once the last step (QC, when it runs) has finished, the pipeline deletes the flat-field, deskew, reconstruct and virtual-stain directories, the `slurm_output/` placeholders beside the assembled and projected plates, their `.iohub-progress/` resume markers (assemble, project and segment write them; track does not), and the task directories in `nextflow/work`. What it removed is appended to `nextflow/intermediates_cleaned.txt`. Assemble copies those stores' channels, so when `concatenate.yml` keeps all the data this only removes the duplicate copy; if it crops, the cropped-out data is lost. A cleaned run is final: with no cached tasks and no resume markers left, rerunning it, even with `-resume`, recomputes everything from the raw input.
+
+The pipeline runs flat-field → deskew → reconstruct → virtual-stain → assemble → project → segment → track → QC; `4-assemble` concatenates the deskew, reconstruct, and virtual-stain channels into one plate, project reduces it to the 2D companion plate beside it, segment writes cellpose label images into that plate, and track links them and writes the tracked labels and `tracks.geff` beside them. Assemble, project, segment, track and QC each run only when their config is passed.
 
 ### Adapting a pipeline
 
@@ -247,4 +259,18 @@ The step modules are path-agnostic: each subworkflow is handed an input zarr, an
 ## Contributing
 
 We would appreciate bug reports and code contributions if you use this package. If you would like to contribute to this package, please read the [contributing guide](https://github.com/czbiohub-sf/biahub/blob/main/CONTRIBUTING.md).
+
+## Community
+
+Participation in biahub is governed by the
+[Contributor Covenant Code of Conduct](https://github.com/czbiohub-sf/biahub/blob/main/CODE_OF_CONDUCT.md).
+
+## Security
+
+Do not report security vulnerabilities in public issues. Follow our
+[security policy](https://github.com/czbiohub-sf/biahub/blob/main/SECURITY.md) to report them privately.
+
+## License
+
+[BSD-3-Clause](https://github.com/czbiohub-sf/biahub/blob/main/LICENSE.md)
 <!-- --8<-- [end:body] -->

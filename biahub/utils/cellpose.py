@@ -11,6 +11,10 @@ Two problems this module exists to solve, both observed in one overnight run:
 
 ``cellpose_device`` addresses the first, ``warm_cellpose_weights`` (once, on the
 head node) and ``stage_cellpose_weights`` (per worker) the second.
+
+A third: cellpose 4 ignores ``model_type`` and falls back to ``cpsam_v2`` with only a
+log warning when ``pretrained_model`` names a model it does not know.
+``load_cellpose_model`` refuses unknown names instead.
 """
 
 import getpass
@@ -167,16 +171,62 @@ def stage_cellpose_weights() -> Path | None:
     return dest
 
 
-def warm_cellpose_weights() -> Path | None:
+def check_cellpose_model_name(pretrained_model: str) -> None:
+    """Raise if cellpose 4 cannot find ``pretrained_model`` (it would substitute cpsam_v2).
+
+    Imports ``cellpose.models``: call it on the head node (``--init``) or after
+    ``stage_cellpose_weights`` in a worker.
+    """
+    from cellpose import models
+
+    if Path(pretrained_model).is_file():
+        return
+    known = [*models.MODEL_NAMES, *models.get_user_models()]
+    if pretrained_model not in known:
+        raise ValueError(
+            f"Unknown cellpose model {pretrained_model!r}: not a file and not one of "
+            f"{known}. Cellpose 4 dropped the cellpose 3 models (nuclei, cyto3, ...)."
+        )
+
+
+def load_cellpose_model(pretrained_model: str, device: torch.device):
+    """Build a cellpose 4 model, failing on a model cellpose cannot find.
+
+    ``pretrained_model`` is a built-in name (``cpsam_v2``, ``cpsam``, ``cpdino``,
+    ``cpdino-vitb``), a user model installed through the cellpose GUI, or a path to
+    weights. Cellpose itself would quietly substitute ``cpsam_v2`` for any other value,
+    which is how ``model_type: nuclei`` ran Cellpose-SAM without anyone noticing.
+
+    Call ``stage_cellpose_weights`` first: this imports ``cellpose.models``.
+    """
+    from cellpose import models
+
+    check_cellpose_model_name(pretrained_model)
+
+    # device overrides gpu and skips cellpose's own CPU-falling-back probe.
+    model = models.CellposeModel(
+        pretrained_model=pretrained_model, gpu=device.type != "cpu", device=device
+    )
+    typer.echo(f"cellpose model: {model.pretrained_model} on {model.device}")
+    return model
+
+
+def warm_cellpose_weights(pretrained_model: str = "cpsam_v2") -> Path | None:
     """Ensure the shared weights cache is populated, downloading it if it is not.
 
     Meant for a step's ``--init``, which runs once on the head node before the
-    per-position fan-out. Building the model is what makes cellpose resolve and, if
-    needed, download the checkpoint it defaults to, so this leaves the shared cache
-    in the state ``stage_cellpose_weights`` needs: populated, and populated once
-    rather than by every node in the fan-out — or, on a cluster whose compute nodes
-    have no route to the internet, populated at all. Loading the weights here also
-    surfaces a corrupt download once, at init, instead of in every worker.
+    per-position fan-out. This resolves the checkpoint the way ``CellposeModel``
+    does and downloads it if it is missing, so it leaves the shared cache in the
+    state ``stage_cellpose_weights`` needs: populated, and populated once rather
+    than by every node in the fan-out — or, on a cluster whose compute nodes have no
+    route to the internet, populated at all. Reading the checkpoint's index here
+    also surfaces a truncated or non-checkpoint file once, at init, instead of in
+    every worker.
+
+    It does not build the model. ``CellposeModel`` would construct the whole network
+    on the CPU (randomly initialised, then overwritten by the 1.2 GB checkpoint)
+    with one torch thread per core, which ran a 16 s burst at ~2400 % CPU on the
+    shared login node that hosts the Nextflow head, to check a file.
 
     Do NOT call this from a worker. It imports ``cellpose.models``, which freezes the
     directory cellpose loads weights from, leaving ``stage_cellpose_weights`` nothing
@@ -186,16 +236,22 @@ def warm_cellpose_weights() -> Path | None:
     -------
     Path or None
         The checkpoint cellpose resolved, or ``None`` if warming failed — cellpose
-        missing, no network, no disk. Workers then download it themselves, as they
-        did before.
+        missing, no network, no disk, an unreadable checkpoint. Workers then download
+        it themselves, as they did before.
     """
     models_dir = _cellpose_models_dir()
     try:
         from cellpose import models as cp_models
 
-        # gpu=False: --init runs on the head node, which has no GPU. Only the weights
-        # matter here, and they are the same either way.
-        weights = Path(cp_models.CellposeModel(gpu=False).pretrained_model)
+        # A path is used as is; a built-in or GUI-installed name resolves into the
+        # weights directory, downloaded if missing (cellpose's own resolution).
+        if Path(pretrained_model).is_file():
+            weights = Path(pretrained_model)
+        else:
+            weights = Path(cp_models.cache_model_path(pretrained_model))
+        # Memory-maps the checkpoint and reads its keys: fails on a truncated or
+        # non-checkpoint file without materialising 1.2 GB of tensors or a network.
+        cp_models.get_backbone(str(weights))
     except Exception as exc:
         logger.warning("Could not warm the cellpose weights cache in %s: %r", models_dir, exc)
         return None

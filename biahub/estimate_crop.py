@@ -20,9 +20,13 @@ from biahub.cli.parsing import (
     sbatch_to_submitit,
 )
 from biahub.cli.slurm import wait_for_jobs_to_finish
-from biahub.register import find_lir
+from biahub.registration.utils import find_lir
 from biahub.settings import ConcatenateSettings
-from biahub.utils.cluster import estimate_resources, get_submitit_cluster
+from biahub.utils.cluster import (
+    apply_sbatch_overrides,
+    estimate_resources,
+    get_submitit_cluster,
+)
 from biahub.utils.config import model_to_yaml, yaml_to_model
 
 
@@ -181,6 +185,11 @@ def estimate_crop(
     output_path_csv.mkdir(exist_ok=True, parents=True)
 
     # Assume phase dataset is first and fluor dataset is second in input_model.concat_data_paths
+    if not settings.concat_data_paths or len(settings.concat_data_paths) < 2:
+        raise ValueError(
+            "estimate-crop needs concat_data_paths in the config: the phase positions "
+            "first, the fluorescence positions second."
+        )
     lf_paths = config_filepath.parent.glob(settings.concat_data_paths[0])
     lf_position_dirpaths = [p for p in lf_paths if p.is_dir()]
     typer.echo(f"Found {len(lf_position_dirpaths)} phase channels.")
@@ -210,7 +219,7 @@ def estimate_crop(
 
     # Override defaults if sbatch_filepath is provided
     if sbatch_filepath:
-        slurm_args.update(sbatch_to_submitit(sbatch_filepath))
+        slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
     # Run locally or submit to SLURM
     cluster = get_submitit_cluster(local)

@@ -1,10 +1,15 @@
-// Flat-field subworkflow: init → parse_resources → fan-out run × N positions.
+// Flat-field subworkflows: init (scaffold + resources) and run (fan-out × N).
 //
-// This subworkflow is PATH-AGNOSTIC. Callers pass the input zarr, output zarr,
-// and config explicitly; the module has no idea where it sits in the pipeline
+// This module is PATH-AGNOSTIC. Callers pass the input zarr, output zarr, and
+// config explicitly; the module has no idea where it sits in the pipeline
 // directory layout. The orchestrating pipeline (see mantis-v2.nf) owns the
 // layout and the order of steps; this module just applies flat-field correction
 // to whatever it's handed.
+//
+// INIT AND RUN ARE SEPARATE SUBWORKFLOWS. The pipeline runs every step's init
+// ahead of every step's compute, so that a bad config fails in the first
+// minutes rather than hours in — which means it, not this module, decides when
+// each phase happens. See the INIT PHASE comment in mantis-v2.nf.
 //
 // run_flat_field uses `--cluster debug` so that submitit's DebugExecutor runs
 // the work in-process.  Nextflow already handles per-position fan-out and
@@ -13,7 +18,7 @@
 // the Nextflow task.  See also:
 // examples/submitit_debug_nextflow/2026-05-27-submitit-debug-nextflow-concerns.md
 
-include { parse_resources; slurm_logs; slurm_log_dir } from './common'
+include { parse_resources; slurm_logs; slurm_log_dir; slurm_output_readme; retry_time; retry_memory } from './common'
 
 
 process init_flat_field {
@@ -23,6 +28,7 @@ process init_flat_field {
     val input_zarr
     val output_zarr
     val config
+    path config_file  // staged only for the task hash: see common.nf, #397
     val trigger
 
     output:
@@ -31,6 +37,7 @@ process init_flat_field {
     script:
     """
     mkdir -p "${slurm_log_dir('flat_field')}"
+    ${slurm_output_readme('flat_field', output_zarr)}
     biahub flat-field --init \
         -i "${input_zarr}"/*/*/* \
         -o "${output_zarr}" \
@@ -43,14 +50,15 @@ process run_flat_field {
     label 'cpu'
     clusterOptions { slurm_logs('flat_field') }
     cpus { meta.cpus }
-    memory { "${meta.mem_gb} GB" }
-    time { "${meta.time_minutes * task.attempt} min" }
+    memory { retry_memory(meta.mem_gb, task) }
+    time { retry_time(meta.time_minutes, task) }
 
     input:
     tuple val(position), val(meta)
     val input_zarr
     val output_zarr
     val config
+    path config_file  // staged only for the task hash: see common.nf, #397
 
     output:
     val position
@@ -69,29 +77,79 @@ process run_flat_field {
 }
 
 
+// Validate the config and scaffold the output plate. Metadata-only and cheap,
+// so it belongs in the pipeline's up-front init phase.
+//
+// take:
+//   input_zarr   path to the input plate.zarr (raw input)
+//   output_zarr  path to the flat-field corrected output plate.zarr
+//   config       path to the flat-field settings YAML
+//   trigger      gating channel — init starts once this emits
+// emit:
+//   resources    the RESOURCES payload sizing one position's task
+//   done         fires once the output plate exists
+workflow flat_field_init_wf {
+    take:
+    input_zarr
+    output_zarr
+    config
+    trigger
+
+    main:
+    init_out = init_flat_field(input_zarr, output_zarr, config, file(config), trigger.collect().map { 'done' })
+
+    emit:
+    // Both emits are VALUE channels, which is the contract every step module
+    // here emits on: they cross a subworkflow boundary and are combined against
+    // a per-position queue channel, and a value channel makes that a gate rather
+    // than a one-item cross product whose behaviour depends on how many
+    // consumers read it.
+    //
+    // The guarantee is made at the INPUT, not the output. A process whose inputs
+    // are all value channels emits value channels, and `trigger.collect()`
+    // above turns any trigger — value or queue, whatever its payload — into one
+    // value before the token is taken from it. The previous form, `.first()` on
+    // each emit, gave the same guarantee but logged "operator `first` is useless
+    // when applied to a value channel" on every run, because every caller in
+    // this pipeline already triggers init from a value channel.
+    resources = init_out.map { stdout_text -> parse_resources(stdout_text) }
+    done      = init_out.map { 'done' }
+}
+
+
+// Fan out one flat-field task per position.
+//
 // take:
 //   positions    collected channel of position keys (e.g. ['A/1/0', 'B/1/0'])
 //   input_zarr   path to the input plate.zarr (raw input)
 //   output_zarr  path to the flat-field corrected output plate.zarr
 //   config       path to the flat-field settings YAML
-//   prev_done    gating channel — flat-field starts once this emits
-workflow flat_field_wf {
+//   resources    RESOURCES payload from flat_field_init_wf
+//   prev_done    gating channel — compute starts once this emits
+workflow flat_field_run_wf {
     take:
     positions
     input_zarr
     output_zarr
     config
+    resources
     prev_done
 
     main:
-    init_out = init_flat_field(input_zarr, output_zarr, config, prev_done.map { 'done' })
-    resources = init_out.map { stdout_text -> parse_resources(stdout_text) }
-
+    // GATE CHANNELS ARE MAPPED TO A TOKEN BEFORE COMBINING, never combined raw.
+    // `combine` FLATTENS a list-valued item into the tuple, so what the producer
+    // happens to emit leaks into the tuple's arity: a step's `done` is a COLLECTED
+    // list of every position, which turned [pos, meta] into
+    // [pos, meta, p1, p2, … p54] and blew up a three-parameter closure with
+    // `MissingMethodException` — after the previous step had already run. Mapping
+    // reads nothing out of the gate, so no producer's payload shape can reach here.
     pos_meta = positions
         .flatMap { items -> items }
         .combine(resources)
+        .combine(prev_done.map { 'done' })
+        .map { pos, meta, _gate -> [pos, meta] }
 
-    ff_done = run_flat_field(pos_meta, input_zarr, output_zarr, config) | collect
+    ff_done = run_flat_field(pos_meta, input_zarr, output_zarr, config, file(config)) | collect
 
     emit:
     done = ff_done

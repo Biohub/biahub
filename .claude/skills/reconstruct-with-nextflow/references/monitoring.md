@@ -68,6 +68,27 @@ tmux list-sessions
 pgrep -fa "nextflow run .*mantis-v2.nf"
 ```
 
+## The unattended loop
+
+SKILL.md §9 starts `/loop 30m /reconstruct-with-nextflow monitor <OUTPUT>` right
+after launch, and each firing runs one monitoring pass (SKILL.md §9a). A pass
+begins with `templates/run_status.sh <OUTPUT>`. It is read-only and prints the
+run's `state` (`running`, `completed`, `aborted`, `head-lost`, `not-started`).
+For an aborted run it also prints the task that ended it, its exit code, the
+last exception line of its `.command.err` and its work directory. It ends with
+per-process counts from `trace.txt` and any position on attempt 4 or later. Use
+the polling commands below when a pass needs more than the summary.
+
+What each pass did is appended to `<OUTPUT>/nextflow/monitor.log`. That file is
+how a later pass, or a later session, knows a failure was already relaunched
+once, so read it before acting. It survives `-resume` relaunches.
+
+The loop belongs to the Claude Code session that started it. When that session
+exits, monitoring stops; re-arm it from any session on Bruno with the same
+`/loop` line. `run_status.sh` decides liveness with a process check on the
+launching host, and by the log's 5-minute heartbeat from anywhere else, so the
+new session need not run on the head's node.
+
 ## What to poll
 
 Poll every few minutes, not seconds — these runs take hours to days, and each
@@ -122,10 +143,12 @@ Two traps, both hit for real:
 
 - **Name the store.** A bare `$d/*.zarr/*/*/*/` overcounts `2-reconstruct`, which
   also holds `transfer_function.zarr` (10 instead of 8 for an 8-position plate).
-- **This counts scaffolds, not finished work.** Each step's cached `init-*` task
-  creates every position's metadata up front, so a step shows its full position
-  count from the moment it starts — a step whose every task *failed* still reads
-  8/8 here. Use it for "has this step started", never for "is this step done".
+- **This counts scaffolds, not finished work.** Every step's `init_*` task runs
+  in the run's first minutes — the pipeline does the whole init chain before any
+  compute — and each creates every position's metadata up front. So EVERY step
+  reads its full position count from a few minutes into the run, including steps
+  that will not start for hours and steps whose every task later fails. Use this
+  only to confirm the init phase completed; it says nothing about progress.
   `trace.txt` is the only authoritative source for completion:
 
 ```bash
@@ -148,9 +171,9 @@ Steps run strictly in sequence; within a step, positions fan out with
 | `run_flat_field` | fan-out, CPU (`preempted`) | first, so it absorbs most preemption |
 | `run_deskew` | fan-out, CPU | CPU on current main, not GPU |
 | `compute_transfer_function` + `run_apply_inv_tf` | one-shot + fan-out, CPU | TF is quick; apply is the bulk |
-| `run_virtual_stain_preprocess` + `run_virtual_stain` | one-shot + fan-out, **GPU** | `gpu` partition, effectively not preempted; longest per-position step |
+| `run_virtual_stain_preprocess` + `run_virtual_stain` | one-shot + fan-out, **GPU** | `preempted` partition, any GPU node (A40 workstations included); a reclaimed task resumes at the timepoint it lost; longest per-position step |
 | `run_concatenate` | **single job**, one reserved node | longest single job; whole-plate I/O |
-| `run_track` | fan-out, GPU (cellpose) | reads the assembled plate |
+| `run_track` | fan-out, GPU (cellpose) | reads the assembled plate and writes `labels/<target_channel>`, `tracks.geff` and a tracks CSV into each position; nothing else is kept (the Ultrack database is temporary, in the node's `$TMPDIR`) |
 
 Per-step wall-time is derived from data volume (`estimate_time_minutes()` in
 `biahub/utils/cluster.py`) and passed through the init step's `RESOURCES:` payload,

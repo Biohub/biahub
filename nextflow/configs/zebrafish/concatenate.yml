@@ -1,24 +1,27 @@
 # Assemble step: concatenate deskew + reconstruct + virtual-stain channel-wise
 # into one multichannel plate.
 #
-# concat_data_paths stay as placeholders — the assemble subworkflow injects the
-# three real source paths via --concat-data-paths (resolve mode). Do NOT replace
-# them with real paths. There must be exactly one entry per source, and
-# channel_names must have the same length.
-concat_data_paths:
-  - placeholder   # 1-deskew
-  - placeholder   # 2-reconstruct
-  - placeholder   # 3-virtual-stain
+# Parameters only. The source stores are passed on the command line, one `-i`
+# per store (the assemble subworkflow does this), so there is no
+# concat_data_paths here. `channel_names: all` takes every channel of every
+# source; to pick channels, give one entry per source in `-i` order, e.g.
+# [all, [Phase3D], all].
+#
+# `time_indices: all` requires every position of every source to have the
+# same number of time points and errors otherwise. To crop on purpose, use
+# a range: {start: 0, stop: <T>} (stop exclusive), with an optional step, or
+# `min` for the shortest; `max` keeps the longest and pads the rest with zeros.
+# A range past the end of the shorter positions pads them the same way.
 time_indices: all
-channel_names:
-  - all
-  - all
-  - all
-chunks_czyx: null
+channel_names: all
+chunks_czyx: [1, 8, 256, 256]   # 2 MiB float32 chunks; the pyramid levels keep this shape
 output_ome_zarr_version: "0.5"
 
-# shards_ratio is a ratio over the CHUNK shape (shards = chunks * ratio,
-# elementwise TCZYX), not an absolute shard shape. Leave unset unless you have a
-# measured reason: raising the T entry multiplies the shard buffer and the RAM
-# request, and one torn shard then loses every timepoint in it.
-# shards_ratio: [1, 1, 6, 7, 5]
+# shards is a size target: iohub builds the largest chunk-aligned shard under it,
+# filling X, Y, Z first and then timepoints (C is never sharded). 5GB on a
+# 171 x 768 x 794 float32 volume gives shards of 9 timepoints by the full volume
+# (4.98 GB; the old 10-timepoint shards were 5.2 GiB, above the DCA 5 GB SHOULD).
+# Do not raise it without a measured reason: the T extent multiplies the shard
+# buffer and the RAM request, and one torn shard loses every timepoint in it.
+# Also accepts "XY" / "XYZ" (one shard per plane / volume) or a TCZYX shape.
+shards: 5GB

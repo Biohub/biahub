@@ -10,9 +10,47 @@ from natsort import natsorted
 from typer.core import TyperOption
 
 
+class OptionEatAllGroups(TyperOption):
+    """Greedy list option that keeps each occurrence as one group.
+
+    ``-i a b -i c`` gives ``[("a", "b"), ("c",)]``, where iohub's ``OptionEatAll``
+    gives ``["a", "b", "c"]``. Declare the option as ``list[str]``; its callback
+    converts the groups.
+    """
+
+    def add_to_parser(self, parser, ctx) -> None:
+        super().add_to_parser(parser, ctx)
+        for opt_name in self.opts:
+            registered = parser._long_opt.get(opt_name) or parser._short_opt.get(opt_name)
+            if registered is None:
+                continue
+            append_group = registered.process
+
+            def eat_all(value, state, _append=append_group, _prefixes=registered.prefixes):
+                group = [value]
+                # Stop before the next option so the parser can handle it.
+                while state.rargs and not any(state.rargs[0].startswith(p) for p in _prefixes):
+                    group.append(state.rargs.pop(0))
+                _append(tuple(group), state)
+
+            registered.process = eat_all
+            break
+
+    def type_cast_value(self, ctx, value):
+        if value is None:
+            return ()
+        return tuple(tuple(self.type(v, self, ctx) for v in group) for group in value)
+
+
 def _eat_all(callback):
     """Mark options using this callback for greedy parsing."""
-    callback.__biahub_eat_all__ = True
+    callback.__biahub_eat_all__ = OptionEatAll
+    return callback
+
+
+def eat_all_groups(callback):
+    """Mark options using this callback for greedy parsing, one group per occurrence."""
+    callback.__biahub_eat_all__ = OptionEatAllGroups
     return callback
 
 
@@ -21,7 +59,11 @@ def _validate_and_process_paths(value: list[Path]) -> list[Path]:
     """Sort input positions and reject plate roots."""
     from iohub.ngff import Plate, open_ome_zarr
 
+    if not value:  # an optional path option that was not given
+        return []
     input_paths = [path for path in natsorted(value) if path.is_dir()]
+    if not input_paths:
+        raise typer.BadParameter(f"no position directory found in {[str(p) for p in value]}")
     with open_ome_zarr(input_paths[0], mode="r") as dataset:
         if isinstance(dataset, Plate):
             raise ValueError(
@@ -29,6 +71,30 @@ def _validate_and_process_paths(value: list[Path]) -> list[Path]:
                 "replace 'input.zarr' with 'input.zarr/0/0/0'"
             )
     return input_paths
+
+
+def position_key(position_dirpath: Path) -> str:
+    """'row/col/fov' of a position directory."""
+    return "/".join(Path(position_dirpath).parts[-3:])
+
+
+def pair_reference_positions(
+    position_keys: list[str], reference_position_dirpaths: list[Path] | None
+) -> dict[str, Path]:
+    """Pair each moving position with the reference position it is registered onto.
+
+    One reference position serves every moving position; several are paired by position
+    key, and a moving position without its reference is an error.
+    """
+    if not reference_position_dirpaths:
+        return {}
+    if len(reference_position_dirpaths) == 1:
+        return {key: Path(reference_position_dirpaths[0]) for key in position_keys}
+    by_key = {position_key(p): Path(p) for p in reference_position_dirpaths}
+    missing = sorted(set(position_keys) - set(by_key))
+    if missing:
+        raise typer.BadParameter(f"no reference position for moving positions {missing}")
+    return {key: by_key[key] for key in position_keys}
 
 
 @_eat_all
@@ -65,28 +131,30 @@ InputPositionDirpaths = Annotated[
     ),
 ]
 
-SourcePositionDirpaths = Annotated[
+MovingPositionDirpaths = Annotated[
     list[Path],
     typer.Option(
-        "--source-position-dirpaths",
-        "-s",
+        "--moving-position-dirpaths",
+        "-m",
         callback=_validate_and_process_paths,
         help=(
-            'Paths to source positions, for example: "source.zarr/0/0/0" '
-            'or "source.zarr/*/*/*"'
+            'Positions of the moving store, for example: "moving.zarr/0/0/0" '
+            'or "moving.zarr/*/*/*"'
         ),
     ),
 ]
 
-TargetPositionDirpaths = Annotated[
+# Optional: omitted, it parses to an empty list. Declare it keyword-only (after `*`).
+ReferencePositionDirpaths = Annotated[
     list[Path],
     typer.Option(
-        "--target-position-dirpaths",
-        "-t",
+        "--reference-position-dirpaths",
+        "-r",
+        default_factory=list,
         callback=_validate_and_process_paths,
         help=(
-            'Paths to target positions, for example: "target.zarr/0/0/0" '
-            'or "target.zarr/*/*/*"'
+            'Positions of the reference store, for example: "reference.zarr/0/0/0" '
+            'or "reference.zarr/*/*/*"'
         ),
     ),
 ]
@@ -184,13 +252,9 @@ SbatchFilepathPredict = Annotated[
 def install_eat_all_options(command) -> None:
     """Install greedy parsing on explicitly marked list options."""
     for param in command.params:
-        if (
-            isinstance(param, TyperOption)
-            and param.multiple
-            and param.callback is not None
-            and getattr(param.callback, "__biahub_eat_all__", False)
-        ):
-            param.__class__ = OptionEatAll
+        option_class = getattr(param.callback, "__biahub_eat_all__", None)
+        if isinstance(param, TyperOption) and param.multiple and option_class is not None:
+            param.__class__ = option_class
 
 
 def sbatch_to_submitit(filepath: str) -> dict:
@@ -287,6 +351,15 @@ monitor = Annotated[
     ),
 ]
 
+# `--monitor` without `-m`, for CLIs whose moving store takes `-m`.
+monitor_long = Annotated[
+    bool,
+    typer.Option(
+        "--monitor",
+        help="Monitor of submitted SLURM jobs.",
+    ),
+]
+
 resume = Annotated[
     bool,
     typer.Option(
@@ -295,9 +368,10 @@ resume = Annotated[
         help=(
             "Skip the (time, channel) units this position already finished in an "
             "earlier attempt instead of recomputing the whole position. For retrying "
-            "a run that was interrupted, e.g. by Slurm preemption. A finished unit is "
-            "skipped without re-deriving it, so pass --no-resume (or use a fresh "
-            "output store) when the settings changed."
+            "a run that was interrupted, e.g. by Slurm preemption. Finished units are "
+            "keyed by the step's validated settings, so a settings change recomputes "
+            "them; a change to the input data does not, so use a fresh output store "
+            "(or --no-resume) after an upstream step was rerun."
         ),
     ),
 ]
