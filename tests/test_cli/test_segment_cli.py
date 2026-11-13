@@ -10,11 +10,11 @@ import pytest
 import torch
 import yaml
 
-from click.testing import CliRunner
 from iohub.ngff import open_ome_zarr
 from iohub.ngff.utils import create_empty_plate
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def run_in_tmp_path(monkeypatch, tmp_path):
 
 
 def _run(*args):
-    return CliRunner().invoke(cli, ["segment", *map(str, args)])
+    return CliRunner().invoke(app, ["segment", *map(str, args)])
 
 
 def _resources(output):
@@ -280,7 +280,7 @@ def test_segment_output_flag_and_version_are_gone(plate_2d, segment_config, tmp_
         "-o", tmp_path / "o.zarr", "-i", plate_path / "A" / "1" / "0", "-c", segment_config()
     )
     assert result.exit_code == 2
-    assert "No such option '-o'" in result.output
+    assert "No such option: -o" in result.output
 
     from biahub.settings import SegmentationSettings
 

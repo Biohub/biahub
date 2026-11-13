@@ -1,39 +1,29 @@
 from pathlib import Path
 
-import click
-
 from waveorder.cli.compute_transfer_function import (
     compute_transfer_function_cli as compute_transfer_function,
 )
 
 from biahub.apply_inverse_transfer_function import apply_inverse_transfer_function
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    InputPositionDirpaths,
+    OutputDirpath,
+    SbatchFilepath,
     cluster,
-    config_filepath,
-    input_position_dirpaths,
     monitor,
-    output_dirpath,
     resume,
-    sbatch_filepath,
 )
 
 
-@click.command("reconstruct")
-@input_position_dirpaths()
-@config_filepath()
-@output_dirpath()
-@sbatch_filepath()
-@cluster()
-@monitor()
-@resume()
 def reconstruct_cli(
-    input_position_dirpaths: list[Path],
-    config_filepath: Path,
-    output_dirpath: Path,
-    sbatch_filepath: str | None = None,
-    cluster: str = "slurm",
-    monitor: bool = False,
-    resume: bool = False,
+    input_position_dirpaths: InputPositionDirpaths,
+    config_filepath: ConfigFilepath,
+    output_dirpath: OutputDirpath,
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor = False,
+    resume: resume = False,
 ):
     """Reconstruct a dataset using a configuration file.
 
@@ -76,7 +66,3 @@ def reconstruct_cli(
         monitor,
         resume=resume,
     )
-
-
-if __name__ == "__main__":
-    reconstruct_cli()

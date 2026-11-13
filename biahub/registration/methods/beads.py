@@ -28,9 +28,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import ants
-import click
 import dask.array as da
 import numpy as np
+import typer
 
 from iohub import open_ome_zarr
 from numpy.typing import ArrayLike
@@ -80,7 +80,7 @@ def overlap_score(
         Overlap fraction in [0, 1]. Returns np.nan if either peak set is empty.
     """
     if len(mov_peaks) == 0 or len(ref_peaks) == 0:
-        click.echo("No peaks found, returning nan metrics")
+        typer.echo("No peaks found, returning nan metrics")
         return np.nan
 
     # ---- Overlap counting using KDTree ----
@@ -101,10 +101,10 @@ def overlap_score(
     peaks_overlap_fraction = peaks_overlap_count / max(min(len(mov_peaks), len(ref_peaks)), 1)
 
     if verbose:
-        click.echo(f"Mov peaks: {len(mov_peaks)}")
-        click.echo(f"Ref peaks: {len(ref_peaks)}")
-        click.echo(f"Peaks overlap count: {peaks_overlap_count}")
-        click.echo(f"Peaks overlap fraction: {peaks_overlap_fraction}")
+        typer.echo(f"Mov peaks: {len(mov_peaks)}")
+        typer.echo(f"Ref peaks: {len(ref_peaks)}")
+        typer.echo(f"Peaks overlap count: {peaks_overlap_count}")
+        typer.echo(f"Peaks overlap fraction: {peaks_overlap_fraction}")
 
     return peaks_overlap_fraction
 
@@ -141,7 +141,7 @@ def peaks_from_beads(
         Tuple of (mov_peaks, ref_peaks).
     """
     if verbose:
-        click.echo("Detecting beads in moving dataset")
+        typer.echo("Detecting beads in moving dataset")
     # TODO: detecte peaks in the zyx space, use skimage.feature.peak_local_max for 2D
     mov_peaks = detect_peaks(
         mov,
@@ -152,7 +152,7 @@ def peaks_from_beads(
         verbose=verbose,
     )
     if verbose:
-        click.echo("Detecting beads in reference dataset")
+        typer.echo("Detecting beads in reference dataset")
     # TODO: detecte peaks in the zyx space, use skimage.feature.peak_local_max for 2D
     ref_peaks = detect_peaks(
         ref,
@@ -163,14 +163,14 @@ def peaks_from_beads(
         verbose=verbose,
     )
     if verbose:
-        click.echo(f"Total of peaks in moving dataset: {len(mov_peaks)}")
-        click.echo(f"Total of peaks in reference dataset: {len(ref_peaks)}")
+        typer.echo(f"Total of peaks in moving dataset: {len(mov_peaks)}")
+        typer.echo(f"Total of peaks in reference dataset: {len(ref_peaks)}")
 
     if len(mov_peaks) < 2 or len(ref_peaks) < 2:
-        click.echo("Not enough beads detected")
+        typer.echo("Not enough beads detected")
         return
     if mask_path is not None:
-        click.echo("Filtering peaks with mask")
+        typer.echo("Filtering peaks with mask")
         with open_ome_zarr(mask_path) as mask_ds:
             mask_load = np.asarray(mask_ds.data[0, 0])
 
@@ -225,7 +225,7 @@ def matches_from_beads(
         (K, 2) array of matched index pairs [mov_idx, ref_idx].
     """
     if verbose:
-        click.echo(f"Getting matches from beads with settings: {beads_match_settings}")
+        typer.echo(f"Getting matches from beads with settings: {beads_match_settings}")
 
     if beads_match_settings.algorithm == "match_descriptor":
         mov_graph = Graph.from_nodes(mov_peaks)
@@ -291,7 +291,7 @@ def matches_from_beads(
     )
 
     if verbose:
-        click.echo(f"Total of matches: {len(matches)}")
+        typer.echo(f"Total of matches: {len(matches)}")
 
     return matches
 
@@ -330,7 +330,7 @@ def transform_from_matches(
         Tuple of forward and inverse transforms.
     """
     if verbose:
-        click.echo(f"Estimating transform with settings: {affine_transform_settings}")
+        typer.echo(f"Estimating transform with settings: {affine_transform_settings}")
     # Detect dimensionality from peaks
     if ndim not in (2, 3):
         raise ValueError(f"Peaks must be 2D or 3D, got {ndim}D")
@@ -399,7 +399,7 @@ def optimize_transform(
 
     # Step 1: Score the current transform by applying it and measuring peak overlap
     if debug:
-        click.echo("Step 1: Scoring current transform (before bead matching)...")
+        typer.echo("Step 1: Scoring current transform (before bead matching)...")
     mov_reg_approx = transform.to_ants().apply_to_image(mov_ants, reference=ref_ants).numpy()
     mov_peaks, ref_peaks = peaks_from_beads(
         mov=mov_reg_approx,
@@ -420,7 +420,7 @@ def optimize_transform(
 
     # Step 2: Match beads and estimate a correction transform
     if debug:
-        click.echo("Step 2: Matching beads to estimate correction transform...")
+        typer.echo("Step 2: Matching beads to estimate correction transform...")
     matches = matches_from_beads(
         mov_peaks=mov_peaks,
         ref_peaks=ref_peaks,
@@ -429,7 +429,7 @@ def optimize_transform(
     )
 
     if len(matches) < 3:
-        click.echo("Not enough matches found, returning the current transform")
+        typer.echo("Not enough matches found, returning the current transform")
         return None, -1
 
     fwd_transform, inv_transform = transform_from_matches(
@@ -444,7 +444,7 @@ def optimize_transform(
 
     # Step 3: Score the composed (corrected) transform
     if debug:
-        click.echo("Step 3: Scoring composed transform (after bead matching)...")
+        typer.echo("Step 3: Scoring composed transform (after bead matching)...")
     mov_reg_optimized = (
         composed_transform.to_ants().apply_to_image(mov_ants, reference=ref_ants).numpy()
     )
@@ -463,14 +463,14 @@ def optimize_transform(
         verbose=debug,
     )
     if debug:
-        click.echo(f"Bead matches: {matches}")
-        click.echo(f"Forward transform: {fwd_transform}")
-        click.echo(f"Inverse transform: {inv_transform}")
-        click.echo(f"Composed transform: {composed_transform}")
+        typer.echo(f"Bead matches: {matches}")
+        typer.echo(f"Forward transform: {fwd_transform}")
+        typer.echo(f"Inverse transform: {inv_transform}")
+        typer.echo(f"Composed transform: {composed_transform}")
 
     if verbose:
-        click.echo(f"Quality score before beads matching: {quality_score_approx}")
-        click.echo(f"Quality score after beads matching: {quality_score_optimized}")
+        typer.echo(f"Quality score before beads matching: {quality_score_approx}")
+        typer.echo(f"Quality score after beads matching: {quality_score_optimized}")
 
     if quality_score_optimized >= quality_score_approx:
         return composed_transform, quality_score_optimized

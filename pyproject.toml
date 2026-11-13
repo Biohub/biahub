@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 dependencies = [
-  "click",
+  "typer>=0.27.2",
   "iohub>=0.3.11",
   "matplotlib",
   "natsort",
@@ -91,7 +91,7 @@ build = ["build", "twine"]
 
 doc = [
     "zensical>=0.0.32",
-    "mkdocs-click>=0.8",
+    "mkdocs-typer2[zensical]>=0.4.1",
 ]
 
 [dependency-groups]
@@ -103,7 +103,7 @@ dev = [
 ]
 
 [project.scripts]
-biahub = "biahub.cli.main:cli"
+biahub = "biahub.cli.main:app"
 
 [tool.uv]
 # Needed so that uv considers pypi (and not only the pytorch CPU extra index)

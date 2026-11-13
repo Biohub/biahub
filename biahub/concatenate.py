@@ -1,11 +1,11 @@
 import glob
 
-from collections.abc import Callable
 from pathlib import Path
+from typing import Annotated
 
-import click
 import numpy as np
 import submitit
+import typer
 
 from iohub import open_ome_zarr
 from iohub.ngff import Plate
@@ -13,15 +13,15 @@ from iohub.ngff.utils import create_empty_plate, process_single_position
 from natsort import natsorted
 
 from biahub.cli.monitor import monitor_jobs
-from biahub.cli.option_eat_all import OptionEatAll
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    OutputDirpath,
+    SbatchFilepath,
     cluster,
-    config_filepath,
+    eat_all_groups,
     init_only,
     monitor,
-    output_dirpath,
     resume,
-    sbatch_filepath,
     sbatch_to_submitit,
 )
 from biahub.settings import ConcatenateSettings, TimeRange
@@ -227,7 +227,7 @@ def _channel_combiner_metadata(
                     # A channel name seen in an earlier source shares that
                     # source's output channel. Only valid when the two write
                     # different positions; _check_no_overwrites() enforces it.
-                    click.echo(
+                    typer.echo(
                         f"Warning: Channel {channel} appears in more than one source; "
                         "they share one output channel."
                     )
@@ -244,9 +244,9 @@ def _channel_combiner_metadata(
     if len(all_slicing_params) > 1:
         _validate_slicing_params_zyx(all_slicing_params)
 
-    click.echo(f"Channel names: {all_channel_names}")
-    click.echo(f"Input channel indices: {input_channel_idx}")
-    click.echo(f"Output channel indices: {output_channel_idx}")
+    typer.echo(f"Channel names: {all_channel_names}")
+    typer.echo(f"Input channel indices: {input_channel_idx}")
+    typer.echo(f"Output channel indices: {output_channel_idx}")
 
     return (
         all_data_paths,
@@ -333,7 +333,7 @@ def _cropped_size(slice_params_zyx: list[slice]) -> tuple[int, int, int]:
     x_size = abs(slice_params_zyx[2].stop - slice_params_zyx[2].start)
 
     cropped_shape_zyx = (z_size, y_size, x_size)
-    click.echo(f"Output ZYX shape after cropping: {cropped_shape_zyx}")
+    typer.echo(f"Output ZYX shape after cropping: {cropped_shape_zyx}")
 
     return cropped_shape_zyx
 
@@ -431,9 +431,8 @@ def _check_no_overwrites(
             writer[key] = source
 
 
-def _validate_source_groups(
-    ctx: click.Context, opt: click.Option, value: tuple[tuple[str, ...], ...]
-) -> list[list[Path]] | None:
+@eat_all_groups
+def _validate_source_groups(value: list[tuple[str, ...]] | None) -> list[list[Path]] | None:
     """Each ``-i`` occurrence is one source store's positions."""
     if not value:
         return None
@@ -441,45 +440,38 @@ def _validate_source_groups(
     for group in value:
         paths = [p for p in map(Path, natsorted(group)) if p.is_dir()]
         if not paths:
-            raise click.BadParameter(f"No position directories in {list(group)}")
+            raise typer.BadParameter(f"No position directories in {list(group)}")
         with open_ome_zarr(paths[0], mode="r") as dataset:
             if isinstance(dataset, Plate):
-                raise click.BadParameter(
+                raise typer.BadParameter(
                     f"{paths[0]} is an HCS plate; supply positions, e.g. {paths[0]}/*/*/*"
                 )
         groups.append(paths)
     return groups
 
 
-def input_position_dirpaths() -> Callable:
-    """``-i``, repeated once per source store.
-
-    Concatenate's own variant of ``biahub.cli.parsing.input_position_dirpaths``:
-    that one flattens every ``-i`` into a single list, whereas here the i-th
-    ``-i`` is the i-th source and pairs with the i-th per-source entry of the
-    config (channel_names, X/Y/Z_slice). Each occurrence eats the paths a shell
-    glob expands to, up to the next option, so ``-i a.zarr/*/*/* -i b.zarr/*/*/*``
-    and ``-i a.zarr/A/1/0 -i b.zarr/A/1/0`` both parse as two groups.
-    """
-
-    def decorator(f: Callable) -> Callable:
-        return click.option(
-            "--input-position-dirpaths",
-            "-i",
-            "input_position_dirpaths",
-            cls=OptionEatAll,
-            type=tuple,
-            multiple=True,
-            callback=_validate_source_groups,
-            help=(
-                "Positions of ONE source store; repeat once per store, in the order of "
-                'the config\'s per-source entries. For example "-i a.zarr/*/*/* -i b.zarr/*/*/*" '
-                'or, for a single position, "-i a.zarr/A/1/0 -i b.zarr/A/1/0". Overrides '
-                "concat_data_paths in the config."
-            ),
-        )(f)
-
-    return decorator
+# ``-i``, repeated once per source store.
+#
+# Concatenate's own variant of ``biahub.cli.parsing.InputPositionDirpaths``: that one
+# flattens every ``-i`` into a single list, whereas here the i-th ``-i`` is the i-th
+# source and pairs with the i-th per-source entry of the config (channel_names,
+# X/Y/Z_slice). Each occurrence eats the paths a shell glob expands to, up to the next
+# option, so ``-i a.zarr/*/*/* -i b.zarr/*/*/*`` and ``-i a.zarr/A/1/0 -i b.zarr/A/1/0``
+# both parse as two groups.
+SourceGroupDirpaths = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--input-position-dirpaths",
+        "-i",
+        callback=_validate_source_groups,
+        help=(
+            "Positions of ONE source store; repeat once per store, in the order of "
+            'the config\'s per-source entries. For example "-i a.zarr/*/*/* -i b.zarr/*/*/*" '
+            'or, for a single position, "-i a.zarr/A/1/0 -i b.zarr/A/1/0". Overrides '
+            "concat_data_paths in the config."
+        ),
+    ),
+]
 
 
 def _resolve_concatenate_inputs(
@@ -541,7 +533,7 @@ def _resolve_concatenate_inputs(
         )
 
     if not all(voxel_size == all_voxel_sizes[0] for voxel_size in all_voxel_sizes):
-        click.echo(
+        typer.echo(
             "Warning: Datasets have different voxel sizes. Taking the first voxel size."
         )
 
@@ -551,7 +543,7 @@ def _resolve_concatenate_inputs(
     if all(dtype == all_dtypes[0] for dtype in all_dtypes):
         dtype = all_dtypes[0]
     else:
-        click.echo("Warning: not all dtypes match. Casting data at float32.")
+        typer.echo("Warning: not all dtypes match. Casting data at float32.")
         dtype = np.float32
 
     input_time_indices = _resolve_time_indices(settings, all_shapes, all_data_paths)
@@ -618,7 +610,7 @@ def _resolve_concatenate_inputs(
             [i for i, t in enumerate(input_time_indices) if t >= shape[0]]
         )
         if len(kept) < len(input_time_indices):
-            click.echo(
+            typer.echo(
                 f"time_indices {label}: padding {path}: it has {shape[0]} time points, "
                 f"so {len(input_time_indices) - len(kept)} of the {len(input_time_indices)} "
                 "taken stay zero."
@@ -626,7 +618,7 @@ def _resolve_concatenate_inputs(
         if len(kept) < shape[0]:
             num_cropped += 1
     if num_cropped:
-        click.echo(
+        typer.echo(
             f"time_indices {label}: cropping: {num_cropped} of {len(all_data_paths)} source "
             f"positions have time points that are not taken (up to "
             f"{max(shape[0] for shape in all_shapes)}; {len(input_time_indices)} taken), "
@@ -635,7 +627,7 @@ def _resolve_concatenate_inputs(
 
     # If input shapes differ but slicing is specified, inform the user
     if not all(shape[-3:] == all_shapes[0][-3:] for shape in all_shapes):
-        click.echo(
+        typer.echo(
             "Warning: Datasets have different shapes, but slicing parameters are specified. Will validate output shapes after cropping."
         )
 
@@ -701,7 +693,7 @@ def _init_output_plate(
         extra_metadata={"biahub-concatenate": settings.model_dump()},
         **prep["output_metadata"],
     )
-    click.echo(f"Created {len(missing)} positions in {output_dirpath}")
+    typer.echo(f"Created {len(missing)} positions in {output_dirpath}")
 
 
 def _clear_padding(prep: dict) -> None:
@@ -725,7 +717,7 @@ def _clear_padding(prep: dict) -> None:
             for t in padded_time_indices:
                 for c in output_channel_idx:
                     position.data[t, c] = 0
-        click.echo(
+        typer.echo(
             f"Cleared padded time points {padded_time_indices} of channels "
             f"{output_channel_idx} in existing {output_position_path}"
         )
@@ -810,7 +802,7 @@ def concatenate(
 
     if init_only:
         num_positions = len({p.parts[-3:] for p in prep["output_position_paths"]})
-        click.echo(f"Initialized {output_dirpath} ({num_positions} positions)")
+        typer.echo(f"Initialized {output_dirpath} ({num_positions} positions)")
         return
 
     _clear_padding(prep)
@@ -830,11 +822,11 @@ def concatenate(
         slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
     resolved_cluster = get_submitit_cluster(cluster=cluster)
-    click.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     executor.update_parameters(**slurm_args)
 
-    click.echo("Submitting jobs...")
+    typer.echo("Submitting jobs...")
     jobs = []
     job_paths = []
 
@@ -894,31 +886,23 @@ def concatenate(
     if resolved_cluster == "debug":
         for job, path in zip(jobs, job_paths, strict=True):
             job.wait()
-            click.echo(f"Concatenate complete: {path}")
+            typer.echo(f"Concatenate complete: {path}")
         return
 
     if monitor:
         monitor_jobs(jobs, job_paths)
 
 
-@click.command("concatenate")
-@input_position_dirpaths()
-@config_filepath()
-@output_dirpath()
-@sbatch_filepath()
-@cluster()
-@monitor()
-@init_only()
-@resume()
 def concatenate_cli(
-    input_position_dirpaths: list[list[Path]] | None,
-    config_filepath: Path,
-    output_dirpath: Path,
-    sbatch_filepath: str | None = None,
-    cluster: str = "slurm",
-    monitor: bool = False,
-    init_only: bool = False,
-    resume: bool = False,
+    *,
+    input_position_dirpaths: SourceGroupDirpaths = None,
+    config_filepath: ConfigFilepath,
+    output_dirpath: OutputDirpath,
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor = False,
+    init_only: init_only = False,
+    resume: resume = False,
 ):
     """Concatenate datasets channel-wise (with optional cropping).
 
@@ -946,7 +930,3 @@ def concatenate_cli(
         init_only=init_only,
         resume=resume,
     )
-
-
-if __name__ == "__main__":
-    concatenate_cli()

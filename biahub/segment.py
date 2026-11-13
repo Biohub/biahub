@@ -3,22 +3,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import click
 import numpy as np
 import submitit
+import typer
 
 from iohub.ngff import open_ome_zarr
 from iohub.ngff.utils import create_empty_labels, process_single_position
 
 from biahub.cli.monitor import monitor_jobs
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    InputPositionDirpaths,
+    SbatchFilepath,
     cluster,
-    config_filepath,
     init_only,
-    input_position_dirpaths,
     monitor,
     resume,
-    sbatch_filepath,
     sbatch_to_submitit,
 )
 from biahub.settings import SegmentationSettings
@@ -150,9 +150,9 @@ def _segment_czyx(
 
     czyx_segmentation = []
     for model in models:
-        click.echo(f"Segmenting with model {model.name}")
+        typer.echo(f"Segmenting with model {model.name}")
         for func, c_idx, kwargs in model.preprocessing:
-            click.echo(
+            typer.echo(
                 f"Processing with {func.__name__} with kwargs {kwargs} to channel {c_idx}"
             )
             czyx_data[c_idx] = func(czyx_data[c_idx], **kwargs)
@@ -367,7 +367,7 @@ def segment(
         # than N workers racing for it. Workers must not (staging needs cellpose unimported).
         for name in dict.fromkeys(m.pretrained_model for m in models):
             warm_cellpose_weights(name)
-        click.echo(
+        typer.echo(
             f"Created labels/{{{', '.join(m.name for m in models)}}} in "
             f"{Path(input_position_dirpaths[0]).parents[2]} "
             f"({len(input_position_dirpaths)} positions)"
@@ -389,7 +389,7 @@ def segment(
     if sbatch_filepath:
         slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
-    click.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     if resolved_cluster == "local":
         # Explicit --sbatch-filepath values (e.g. '#LOCAL --timeout-min') win over
@@ -397,7 +397,7 @@ def segment(
         slurm_args = {**local_executor_parameters(time_minutes), **slurm_args}
     executor.update_parameters(**slurm_args)
 
-    click.echo("Submitting jobs...")
+    typer.echo("Submitting jobs...")
     jobs = []
     with submitit.helpers.clean_env(), executor.batch():
         for input_position_path in input_position_dirpaths:
@@ -423,29 +423,21 @@ def segment(
     if resolved_cluster == "debug":
         for job, path in zip(jobs, input_position_dirpaths, strict=True):
             job.wait()
-            click.echo(f"Segmentation complete: {path}")
+            typer.echo(f"Segmentation complete: {path}")
         return
 
     if monitor:
         monitor_jobs(jobs, input_position_dirpaths)
 
 
-@click.command("segment")
-@input_position_dirpaths()
-@config_filepath()
-@sbatch_filepath()
-@cluster()
-@monitor()
-@init_only()
-@resume()
 def segment_cli(
-    input_position_dirpaths: list[Path],
-    config_filepath: Path,
-    sbatch_filepath: str | None = None,
-    cluster: str = "slurm",
-    monitor: bool = False,
-    init_only: bool = False,
-    resume: bool = False,
+    input_position_dirpaths: InputPositionDirpaths,
+    config_filepath: ConfigFilepath,
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor = False,
+    init_only: init_only = False,
+    resume: resume = False,
 ):
     """Segment positions with cellpose 4 models configured in a YAML file.
 
@@ -474,7 +466,3 @@ def segment_cli(
         init_only=init_only,
         resume=resume,
     )
-
-
-if __name__ == "__main__":
-    segment_cli()

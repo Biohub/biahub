@@ -1,9 +1,10 @@
 import os
 
 from pathlib import Path
+from typing import Annotated
 
-import click
 import submitit
+import typer
 
 from iohub.ngff import open_ome_zarr
 from iohub.ngff.utils import create_empty_plate
@@ -17,14 +18,14 @@ from waveorder.cli.utils import estimate_resources as wo_estimate_resources
 
 from biahub.cli.monitor import monitor_jobs
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    InputPositionDirpaths,
+    OutputDirpath,
+    SbatchFilepath,
     cluster,
-    config_filepath,
     init_only,
-    input_position_dirpaths,
     monitor,
-    output_dirpath,
     resume,
-    sbatch_filepath,
     sbatch_to_submitit,
 )
 from biahub.utils.cluster import (
@@ -161,7 +162,7 @@ def apply_inverse_transfer_function(
     echo_resources(num_cpus, mem_gb, time_minutes)
 
     if init_only:
-        click.echo(
+        typer.echo(
             f"Created {output_dirpath} ({len(input_position_dirpaths)} positions, "
             f"{len(settings.output_channel_names)} output channels)"
         )
@@ -185,11 +186,11 @@ def apply_inverse_transfer_function(
         slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
     resolved_cluster = get_submitit_cluster(cluster=cluster)
-    click.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     executor.update_parameters(**slurm_args)
 
-    click.echo("Submitting jobs...")
+    typer.echo("Submitting jobs...")
     jobs = []
     with submitit.helpers.clean_env(), executor.batch():
         for pos_path in input_position_dirpaths:
@@ -219,39 +220,31 @@ def apply_inverse_transfer_function(
     if resolved_cluster == "debug":
         for job, path in zip(jobs, input_position_dirpaths, strict=True):
             job.wait()
-            click.echo(f"Apply-inv-tf complete: {path}")
+            typer.echo(f"Apply-inv-tf complete: {path}")
         return
 
     if monitor:
         monitor_jobs(jobs, input_position_dirpaths)
 
 
-@click.command("apply-inv-tf")
-@input_position_dirpaths()
-@click.option(
-    "--transfer-function-dirpath",
-    "-t",
-    default=None,
-    type=click.Path(),
-    help="Path to transfer function zarr (not required for --init).",
-)
-@config_filepath()
-@output_dirpath()
-@sbatch_filepath()
-@cluster()
-@monitor()
-@init_only()
-@resume()
 def apply_inverse_transfer_function_cli(
-    input_position_dirpaths: list[Path],
-    transfer_function_dirpath: str | None,
-    config_filepath: Path,
-    output_dirpath: Path,
-    sbatch_filepath: str | None = None,
-    cluster: str = "slurm",
-    monitor: bool = False,
-    init_only: bool = False,
-    resume: bool = False,
+    *,
+    input_position_dirpaths: InputPositionDirpaths,
+    transfer_function_dirpath: Annotated[
+        Path | None,
+        typer.Option(
+            "--transfer-function-dirpath",
+            "-t",
+            help="Path to transfer function zarr (not required for --init).",
+        ),
+    ] = None,
+    config_filepath: ConfigFilepath,
+    output_dirpath: OutputDirpath,
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor = False,
+    init_only: init_only = False,
+    resume: resume = False,
 ):
     r"""Apply an inverse transfer function to a dataset using a configuration file.
 
@@ -271,7 +264,7 @@ def apply_inverse_transfer_function_cli(
     >>> biahub apply-inv-tf --cluster debug -i ./input.zarr/A/1/0 -t ./tf.zarr -c ./config.yml -o ./output.zarr
     """
     if not init_only and transfer_function_dirpath is None:
-        raise click.UsageError(
+        raise typer.BadParameter(
             "--transfer-function-dirpath / -t is required unless using --init."
         )
 
@@ -288,7 +281,3 @@ def apply_inverse_transfer_function_cli(
         init_only=init_only,
         resume=resume,
     )
-
-
-if __name__ == "__main__":
-    apply_inverse_transfer_function_cli()

@@ -1,11 +1,12 @@
-import click
 import numpy as np
 import pytest
+import typer
 
-from click.testing import CliRunner
+from typer.testing import CliRunner
 
+from biahub.cli.main import app
 from biahub.settings import TransformEntry, TransformSettings, load_transform_settings
-from biahub.substitute_transforms import substitute_transforms, substitute_transforms_cli
+from biahub.substitute_transforms import substitute_transforms
 from biahub.utils.config import model_to_yaml
 
 
@@ -123,8 +124,9 @@ def test_substitute_transforms_cli_writes_the_combined_file(tmp_path):
     output = tmp_path / "final.yml"
 
     result = CliRunner().invoke(
-        substitute_transforms_cli,
+        app,
         [
+            "substitute-transforms",
             "-c",
             str(tmp_path / "beads.yml"),
             "-s",
@@ -148,11 +150,11 @@ def test_a_previous_frame_file_cannot_take_or_give_substitutes():
     # substitute at t cannot fix the later timepoints chained through the bad step, and a
     # one-timepoint 'previous' estimate holds a single step, not the accumulated drift.
     chained = _beads(reference_frame="previous")
-    with pytest.raises(click.UsageError, match="reference frame 'previous'"):
+    with pytest.raises(typer.BadParameter, match="reference frame 'previous'"):
         substitute_transforms(chained, [("manual.yml", _single(2, 50.0))])
     step_only = _single(2, 50.0)
     step_only.reference_frame = "previous"
-    with pytest.raises(click.UsageError, match="reference frame 'previous'"):
+    with pytest.raises(typer.BadParameter, match="reference frame 'previous'"):
         substitute_transforms(_beads(), [("prev.yml", step_only)])
     # an older file says nothing about its frame: allowed, as before
     substitute_transforms(_beads(), [("manual.yml", _single(2, 50.0))])
@@ -165,7 +167,7 @@ def test_a_substitute_from_another_voxel_grid_is_refused():
     other_grid = _single(1, 0.0).model_copy(
         update={"voxel_size": [1.0, 1.0, 0.2, 0.103, 0.103]}
     )
-    with pytest.raises(click.UsageError, match="voxel size"):
+    with pytest.raises(typer.BadParameter, match="voxel size"):
         substitute_transforms(base, [("x.yml", other_grid)])
     same_grid = _single(1, 0.0).model_copy(update={"voxel_size": base.voxel_size})
     substitute_transforms(base, [("x.yml", same_grid)])  # same grid: fine
@@ -188,5 +190,5 @@ def test_a_selected_position_missing_from_a_substitute_is_named():
         method="manual",
         positions={"A/1/0": [TransformEntry(t=0, matrix=_shift(1))]},
     )
-    with pytest.raises(click.UsageError, match=r"sub.yml.*A/1/1"):
+    with pytest.raises(typer.BadParameter, match=r"sub.yml.*A/1/1"):
         substitute_transforms(base, [("sub.yml", sub)], positions=("A/1/1",))

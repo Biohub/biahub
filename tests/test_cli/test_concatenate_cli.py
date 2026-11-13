@@ -1,10 +1,10 @@
 import numpy as np
 import yaml
 
-from click.testing import CliRunner
 from iohub.ngff import open_ome_zarr
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 
 _POSITIONS = [("A", "1", "0"), ("B", "1", "0")]
 
@@ -54,7 +54,7 @@ def test_init_with_grouped_inputs(create_custom_plate, tmp_path):
     output_zarr = tmp_path / "output.zarr"
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "concatenate",
             "--init",
@@ -91,7 +91,7 @@ def test_per_position_worker_after_init(create_custom_plate, tmp_path):
     runner = CliRunner()
 
     init = runner.invoke(
-        cli,
+        app,
         [
             "concatenate",
             "--init",
@@ -107,7 +107,7 @@ def test_per_position_worker_after_init(create_custom_plate, tmp_path):
 
     def run_position(key):
         return runner.invoke(
-            cli,
+            app,
             [
                 "concatenate",
                 "--cluster",
@@ -135,7 +135,7 @@ def test_per_position_worker_after_init(create_custom_plate, tmp_path):
     # Reference: the whole plate in one in-process run.
     reference_zarr = tmp_path / "reference.zarr"
     single_shot = runner.invoke(
-        cli,
+        app,
         [
             "concatenate",
             "--cluster",
@@ -175,7 +175,7 @@ def test_cluster_debug_single_shot(create_custom_plate, tmp_path):
     output_zarr = tmp_path / "output.zarr"
 
     result = CliRunner().invoke(
-        cli,
+        app,
         ["concatenate", "--cluster", "debug", "-c", str(config_path), "-o", str(output_zarr)],
     )
 
@@ -196,7 +196,7 @@ def test_per_source_length_mismatch_fails_before_creating_anything(
     output_zarr = tmp_path / "output.zarr"
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "concatenate",
             "--init",
@@ -218,7 +218,7 @@ def test_no_sources_fails(tmp_path):
     """Neither -i nor concat_data_paths: a clear error, not a traceback deep inside."""
     config_path = _params_only_config(tmp_path)
     result = CliRunner().invoke(
-        cli, ["concatenate", "--init", "-c", str(config_path), "-o", str(tmp_path / "o.zarr")]
+        app, ["concatenate", "--init", "-c", str(config_path), "-o", str(tmp_path / "o.zarr")]
     )
     assert result.exit_code != 0
     assert "No sources" in str(result.exception)

@@ -3,9 +3,9 @@
 The sibling filter and the one-child merge.
 """
 
-import click
 import numpy as np
 import pandas as pd
+import typer
 
 from numpy.typing import ArrayLike
 
@@ -26,7 +26,7 @@ def filter_short_siblings(
     n_before = tracks_df.track_id.nunique()
     tracks_df, labels = filter_short_sibling_tracks(tracks_df, min_length, segments=labels)
     tracks_df = tracks_df.sort_values(["track_id", "t"]).reset_index(drop=True)
-    click.echo(
+    typer.echo(
         f"Sibling filter (min_length={min_length}): {n_before} -> "
         f"{tracks_df.track_id.nunique()} tracks"
     )

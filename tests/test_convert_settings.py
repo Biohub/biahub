@@ -1,15 +1,15 @@
 import numpy as np
 import pytest
 
-from click.testing import CliRunner
+from typer.testing import CliRunner
 
+from biahub.cli.main import app
 from biahub.registration.legacy.convert_settings import (
     EstimateRegistrationSettings,
     EstimateStabilizationSettings,
     RegistrationSettings,
     StabilizationSettings,
     convert_settings,
-    convert_settings_cli,
     load_legacy_settings,
 )
 from biahub.settings import (
@@ -128,8 +128,14 @@ def test_convert_settings_cli_writes_a_config_the_strict_loaders_accept(tmp_path
     runner = CliRunner()
     for name in ("estimate", "register"):
         result = runner.invoke(
-            convert_settings_cli,
-            ["-c", str(tmp_path / f"{name}.yml"), "-o", str(tmp_path / f"{name}.unified.yml")],
+            app,
+            [
+                "convert-settings",
+                "-c",
+                str(tmp_path / f"{name}.yml"),
+                "-o",
+                str(tmp_path / f"{name}.unified.yml"),
+            ],
         )
         assert result.exit_code == 0, result.output
     estimate = load_estimate_transform_settings(tmp_path / "estimate.unified.yml")
@@ -164,7 +170,7 @@ def test_convert_settings_folds_per_position_stabilize_configs(tmp_path):
     output = tmp_path / "transforms.yml"
 
     result = CliRunner().invoke(
-        convert_settings_cli, ["-c", str(folder / "*.yml"), "-o", str(output)]
+        app, ["convert-settings", "-c", str(folder / "*.yml"), "-o", str(output)]
     )
 
     assert result.exit_code == 0, result.output
@@ -180,7 +186,8 @@ def test_convert_settings_refuses_to_fold_files_that_are_not_per_position_stabil
             "source_channel_name: GFP\ntarget_channel_name: Phase3D\nestimation_method: ants\n"
         )
     result = CliRunner().invoke(
-        convert_settings_cli, ["-c", str(tmp_path / "*.yml"), "-o", str(tmp_path / "out.yml")]
+        app,
+        ["convert-settings", "-c", str(tmp_path / "*.yml"), "-o", str(tmp_path / "out.yml")],
     )
     assert result.exit_code != 0 and "per-position stabilize" in result.output
 

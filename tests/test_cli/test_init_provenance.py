@@ -11,10 +11,10 @@ still empty. These tests pin the property that makes the chain hold.
 import pytest
 import yaml
 
-from click.testing import CliRunner
 from iohub.ngff import open_ome_zarr
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 
 
 @pytest.fixture()
@@ -26,7 +26,7 @@ def flat_field_config(tmp_path):
 
 def _init(runner, command, input_zarr, config, output_zarr):
     result = runner.invoke(
-        cli,
+        app,
         [
             command,
             "-i",

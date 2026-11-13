@@ -8,11 +8,11 @@ import pandas as pd
 import pytest
 import yaml
 
-from click.testing import CliRunner
 from iohub.ngff import open_ome_zarr
 from iohub.ngff.utils import create_empty_labels
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 from biahub.settings import TrackingSettings
 from biahub.track import _init_labels, track, write_tracking_labels
 from biahub.utils.ngff import LABEL_SHARDS, label_chunks, label_layout
@@ -267,7 +267,7 @@ def test_track_cli_foreground_contour_path(tmp_path, example_tracking_plate, mon
     config_path = _make_foreground_contour_config(plate_path, tmp_path)
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "-i",
@@ -363,7 +363,7 @@ def test_track_cli_init_only(tmp_path, example_tracking_plate):
 
     runner = CliRunner()
     result = runner.invoke(
-        cli,
+        app,
         [
             "track",
             "-i",
@@ -405,7 +405,7 @@ def test_track_init_requires_the_input_label_image(tmp_path, create_custom_plate
     config_path = _make_tracking_config(plate_path, tmp_path)
 
     result = CliRunner().invoke(
-        cli, ["track", "--init", "-i", str(plate_path / "A/1/0"), "-c", str(config_path)]
+        app, ["track", "--init", "-i", str(plate_path / "A/1/0"), "-c", str(config_path)]
     )
 
     assert result.exit_code != 0
@@ -427,7 +427,7 @@ def test_track_cli_debug_single_position(tmp_path, example_tracking_plate, monke
 
     def run():
         return CliRunner().invoke(
-            cli,
+            app,
             [
                 "track",
                 "-i",
@@ -515,7 +515,7 @@ def test_track_debug_run_with_an_output_label(tmp_path, example_tracking_plate, 
     position_path = plate_path / "A" / "1" / "0"
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "--cluster",
@@ -676,7 +676,7 @@ def test_track_cli_refuses_a_3d_input_for_2d_tracking(tmp_path, create_custom_pl
     config_path = _make_tracking_config(plate_path, tmp_path)
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "-i",
@@ -713,7 +713,7 @@ def test_input_images_path_override(tmp_path, example_tracking_plate, monkeypatc
 
     runner = CliRunner()
     result = runner.invoke(
-        cli,
+        app,
         [
             "track",
             "-i",
@@ -813,7 +813,7 @@ def test_track_passes_min_sibling_length_to_each_position(
     config_path.write_text(yaml.safe_dump(config))
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "--cluster",
@@ -898,12 +898,12 @@ def test_track_debug_run_applies_the_sibling_filter(tmp_path, example_tracking_p
 
     assert (
         CliRunner()
-        .invoke(cli, ["track", "--init", "-i", position, "-o", out, "-c", str(config_path)])
+        .invoke(app, ["track", "--init", "-i", position, "-o", out, "-c", str(config_path)])
         .exit_code
         == 0
     )
     result = CliRunner().invoke(
-        cli, ["track", "--cluster", "debug", "-i", position, "-o", out, "-c", str(config_path)]
+        app, ["track", "--cluster", "debug", "-i", position, "-o", out, "-c", str(config_path)]
     )
 
     assert result.exit_code == 0, result.output
@@ -937,7 +937,7 @@ def test_track_jobs_ask_for_no_gpu(tmp_path, example_tracking_plate, monkeypatch
     config_path = _make_tracking_config(plate_path, tmp_path)
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "--cluster",
@@ -991,7 +991,7 @@ def test_track_local_sbatch_file_overrides_computed_parameters(
     sbatch.write_text("#LOCAL --timeout-min=5\n")
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "--cluster",
@@ -1042,7 +1042,7 @@ def test_track_local_timeout_ignores_a_slurm_time_string(
     sbatch.write_text("#SBATCH --time=3:00:00\n")
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "--cluster",
@@ -1093,7 +1093,7 @@ def test_track_mem_per_cpu_override_drops_the_computed_total(
     sbatch.write_text("#SBATCH --mem-per-cpu=16G\n")
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "--cluster",

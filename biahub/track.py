@@ -2,11 +2,12 @@ import logging
 import shutil
 
 from pathlib import Path
+from typing import Annotated
 
-import click
 import numpy as np
 import pandas as pd
 import submitit
+import typer
 import zarr
 
 from iohub import open_ome_zarr
@@ -15,13 +16,12 @@ from numpy.typing import ArrayLike
 
 from biahub.cli.monitor import monitor_jobs
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    InputPositionDirpaths,
+    SbatchFilepath,
     cluster,
-    config_filepath,
     init_only,
-    input_position_dirpaths,
     monitor,
-    output_dirpath,
-    sbatch_filepath,
     sbatch_to_submitit,
 )
 from biahub.settings import (
@@ -156,7 +156,7 @@ def load_data(
             with open_ome_zarr(image_path) as dataset:
                 image_channel_names = dataset.channel_names
                 for channel_name, _ in image.channels.items():
-                    click.echo(f"Loading data for channel {channel_name} from {image.path}")
+                    typer.echo(f"Loading data for channel {channel_name} from {image.path}")
                     tzyx = dataset.data.dask_array()[
                         :, image_channel_names.index(channel_name)
                     ]
@@ -217,7 +217,7 @@ def load_labels(
         if empty_frames_idx:
             labels = fill_empty_frames(labels, empty_frames_idx)
     n_cells = [len(np.unique(frame)) - 1 for frame in labels]
-    click.echo(
+    typer.echo(
         f"Labels {label_name!r}: cells per frame mean={np.mean(n_cells):.1f}, "
         f"min={np.min(n_cells)}, max={np.max(n_cells)}"
     )
@@ -249,7 +249,7 @@ def tracker_image_channel(
             "written by `biahub segment`); set image_channel in the tracker's config."
         )
     if len(channels) > 1:
-        click.echo(
+        typer.echo(
             f"labels/{label_name} was segmented from {channels}; the tracker reads the "
             f"first, {channels[0]!r} (set image_channel to choose another)."
         )
@@ -298,12 +298,12 @@ def link_fixed_labels(
     """
     labels = load_labels(position_dirpath, label_name, "2D", blank_frames_path)
     if tracker == "tracksdata":
-        click.echo(f"Tracking the labels of labels/{label_name} with tracksdata...")
+        typer.echo(f"Tracking the labels of labels/{label_name} with tracksdata...")
         return run_tracksdata(labels, tracksdata_config, pixel_size)
     config = hoct_config if tracker == "hoct" else trackastra_config
     channel = tracker_image_channel(position_dirpath, label_name, config.image_channel)
     images = load_tracker_image(position_dirpath, channel, blank_frames_path)
-    click.echo(
+    typer.echo(
         f"Tracking the labels of labels/{label_name} with {tracker} (image {channel!r})..."
     )
     if tracker == "hoct":
@@ -441,7 +441,7 @@ def track_one_position(
     """
     position_dirpath = Path(position_dirpath)
     fov = "_".join(position_key)
-    click.echo(f"Processing FOV: {fov.replace('_', '/')}")
+    typer.echo(f"Processing FOV: {fov.replace('_', '/')}")
 
     if tracker != "ultrack":
         tracking_labels, tracks_df = link_fixed_labels(
@@ -463,13 +463,13 @@ def track_one_position(
         stale_geff = position_dirpath / f"{tracks_stem}.geff"
         if stale_geff.exists():
             shutil.rmtree(stale_geff)
-            click.echo(
+            typer.echo(
                 f"Removed {stale_geff.name}, left by an earlier run: {tracker} writes none."
             )
         tracks_df.to_csv(position_dirpath / f"{tracks_stem}_{fov}.csv", index=False)
         with open_ome_zarr(position_dirpath, mode="r+") as position:
             write_tracking_labels(position.get_label(label_name)["0"], tracking_labels, "2D")
-        click.echo(f"Saved labels and tracks to: {position_dirpath}")
+        typer.echo(f"Saved labels and tracks to: {position_dirpath}")
         return
 
     with open_ome_zarr(position_dirpath, mode="r") as position:
@@ -490,13 +490,13 @@ def track_one_position(
         if input_label is not None:
             labels = load_labels(position_dirpath, input_label, output_mode, blank_frames_path)
             detection_kwargs = {"labels": labels, "sigma": labels_sigma}
-            click.echo(f"Tracking the labels of labels/{input_label}...")
+            typer.echo(f"Tracking the labels of labels/{input_label}...")
         else:
             # Load, run the processing pipeline, and fill blank frames.
             data_dict = _load_and_preprocess(position_key, input_images, blank_frames_path)
             foreground_mask, contour_gradient_map = detect_foreground_segmentation(data_dict)
             detection_kwargs = {"detection": foreground_mask, "edges": contour_gradient_map}
-            click.echo("Tracking with foreground + contour...")
+            typer.echo("Tracking with foreground + contour...")
 
         tracking_labels, tracks_df, _ = run_ultrack(
             tracking_config=tracking_config,
@@ -523,7 +523,7 @@ def track_one_position(
     provenance["ultrack_config"] = _resolved_ultrack_config(tracking_config)
     label_group.attrs[PROVENANCE_KEY] = provenance
 
-    click.echo(f"Saved labels and tracks to: {position_dirpath}")
+    typer.echo(f"Saved labels and tracks to: {position_dirpath}")
 
 
 def _init_labels(
@@ -570,7 +570,7 @@ def _init_labels(
         label_metadata={PROVENANCE_KEY: settings.model_dump(mode="json")},
         **layout,
     )
-    click.echo(
+    typer.echo(
         f"Created labels/{settings.tracked_label} in "
         f"{Path(input_position_dirpaths[0]).parents[2]} "
         f"({len(input_position_dirpaths)} positions)"
@@ -690,7 +690,7 @@ def track(
             and not Path(settings.trackastra_config.model).exists()
         ):
             warm_trackastra_weights(settings.trackastra_config.model)
-        click.echo(f"Initialized tracking ({len(input_position_dirpaths)} positions)")
+        typer.echo(f"Initialized tracking ({len(input_position_dirpaths)} positions)")
         return
 
     track_scale = scale[-2:] if settings.output_mode == "2D" else scale[-3:]
@@ -726,7 +726,7 @@ def track(
         slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
     resolved_cluster = get_submitit_cluster(cluster=cluster)
-    click.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     if resolved_cluster == "local":
         # Explicit --sbatch-filepath values (e.g. '#LOCAL --timeout-min') win over
@@ -734,7 +734,7 @@ def track(
         slurm_args = {**local_executor_parameters(time_minutes, gpu=use_gpu), **slurm_args}
     executor.update_parameters(**slurm_args)
 
-    click.echo("Submitting jobs...")
+    typer.echo("Submitting jobs...")
     jobs = []
     with submitit.helpers.clean_env(), executor.batch():
         for position_key, position_dirpath in zip(
@@ -774,42 +774,45 @@ def track(
     if resolved_cluster == "debug":
         for job, pk in zip(jobs, position_keys, strict=True):
             job.wait()
-            click.echo(f"Tracking complete: {'/'.join(pk)}")
+            typer.echo(f"Tracking complete: {'/'.join(pk)}")
         return
 
     if monitor:
         monitor_jobs(jobs, input_position_dirpaths)
 
 
-@click.command("track")
-@input_position_dirpaths()
-@config_filepath()
-@output_dirpath(
-    required=False,
-    help="Directory to keep the per-FOV Ultrack databases and the SLURM logs in. "
-    "If omitted, each worker builds its database in its own $TMPDIR and deletes it "
-    "after export, and the SLURM logs go to ./slurm_output.",
-)
-@sbatch_filepath()
-@cluster()
-@monitor()
-@init_only()
-@click.option(
-    "--input-images-path",
-    default=None,
-    type=click.Path(exists=True),
-    help="Pixel-data source filling the first null input_images path (used by "
-    "Nextflow). If omitted, that null path falls back to the -i input plate.",
-)
 def track_cli(
-    input_position_dirpaths: list[Path],
-    config_filepath: Path,
-    output_dirpath: Path | None = None,
-    sbatch_filepath: str | None = None,
-    cluster: str = "slurm",
-    monitor: bool = False,
-    init_only: bool = False,
-    input_images_path: str | None = None,
+    input_position_dirpaths: InputPositionDirpaths,
+    config_filepath: ConfigFilepath,
+    output_dirpath: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dirpath",
+            "-o",
+            file_okay=False,
+            dir_okay=True,
+            help=(
+                "Directory to keep the per-FOV Ultrack databases and the SLURM logs in. "
+                "If omitted, each worker builds its database in its own $TMPDIR and "
+                "deletes it after export, and the SLURM logs go to ./slurm_output."
+            ),
+        ),
+    ] = None,
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor = False,
+    init_only: init_only = False,
+    input_images_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--input-images-path",
+            exists=True,
+            help=(
+                "Pixel-data source filling the first null input_images path (used by "
+                "Nextflow). If omitted, that null path falls back to the -i input plate."
+            ),
+        ),
+    ] = None,
 ):
     """Track the instance labels of a label image (`biahub segment`) with ultrack.
 
@@ -845,7 +848,3 @@ def track_cli(
         init_only=init_only,
         input_images_path=input_images_path,
     )
-
-
-if __name__ == "__main__":
-    track_cli()

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import ants
-import click
 import napari
 import numpy as np
+import typer
 
 from numpy.typing import ArrayLike
 from skimage.transform import EuclideanTransform, SimilarityTransform
@@ -131,25 +131,25 @@ def user_assisted_registration(
     )
 
     if source_channel_focus_idx not in (0, source_channel_Z - 1):
-        click.echo(f"Best source channel focus slice: {source_channel_focus_idx}")
+        typer.echo(f"Best source channel focus slice: {source_channel_focus_idx}")
     else:
         source_channel_focus_idx = source_channel_Z // 2
-        click.echo(
+        typer.echo(
             f"Could not determine best source channel focus slice, using {source_channel_focus_idx}"
         )
 
     if target_channel_focus_idx not in (0, target_channel_Z - 1):
-        click.echo(f"Best target channel focus slice: {target_channel_focus_idx}")
+        typer.echo(f"Best target channel focus slice: {target_channel_focus_idx}")
     else:
         target_channel_focus_idx = target_channel_Z // 2
-        click.echo(
+        typer.echo(
             f"Could not determine best target channel focus slice, using {target_channel_focus_idx}"
         )
 
     # Calculate scaling factors for displaying data
     scaling_factor_z = source_channel_voxel_size[-3] / target_channel_voxel_size[-3]
     scaling_factor_yx = source_channel_voxel_size[-1] / target_channel_voxel_size[-1]
-    click.echo(
+    typer.echo(
         f"Z scaling factor: {scaling_factor_z:.3f}; XY scaling factor: {scaling_factor_yx:.3f}\n"
     )
 
@@ -326,7 +326,7 @@ def user_assisted_registration(
         source_zyx_ants, reference=target_zyx_ants
     )
 
-    click.echo("\nShowing registered source image in magenta")
+    typer.echo("\nShowing registered source image in magenta")
     viewer.grid.enabled = False
     viewer.add_image(
         source_zxy_manual_reg.numpy(),
@@ -341,7 +341,7 @@ def user_assisted_registration(
 
     # Ants affine transforms
     tform = convert_transform_to_numpy(tx_manual)
-    click.echo(f"Estimated affine transformation matrix:\n{tform}\n")
+    typer.echo(f"Estimated affine transformation matrix:\n{tform}\n")
     input("Press <Enter> to close the viewer and exit...")
     viewer.close()
 

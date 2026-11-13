@@ -13,11 +13,12 @@ came from, so the combined file says where every transform came from.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
-import click
 import numpy as np
+import typer
 
-from biahub.cli.parsing import config_filepath, output_filepath
+from biahub.cli.parsing import ConfigFilepath, OutputFilepath
 from biahub.settings import TransformEntry, TransformSettings, load_transform_settings
 from biahub.utils.config import model_to_yaml
 
@@ -28,7 +29,7 @@ def _timepoint_of(entry: TransformEntry, source: str) -> int:
         return entry.t
     if entry.estimated_at is not None:
         return entry.estimated_at
-    raise click.UsageError(
+    raise typer.BadParameter(
         f"{source}: an entry without t or estimated_at does not say which timepoint it "
         "replaces; estimate the substitute with time_indices set to that timepoint"
     )
@@ -45,7 +46,7 @@ def _substitute_list(
     log: list[str],
 ) -> list[TransformEntry]:
     if base_entries[0].t is None:
-        raise click.UsageError(
+        raise typer.BadParameter(
             f"{where}: the base holds one transform for every timepoint; there is no "
             "per-timepoint entry to substitute"
         )
@@ -53,7 +54,7 @@ def _substitute_list(
     for entry in sub_entries:
         t = _timepoint_of(entry, source)
         if t not in by_t and not allow_new:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{where}: timepoint {t} from {source} is not in the base "
                 f"(it has {min(by_t)}..{max(by_t)}); pass --allow-new to add it"
             )
@@ -101,7 +102,7 @@ def substitute_transforms(
     )
     for name, model in (("the base", base), *substitutes):
         if model.reference_frame == "previous":
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{name} was estimated with reference frame 'previous': its matrices are "
                 "chained onto the first frame, so a substitute at one timepoint cannot fix "
                 "the later ones chained through it, and a one-timepoint 'previous' estimate "
@@ -112,7 +113,7 @@ def substitute_transforms(
             base.moving_channels,
             base.reference_channel,
         ):
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{source}: maps {sub.moving_channels} onto {sub.reference_channel!r}, the "
                 f"base maps {base.moving_channels} onto {base.reference_channel!r}"
             )
@@ -121,13 +122,13 @@ def substitute_transforms(
             len(sub.voxel_size) != len(base.voxel_size)
             or not np.allclose(sub.voxel_size, base.voxel_size)
         ):
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{source}: estimated on voxel size {sub.voxel_size}, the base on "
                 f"{base.voxel_size}; its matrices would be wrong on the base's grid"
             )
         if per_position is None:
             if sub.positions is not None:
-                raise click.UsageError(
+                raise typer.BadParameter(
                     f"{source} holds a list per position but the base is one shared list"
                 )
             transforms = _substitute_list(
@@ -137,7 +138,7 @@ def substitute_transforms(
         if sub.positions is not None:
             missing = sorted(set(positions or ()) - set(sub.positions))
             if missing:
-                raise click.UsageError(
+                raise typer.BadParameter(
                     f"{source} has no list for positions {missing}; it has "
                     f"{sorted(sub.positions)}"
                 )
@@ -145,13 +146,13 @@ def substitute_transforms(
         elif positions:
             targets = {key: sub.transforms for key in positions}
         else:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"the base holds a list per position; say which positions {source} "
                 "applies to with --positions"
             )
         for key, entries in targets.items():
             if key not in per_position:
-                raise click.UsageError(f"position {key!r} is not in the base")
+                raise typer.BadParameter(f"position {key!r} is not in the base")
             per_position[key] = _substitute_list(
                 per_position[key], entries, base, sub, source, key, allow_new, log
             )
@@ -159,35 +160,40 @@ def substitute_transforms(
     return TransformSettings.model_validate(combined.model_dump()), log
 
 
-@click.command("substitute-transforms")
-@config_filepath()
-@click.option(
-    "--substitute-filepaths",
-    "-s",
-    multiple=True,
-    required=True,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Transforms file(s) whose timepoints replace the base's; repeat -s for several, "
-    "applied in order.",
-)
-@output_filepath()
-@click.option(
-    "--positions",
-    multiple=True,
-    help="Positions (row/col/fov) of a per-position base that a shared substitute applies "
-    "to; repeat for several.",
-)
-@click.option(
-    "--allow-new",
-    is_flag=True,
-    help="Add substitute timepoints the base does not have instead of refusing them.",
-)
 def substitute_transforms_cli(
-    config_filepath: Path,
-    substitute_filepaths: tuple[str, ...],
-    output_filepath: Path,
-    positions: tuple[str, ...],
-    allow_new: bool,
+    config_filepath: ConfigFilepath,
+    substitute_filepaths: Annotated[
+        list[Path],
+        typer.Option(
+            "--substitute-filepaths",
+            "-s",
+            exists=True,
+            dir_okay=False,
+            help=(
+                "Transforms file(s) whose timepoints replace the base's; repeat -s for "
+                "several, applied in order."
+            ),
+        ),
+    ],
+    output_filepath: OutputFilepath,
+    positions: Annotated[
+        list[str],
+        typer.Option(
+            "--positions",
+            default_factory=list,
+            help=(
+                "Positions (row/col/fov) of a per-position base that a shared substitute "
+                "applies to; repeat for several."
+            ),
+        ),
+    ],
+    allow_new: Annotated[
+        bool,
+        typer.Option(
+            "--allow-new",
+            help="Add substitute timepoints the base does not have instead of refusing them.",
+        ),
+    ] = False,
 ) -> None:
     """Replace chosen timepoints of a transforms file with another run's transforms.
 
@@ -203,5 +209,5 @@ def substitute_transforms_cli(
     )
     model_to_yaml(combined, output_filepath)
     for line in log:
-        click.echo(line)
-    click.echo(f"Combined transforms saved to {Path(output_filepath).resolve()}")
+        typer.echo(line)
+    typer.echo(f"Combined transforms saved to {Path(output_filepath).resolve()}")

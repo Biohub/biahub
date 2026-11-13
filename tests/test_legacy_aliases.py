@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 import yaml
 
-from click.testing import CliRunner
 from iohub import open_ome_zarr
 from scipy.ndimage import shift as ndi_shift
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 from biahub.settings import load_transform_settings
 from tests.test_estimate_transform import (
     APPLIED_SHIFT_ZYX,
@@ -56,7 +56,7 @@ def _legacy_registration_config(path):
 
 
 def test_aliases_are_hidden_from_help():
-    output = CliRunner().invoke(cli, ["--help"]).output
+    output = CliRunner().invoke(app, ["--help"]).output
     hidden = ("estimate-registration", "estimate-stabilization", "register ", "stabilize ")
     for name in (*hidden, "convert-settings"):
         assert name not in output
@@ -68,7 +68,7 @@ def test_estimate_registration_alias_runs_estimate_transform_and_warns(beads_pla
     output = tmp_path / "out" / "registration_settings.yml"
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "estimate-registration",
             "-s",
@@ -109,7 +109,7 @@ def test_register_alias_applies_a_legacy_registration_config(beads_plate, tmp_pa
     output = tmp_path / "registered.zarr"
 
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "register",
             "-s",
@@ -140,14 +140,14 @@ def test_register_alias_applies_a_legacy_registration_config(beads_plate, tmp_pa
     words = shlex.split(line.split("instead, next time:")[1])
     assert words[:2] == ["biahub", "apply-transform"] and "--channels" in words
     words[words.index("-o") + 1] = str(tmp_path / "new.zarr")
-    rerun = CliRunner().invoke(cli, words[1:] + ["--cluster", "debug"])
+    rerun = CliRunner().invoke(app, words[1:] + ["--cluster", "debug"])
     assert rerun.exit_code == 0, rerun.output
     with open_ome_zarr(tmp_path / "new.zarr" / "A" / "1" / "0") as new:
         np.testing.assert_array_equal(np.asarray(new.data), aliased)
 
 
 def test_optimize_registration_points_to_the_replacement():
-    result = CliRunner().invoke(cli, ["optimize-registration", "-c", "x.yml"])
+    result = CliRunner().invoke(app, ["optimize-registration", "-c", "x.yml"])
     assert result.exit_code != 0 and "estimate-transform" in result.output
 
 
@@ -179,7 +179,7 @@ def test_estimate_stabilization_alias_converts_a_legacy_pcc_config(drifting_plat
         )
     )
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "estimate-stabilization",
             "-i",
@@ -211,7 +211,7 @@ def test_estimate_stabilization_alias_converts_a_legacy_pcc_config(drifting_plat
     ):
         output = tmp_path / f"stabilized_{old_path.parent.name}.zarr"
         result = CliRunner().invoke(
-            cli,
+            app,
             ["stabilize", "-i", str(drifting_plate), "-c", str(old_path), "-o", str(output)],
         )
         assert result.exit_code == 0, result.output
@@ -220,7 +220,7 @@ def test_estimate_stabilization_alias_converts_a_legacy_pcc_config(drifting_plat
 
     # Anything else that matches nothing is still an error.
     result = CliRunner().invoke(
-        cli,
+        app,
         ["stabilize", "-i", str(drifting_plate), "-c", str(stab / "other" / "*.yml")]
         + ["-o", str(tmp_path / "x.zarr")],
     )
@@ -243,7 +243,7 @@ def test_stabilize_alias_applies_a_legacy_stabilization_config(drifting_plate, t
     )
     output = tmp_path / "stabilized.zarr"
     result = CliRunner().invoke(
-        cli, ["stabilize", "-i", str(drifting_plate), "-c", str(config), "-o", str(output)]
+        app, ["stabilize", "-i", str(drifting_plate), "-c", str(config), "-o", str(output)]
     )
 
     assert result.exit_code == 0, result.output
@@ -285,7 +285,7 @@ def test_estimate_registration_alias_estimates_on_the_first_position_only(
     config = _legacy_registration_config(tmp_path / "estimate-registration.yml")
     paths = [str(p) for p in three_positions]
     result = CliRunner().invoke(
-        cli,
+        app,
         ["estimate-registration", "-s", *paths, "-t", *paths, "-c", str(config)]
         + ["-o", str(tmp_path / "registration.yml")],
     )
@@ -326,7 +326,7 @@ def test_estimate_stabilization_alias_picks_positions_as_legacy_did(
     )
     paths = [str(p) for p in three_positions]
     result = CliRunner().invoke(
-        cli,
+        app,
         ["estimate-stabilization", "-i", *paths, "-c", str(config), "-o", str(tmp_path / "s")],
     )
     assert result.exit_code == 0, result.output

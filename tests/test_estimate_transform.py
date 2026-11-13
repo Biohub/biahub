@@ -1,8 +1,8 @@
 import json
 
-import click
 import numpy as np
 import pytest
+import typer
 
 from iohub import open_ome_zarr
 from scipy.ndimage import shift as ndi_shift
@@ -227,7 +227,7 @@ def test_resume_refuses_records_it_cannot_check(beads_plate, tmp_path):
         json.dumps({"t": 0, "matrix": np.eye(4).tolist(), "score": 0.9, "error": None})
     )
 
-    with pytest.raises(click.UsageError, match="no run_manifest.json"):
+    with pytest.raises(typer.BadParameter, match="no run_manifest.json"):
         _run(beads_plate, _write_config(tmp_path), output, resume=True)
 
 
@@ -248,7 +248,7 @@ def test_a_bad_time_selection_is_refused_before_earlier_records_are_cleared(
     _run(beads_plate, _write_config(tmp_path), output)
     records = sorted((output.with_suffix("") / "timepoints").iterdir())
 
-    with pytest.raises(click.UsageError, match="out of range"):
+    with pytest.raises(typer.BadParameter, match="out of range"):
         _run(beads_plate, _write_config(tmp_path, time_indices=[5]), output)
     assert sorted((output.with_suffix("") / "timepoints").iterdir()) == records
 
@@ -259,7 +259,7 @@ def test_a_reference_with_fewer_timepoints_is_refused_at_init(
     # A cross estimate reads timepoint t of the reference too: a 3-timepoint moving store
     # against a 2-timepoint reference must not start and fail at t=2.
     output = tmp_path / "out" / "registration_settings.yml"
-    with pytest.raises(click.UsageError, match="reference.*2 timepoints"):
+    with pytest.raises(typer.BadParameter, match="reference.*2 timepoints"):
         estimate_transform(
             [beads_plate_with_a_blank_timepoint],
             _write_config(tmp_path),

@@ -7,8 +7,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-import click
 import numpy as np
+import typer
 
 from numpy.typing import ArrayLike
 
@@ -119,7 +119,7 @@ def run_ultrack(
 
     cfg.data_config.working_dir = database_path
 
-    click.echo(str(cfg))
+    typer.echo(str(cfg))
 
     tracker = Tracker(cfg)
     tracker.track(**track_kwargs)

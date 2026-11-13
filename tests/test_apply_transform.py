@@ -1,17 +1,17 @@
-import click
 import numpy as np
 import pytest
+import typer
 
-from click.testing import CliRunner
 from iohub import open_ome_zarr
+from typer.testing import CliRunner
 
 from biahub.apply_transform import (
     apply_transform,
-    apply_transform_cli,
     canvas,
     largest_box,
     overlap_slices,
 )
+from biahub.cli.main import app
 from biahub.settings import TransformEntry, TransformSettings
 from biahub.utils.config import model_to_yaml
 
@@ -314,8 +314,9 @@ def test_apply_transform_cli_takes_moving_and_reference_position_paths(
     output = tmp_path / "out.zarr"
 
     result = CliRunner().invoke(
-        apply_transform_cli,
+        app,
         [
+            "apply-transform",
             "-m",
             str(position),
             "-r",
@@ -629,8 +630,9 @@ def test_init_then_one_position_per_task_writes_what_one_call_writes(
     runner = CliRunner()
     paths = [str(p) for p in positions]
     init = runner.invoke(
-        apply_transform_cli,
+        app,
         [
+            "apply-transform",
             "--init",
             "--crop-to-overlap",
             "-m",
@@ -646,8 +648,9 @@ def test_init_then_one_position_per_task_writes_what_one_call_writes(
     assert not np.any(_read(by_position)["0"])  # --init writes no data
     for path in paths:
         result = runner.invoke(
-            apply_transform_cli,
+            app,
             [
+                "apply-transform",
                 "--cluster",
                 "debug",
                 "--crop-to-overlap",
@@ -767,7 +770,7 @@ def test_applying_into_an_output_of_another_shape_says_so(
     positions, config = two_position_stabilization
     output = tmp_path / "out.zarr"
     apply_transform(positions, config, output, cluster="debug")  # full grid
-    with pytest.raises(click.UsageError, match="already holds A/1/0 with shape"):
+    with pytest.raises(typer.BadParameter, match="already holds A/1/0 with shape"):
         apply_transform(
             positions, config, output, keep_overhang=False, resume=True, cluster="debug"
         )
@@ -910,7 +913,7 @@ def test_a_time_selection_outside_the_store_is_refused_up_front(
     # IndexError deep in a job.
     positions, config = two_position_stabilization
     output = tmp_path / "out.zarr"
-    with pytest.raises(click.UsageError, match=message):
+    with pytest.raises(typer.BadParameter, match=message):
         apply_transform(positions, config, output, time_indices=time_indices, cluster="debug")
     assert not output.exists()
 
@@ -928,7 +931,7 @@ def test_copying_from_a_reference_with_fewer_timepoints_is_refused_up_front(
                 (2, 1, 16, 32, 32), dtype=np.float32
             )
     output = tmp_path / "out.zarr"
-    with pytest.raises(click.UsageError, match="reference.*2 timepoints"):
+    with pytest.raises(typer.BadParameter, match="reference.*2 timepoints"):
         apply_transform(
             positions,
             config,

@@ -11,21 +11,21 @@ position; this module fans it out and records what it did.
 import math
 
 from pathlib import Path
+from typing import Annotated, Literal
 
-import click
 import numpy as np
 import submitit
+import typer
 
 from iohub.ngff import open_ome_zarr
 
 from biahub.cli.monitor import monitor_jobs
 from biahub.cli.parsing import (
+    InputPositionDirpaths,
+    SbatchFilepath,
     cluster,
     init_only,
-    input_position_dirpaths,
     monitor,
-    resume,
-    sbatch_filepath,
     sbatch_to_submitit,
 )
 from biahub.settings import LABEL_PYRAMID_METHODS, PYRAMID_METHODS, PyramidSettings
@@ -89,7 +89,7 @@ def _pyramid_position(
     ``num_workers`` threads downsample each region, one (t, c) volume each; it does
     not change the result, so it is not part of the fingerprint.
     """
-    click.echo(f"Computing pyramid for {position_dirpath}")
+    typer.echo(f"Computing pyramid for {position_dirpath}")
     token = settings_fingerprint(settings)
     with open_ome_zarr(position_dirpath, mode="r+") as position:
         dims = pyramid_dims(position.data.shape[-3:])
@@ -102,7 +102,7 @@ def _pyramid_position(
             num_workers=num_workers,
         )
         for name, label in position.labels():
-            click.echo(f"Computing pyramid for labels/{name} of {position_dirpath}")
+            typer.echo(f"Computing pyramid for labels/{name} of {position_dirpath}")
             label.compute_pyramid(
                 levels=settings.levels,
                 method=settings.label_method,
@@ -192,7 +192,7 @@ def pyramid(
     echo_resources(num_cpus, mem_gb, time_minutes)
 
     if init_only:
-        click.echo(
+        typer.echo(
             f"Validated {settings.levels}-level pyramids for {len(input_position_dirpaths)} "
             "positions"
         )
@@ -211,7 +211,7 @@ def pyramid(
         slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
 
     resolved_cluster = get_submitit_cluster(cluster=cluster)
-    click.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     if resolved_cluster == "local":
         # Explicit --sbatch-filepath values (e.g. '#LOCAL --timeout-min') win over
@@ -219,7 +219,7 @@ def pyramid(
         slurm_args = {**local_executor_parameters(time_minutes), **slurm_args}
     executor.update_parameters(**slurm_args)
 
-    click.echo("Submitting jobs...")
+    typer.echo("Submitting jobs...")
     jobs = []
     with submitit.helpers.clean_env(), executor.batch():
         for input_position_path in input_position_dirpaths:
@@ -246,54 +246,54 @@ def pyramid(
     if resolved_cluster == "debug":
         for job, path in zip(jobs, input_position_dirpaths, strict=True):
             job.wait()
-            click.echo(f"Pyramid complete: {path}")
+            typer.echo(f"Pyramid complete: {path}")
         return
 
     if monitor:
         monitor_jobs(jobs, input_position_dirpaths)
 
 
-@click.command("pyramid")
-@input_position_dirpaths()
-@sbatch_filepath()
-@cluster()
-@monitor()
-@init_only()
-@resume(
-    help="Skip the pyramid regions (one shard of one level each) an earlier attempt finished, "
-    "keyed by the levels and methods; for retrying an interrupted run."
-)
-@click.option(
-    "--levels",
-    type=int,
-    default=3,
-    show_default=True,
-    help="Total number of resolution levels, counting level 0: 3 adds 2x and 4x levels.",
-)
-@click.option(
-    "--method",
-    type=click.Choice(PYRAMID_METHODS),
-    default="mean",
-    show_default=True,
-    help="Downsampling method for the images.",
-)
-@click.option(
-    "--label-method",
-    type=click.Choice(LABEL_PYRAMID_METHODS),
-    default="max",
-    show_default=True,
-    help="Downsampling method for the label images under labels/; none invents a label id.",
-)
 def pyramid_cli(
-    input_position_dirpaths: list[Path],
-    sbatch_filepath: str | None = None,
-    cluster: str = "slurm",
-    monitor: bool = False,
-    init_only: bool = False,
-    resume: bool = False,
-    levels: int = 3,
-    method: str = "mean",
-    label_method: str = "max",
+    input_position_dirpaths: InputPositionDirpaths,
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor = False,
+    init_only: init_only = False,
+    resume: Annotated[
+        bool,
+        typer.Option(
+            "--resume/--no-resume",
+            show_default=True,
+            help=(
+                "Skip the pyramid regions (one shard of one level each) an earlier attempt "
+                "finished, keyed by the levels and methods; for retrying an interrupted run."
+            ),
+        ),
+    ] = False,
+    levels: Annotated[
+        int,
+        typer.Option(
+            "--levels",
+            show_default=True,
+            help="Total number of resolution levels, counting level 0: 3 adds 2x and 4x levels.",
+        ),
+    ] = 3,
+    method: Annotated[
+        Literal[PYRAMID_METHODS],
+        typer.Option(
+            "--method",
+            show_default=True,
+            help="Downsampling method for the images.",
+        ),
+    ] = "mean",
+    label_method: Annotated[
+        Literal[LABEL_PYRAMID_METHODS],
+        typer.Option(
+            "--label-method",
+            show_default=True,
+            help="Downsampling method for the label images under labels/; none invents a label id.",
+        ),
+    ] = "max",
 ) -> None:
     """Compute multiscale pyramids of a plate's images and label images, in place.
 
@@ -325,7 +325,3 @@ def pyramid_cli(
         init_only=init_only,
         resume=resume,
     )
-
-
-if __name__ == "__main__":
-    pyramid_cli()

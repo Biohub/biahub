@@ -14,29 +14,30 @@ import hashlib
 import json
 
 from pathlib import Path
+from typing import Annotated, Literal
 
 import ants
-import click
 import largestinteriorrectangle as lir
 import numpy as np
 import submitit
+import typer
 
 from iohub import open_ome_zarr
 from iohub.ngff.utils import create_empty_plate, process_single_position
 
 from biahub.cli.monitor import monitor_jobs
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    MovingPositionDirpaths,
+    OutputDirpath,
+    ReferencePositionDirpaths,
+    SbatchFilepath,
     cluster,
-    config_filepath,
     init_only,
-    monitor,
-    moving_position_dirpaths,
-    output_dirpath,
+    monitor_long,
     pair_reference_positions,
     position_key,
-    reference_position_dirpaths,
     resume,
-    sbatch_filepath,
     sbatch_to_submitit,
 )
 from biahub.registration.utils import (
@@ -122,7 +123,7 @@ def _mask_box(
     """Largest box inside a coarse mask, rounded inward onto the full-resolution grid."""
     f = max(1, int(downsample))
     if not mask.any():
-        raise click.UsageError(
+        raise typer.BadParameter(
             "the transform leaves no overlapping region between source and target; "
             "drop --crop-to-overlap or check the transform"
         )
@@ -171,7 +172,7 @@ def canvas(
         current = overlap_mask(source_shape_zyx, target_shape_zyx, matrix, downsample)
         mask = current if mask is None else mask & current
     if mask is None or not mask.any():
-        raise click.UsageError(
+        raise typer.BadParameter(
             "the transforms share no overlapping region across timepoints; "
             "drop --crop-to-overlap or check the transforms"
         )
@@ -228,7 +229,7 @@ def _check_existing_output(
                 list(existing.channel_names),
             )
         if (have_shape, have_channels) != (tuple(shape), list(channel_names)):
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{output_dirpath} already holds {key} with shape {have_shape} and channels "
                 f"{have_channels}; this apply writes shape {tuple(shape)} and channels "
                 f"{list(channel_names)} (another canvas, timepoints or channels). Write to a "
@@ -282,7 +283,7 @@ def apply_transform(
         moving_voxel_size = tuple(moving.scale[-3:])
     unknown = sorted(set(channels or []) - set(moving_channel_names))
     if unknown:
-        raise click.UsageError(
+        raise typer.BadParameter(
             f"channels not in the moving store: {unknown} (it has {moving_channel_names})"
         )
     to_transform = [c for c in moving_channel_names if channels is None or c in channels]
@@ -292,7 +293,7 @@ def apply_transform(
     if settings.per_position:
         missing = sorted(set(position_keys) - set(settings.positions))
         if missing:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"the transforms file has no list for positions {missing}; it has "
                 f"{sorted(settings.positions)}"
             )
@@ -311,7 +312,7 @@ def apply_transform(
                 by_status.setdefault(status, []).append(t)
         if by_status:
             not_accepted[key] = by_status
-            click.echo(
+            typer.echo(
                 f"{key}: written with transforms that are not accepted -- "
                 + "; ".join(f"{s} t={ts}" for s, ts in by_status.items())
             )
@@ -331,7 +332,7 @@ def apply_transform(
                 if c not in reference_channel_names or c in settings.moving_channels
             ]
             if not transformed:
-                raise click.UsageError(
+                raise typer.BadParameter(
                     f"every moving channel is also in the reference store and none is the "
                     f"file's moving_channels {settings.moving_channels}; choose them with "
                     f"--channels"
@@ -344,12 +345,12 @@ def apply_transform(
                 if c in reference_channel_names and c not in settings.moving_channels
             ]
             if replaced:
-                click.echo(f"transforming {replaced} replaces the reference store's copy")
+                typer.echo(f"transforming {replaced} replaces the reference store's copy")
         # A reference channel that is also transformed is written once, by its transform job.
         copied = [c for c in reference_channel_names if c not in transformed]
         beyond = [t for t in time_indices if t >= reference_T]
         if copied and beyond:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"timepoints {beyond} are past the reference store, which has {reference_T} "
                 f"timepoints, so its channels {copied} cannot be copied there"
             )
@@ -377,7 +378,7 @@ def apply_transform(
     ]
     crop = canvas(tuple(moving_shape), reference_shape, applied, keep_overhang)
     cropped_shape = tuple(s.stop - s.start for s in crop)
-    click.echo(
+    typer.echo(
         f"Output canvas {cropped_shape} (reference grid {reference_shape}, "
         f"{'kept overhang' if keep_overhang else 'overlap shared by the applied transforms'})"
     )
@@ -436,7 +437,7 @@ def apply_transform(
     )
     echo_resources(num_cpus, num_cpus * gb_ram, time_minutes)
     if init_only:
-        click.echo(f"Initialized {output_dirpath} ({len(moving_position_dirpaths)} positions)")
+        typer.echo(f"Initialized {output_dirpath} ({len(moving_position_dirpaths)} positions)")
         return
     slurm_out_path = output_dirpath.parent / "slurm_output"
     slurm_args = {
@@ -451,7 +452,7 @@ def apply_transform(
     if sbatch_filepath:
         slurm_args = apply_sbatch_overrides(slurm_args, sbatch_to_submitit(sbatch_filepath))
     resolved_cluster = get_submitit_cluster(cluster=cluster)
-    click.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     executor.update_parameters(**slurm_args)
 
@@ -536,64 +537,68 @@ def apply_transform(
         monitor_jobs(jobs, labels)
 
 
-@click.command("apply-transform")
-@moving_position_dirpaths()
-@reference_position_dirpaths(required=False)
-@config_filepath()
-@output_dirpath()
-@click.option(
-    "--time-indices",
-    default="all",
-    show_default=True,
-    help="Timepoints to write: 'all', one index, or a comma-separated list (e.g. 0,82,239).",
-)
-@click.option(
-    "--keep-overhang/--crop-to-overlap",
-    default=True,
-    show_default=True,
-    help="Keep the full reference grid, or crop to the largest box every transform in the "
-    "file covers (one wrong transform can shrink that box for every timepoint).",
-)
-@click.option(
-    "--interpolation",
-    default="linear",
-    show_default=True,
-    type=click.Choice(["linear", "nearest"]),
-    help="Resampling interpolation.",
-)
-@click.option(
-    "--ome-zarr-version",
-    default="0.5",
-    show_default=True,
-    type=click.Choice(["0.4", "0.5"]),
-    help="OME-Zarr version of the output store (0.5 lets --resume track progress).",
-)
-@click.option(
-    "--channels",
-    multiple=True,
-    help="Moving-store channel to transform (repeat for several); default: every channel, "
-    "but one the reference store also has is copied unless it is in the file's moving_channels.",
-)
-@sbatch_filepath()
-@cluster()
-@monitor(short=False)
-@init_only()
-@resume()
 def apply_transform_cli(
-    moving_position_dirpaths: list[Path],
-    reference_position_dirpaths: list[Path],
-    config_filepath: Path,
-    output_dirpath: Path,
-    time_indices: str,
-    keep_overhang: bool,
-    interpolation: str,
-    ome_zarr_version: str,
-    sbatch_filepath: str | None,
-    cluster: str,
-    monitor: bool,
-    channels: tuple[str, ...],
-    init_only: bool,
-    resume: bool,
+    *,
+    moving_position_dirpaths: MovingPositionDirpaths,
+    reference_position_dirpaths: ReferencePositionDirpaths,
+    config_filepath: ConfigFilepath,
+    output_dirpath: OutputDirpath,
+    time_indices: Annotated[
+        str,
+        typer.Option(
+            "--time-indices",
+            show_default=True,
+            help=(
+                "Timepoints to write: 'all', one index, or a comma-separated list "
+                "(e.g. 0,82,239)."
+            ),
+        ),
+    ] = "all",
+    keep_overhang: Annotated[
+        bool,
+        typer.Option(
+            "--keep-overhang/--crop-to-overlap",
+            show_default=True,
+            help=(
+                "Keep the full reference grid, or crop to the largest box every transform "
+                "in the file covers (one wrong transform can shrink that box for every "
+                "timepoint)."
+            ),
+        ),
+    ] = True,
+    interpolation: Annotated[
+        Literal["linear", "nearest"],
+        typer.Option(
+            "--interpolation",
+            show_default=True,
+            help="Resampling interpolation.",
+        ),
+    ] = "linear",
+    ome_zarr_version: Annotated[
+        Literal["0.4", "0.5"],
+        typer.Option(
+            "--ome-zarr-version",
+            show_default=True,
+            help="OME-Zarr version of the output store (0.5 lets --resume track progress).",
+        ),
+    ] = "0.5",
+    channels: Annotated[
+        list[str],
+        typer.Option(
+            "--channels",
+            default_factory=list,
+            help=(
+                "Moving-store channel to transform (repeat for several); default: every "
+                "channel, but one the reference store also has is copied unless it is in "
+                "the file's moving_channels."
+            ),
+        ),
+    ],
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor_long = False,
+    init_only: init_only = False,
+    resume: resume = False,
 ) -> None:
     """Apply a transform series to positions -- one matrix for all timepoints or one per timepoint.
 
@@ -634,7 +639,3 @@ def apply_transform_cli(
         init_only=init_only,
         resume=resume,
     )
-
-
-if __name__ == "__main__":
-    apply_transform_cli()

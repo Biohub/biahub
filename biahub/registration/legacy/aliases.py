@@ -13,21 +13,22 @@ import re
 import shlex
 
 from pathlib import Path
+from typing import Annotated
 
-import click
+import typer
 
 from biahub.apply_transform import apply_transform
-from biahub.cli.option_eat_all import OptionEatAll
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    InputPositionDirpaths,
+    OutputDirpath,
+    OutputFilepath,
+    SbatchFilepath,
+    _eat_all,
     _validate_and_process_config_paths,
     _validate_and_process_paths,
-    config_filepath,
-    input_position_dirpaths,
     local,
     monitor,
-    output_dirpath,
-    output_filepath,
-    sbatch_filepath,
 )
 from biahub.estimate_transform import estimate_transform
 from biahub.registration.legacy.convert_settings import (
@@ -40,7 +41,7 @@ from biahub.utils.config import model_to_yaml
 
 
 def _warn(old: str, new: str) -> None:
-    click.secho(
+    typer.secho(
         f"DeprecationWarning: `biahub {old}` is deprecated and will be removed in a future "
         f"release; it now runs `biahub {new}`. Convert your config once with "
         "`biahub convert-settings -c <old>.yml -o <new>.yml` and call the new command.",
@@ -62,7 +63,7 @@ def _instead(command: str, *options) -> None:
             words.append(flag)
         else:
             words += [flag, shlex.quote(str(value))]
-    click.secho("  instead, next time: " + " ".join(words), fg="yellow", err=True)
+    typer.secho("  instead, next time: " + " ".join(words), fg="yellow", err=True)
 
 
 def _time_indices_arg(time_indices) -> str:
@@ -72,16 +73,25 @@ def _time_indices_arg(time_indices) -> str:
     return str(time_indices)
 
 
-def _positions(flag: str, long: str, help: str) -> click.Option:
-    return click.option(
-        long,
-        flag,
-        required=True,
-        cls=OptionEatAll,
-        type=tuple,
+SourcePositionDirpaths = Annotated[
+    list[Path],
+    typer.Option(
+        "--source-position-dirpaths",
+        "-s",
         callback=_validate_and_process_paths,
-        help=help,
-    )
+        help="Moving (source) positions.",
+    ),
+]
+
+TargetPositionDirpaths = Annotated[
+    list[Path],
+    typer.Option(
+        "--target-position-dirpaths",
+        "-t",
+        callback=_validate_and_process_paths,
+        help="Reference (target) positions.",
+    ),
+]
 
 
 # What legacy estimate-stabilization wrote: <dir>/<type>_stabilization_settings/<fov>.yml,
@@ -89,7 +99,8 @@ def _positions(flag: str, long: str, help: str) -> click.Option:
 _LEGACY_STABILIZATION_OUTPUT = re.compile(r"^(xyz|xy|z)_stabilization_settings(\.ya?ml)?$")
 
 
-def _stabilize_config_paths(ctx, opt, value):
+@_eat_all
+def _stabilize_config_paths(value: list[Path]) -> list[Path]:
     """Validate the -c paths, finding the alias's transforms.yml behind a legacy output path.
 
     The estimate-stabilization alias writes <dir>/transforms.yml where legacy wrote
@@ -97,7 +108,7 @@ def _stabilize_config_paths(ctx, opt, value):
     there is pointed at it.
     """
     resolved = []
-    for pattern in value:
+    for pattern in map(str, value):
         path = Path(pattern)
         legacy = next(
             (p for p in (path, *path.parents) if _LEGACY_STABILIZATION_OUTPUT.match(p.name)),
@@ -105,10 +116,10 @@ def _stabilize_config_paths(ctx, opt, value):
         )
         replacement = legacy.parent / "transforms.yml" if legacy is not None else None
         if not glob.glob(pattern) and replacement is not None and replacement.is_file():
-            click.echo(f"  note: {pattern} not found; using {replacement}", err=True)
+            typer.echo(f"  note: {pattern} not found; using {replacement}", err=True)
             pattern = str(replacement)
         resolved.append(pattern)
-    return _validate_and_process_config_paths(ctx, opt, tuple(resolved))
+    return _validate_and_process_config_paths(resolved)
 
 
 def _converted_estimate_config(config_filepath: Path, next_to: Path) -> Path:
@@ -118,7 +129,7 @@ def _converted_estimate_config(config_filepath: Path, next_to: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     model_to_yaml(settings, path)
     for note in notes:
-        click.echo(f"  note: {note}", err=True)
+        typer.echo(f"  note: {note}", err=True)
     return path
 
 
@@ -138,7 +149,7 @@ def _stabilization_positions(config_filepath: Path, positions: list) -> list:
     skips = {b.skip_beads_fov for b in blocks if b is not None and b.skip_beads_fov != "0"}
     kept = [p for p in positions if not any(skip in str(p) for skip in skips)]
     if len(kept) < len(positions):
-        click.echo(f"  note: skipping the beads FOV {sorted(skips)}", err=True)
+        typer.echo(f"  note: skipping the beads FOV {sorted(skips)}", err=True)
     return kept
 
 
@@ -172,29 +183,28 @@ def _transforms_config(config_filepaths: list[Path], next_to: Path) -> tuple[Pat
     return path, options
 
 
-@click.command("estimate-registration", hidden=True)
-@_positions("-s", "--source-position-dirpaths", "Moving (source) positions.")
-@_positions("-t", "--target-position-dirpaths", "Reference (target) positions.")
-@output_filepath()
-@config_filepath()
-@sbatch_filepath()
-@local()
-@click.option("--registration-target-channel", "-rt", default=None, hidden=True)
-@click.option("--registration-source-channels", "-rs", multiple=True, hidden=True)
 def estimate_registration_alias(
-    source_position_dirpaths,
-    target_position_dirpaths,
-    output_filepath,
-    config_filepath,
-    sbatch_filepath,
-    local,
-    registration_target_channel,
-    registration_source_channels,
+    source_position_dirpaths: SourcePositionDirpaths,
+    target_position_dirpaths: TargetPositionDirpaths,
+    output_filepath: OutputFilepath,
+    config_filepath: ConfigFilepath,
+    sbatch_filepath: SbatchFilepath = None,
+    local: local = False,
+    *,
+    registration_target_channel: Annotated[
+        str | None, typer.Option("--registration-target-channel", "-rt", hidden=True)
+    ] = None,
+    registration_source_channels: Annotated[
+        list[str],
+        typer.Option(
+            "--registration-source-channels", "-rs", default_factory=list, hidden=True
+        ),
+    ],
 ):
     """Run `estimate-transform` on a converted estimate-registration config (deprecated)."""
     _warn("estimate-registration", "estimate-transform")
     if registration_target_channel or registration_source_channels:
-        click.echo(
+        typer.echo(
             "  note: -rt/-rs ignored; choose the channels to transform with "
             "`apply-transform --channels`",
             err=True,
@@ -219,14 +229,12 @@ def estimate_registration_alias(
     )
 
 
-@click.command("estimate-stabilization", hidden=True)
-@input_position_dirpaths()
-@output_dirpath()
-@config_filepath()
-@sbatch_filepath()
-@local()
 def estimate_stabilization_alias(
-    input_position_dirpaths, output_dirpath, config_filepath, sbatch_filepath, local
+    input_position_dirpaths: InputPositionDirpaths,
+    output_dirpath: OutputDirpath,
+    config_filepath: ConfigFilepath,
+    sbatch_filepath: SbatchFilepath = None,
+    local: local = False,
 ):
     """Run `estimate-transform` on a converted estimate-stabilization config (deprecated)."""
     _warn("estimate-stabilization", "estimate-transform")
@@ -242,29 +250,21 @@ def estimate_stabilization_alias(
         cluster="local" if local else "slurm",
     )
     # Legacy wrote <type>_stabilization_settings*; the stabilize alias still finds this.
-    click.echo(
+    typer.echo(
         f"  note: transforms written to {output} (apply with "
         f"`biahub apply-transform -m ... -c {output}`)",
         err=True,
     )
 
 
-@click.command("register", hidden=True)
-@_positions("-s", "--source-position-dirpaths", "Moving (source) positions.")
-@_positions("-t", "--target-position-dirpaths", "Reference (target) positions.")
-@config_filepath()
-@output_dirpath()
-@local()
-@sbatch_filepath()
-@monitor()
 def register_alias(
-    source_position_dirpaths,
-    target_position_dirpaths,
-    config_filepath,
-    output_dirpath,
-    local,
-    sbatch_filepath,
-    monitor,
+    source_position_dirpaths: SourcePositionDirpaths,
+    target_position_dirpaths: TargetPositionDirpaths,
+    config_filepath: ConfigFilepath,
+    output_dirpath: OutputDirpath,
+    local: local = False,
+    sbatch_filepath: SbatchFilepath = None,
+    monitor: monitor = False,
 ):
     """Run `apply-transform` onto the target grid (deprecated)."""
     _warn("register", "apply-transform")
@@ -303,23 +303,21 @@ def register_alias(
     )
 
 
-@click.command("stabilize", hidden=True)
-@input_position_dirpaths()
-@output_dirpath()
-@click.option(
-    "--config-filepaths",
-    "-c",
-    required=True,
-    cls=OptionEatAll,
-    type=tuple,
-    callback=_stabilize_config_paths,
-    help="Transforms file, or retired stabilize config(s).",
-)
-@sbatch_filepath()
-@local()
-@monitor()
 def stabilize_alias(
-    input_position_dirpaths, output_dirpath, config_filepaths, sbatch_filepath, local, monitor
+    input_position_dirpaths: InputPositionDirpaths,
+    output_dirpath: OutputDirpath,
+    config_filepaths: Annotated[
+        list[Path],
+        typer.Option(
+            "--config-filepaths",
+            "-c",
+            callback=_stabilize_config_paths,
+            help="Transforms file, or retired stabilize config(s).",
+        ),
+    ],
+    sbatch_filepath: SbatchFilepath = None,
+    local: local = False,
+    monitor: monitor = False,
 ):
     """Run `apply-transform` without a reference, onto each store's own grid (deprecated)."""
     _warn("stabilize", "apply-transform")
@@ -346,16 +344,30 @@ def stabilize_alias(
     )
 
 
-@click.command("optimize-registration", hidden=True)
-@click.option("--source-position-dirpaths", "-s", multiple=True, hidden=True)
-@click.option("--target-position-dirpaths", "-t", multiple=True, hidden=True)
-@click.option("--config-filepath", "-c", hidden=True)
-@click.option("--output-filepath", "-o", hidden=True)
-@click.option("--display-viewer", "-d", is_flag=True, hidden=True)
-def optimize_registration_alias(**_legacy_options):
+def optimize_registration_alias(
+    source_position_dirpaths: Annotated[
+        list[str],
+        typer.Option("--source-position-dirpaths", "-s", default_factory=list, hidden=True),
+    ],
+    target_position_dirpaths: Annotated[
+        list[str],
+        typer.Option("--target-position-dirpaths", "-t", default_factory=list, hidden=True),
+    ],
+    config_filepath: Annotated[
+        str | None, typer.Option("--config-filepath", "-c", hidden=True)
+    ] = None,
+    output_filepath: Annotated[
+        str | None, typer.Option("--output-filepath", "-o", hidden=True)
+    ] = None,
+    display_viewer: Annotated[
+        bool, typer.Option("--display-viewer", "-d", hidden=True)
+    ] = False,
+):
     """Explain that this command was removed (old flags accepted so the message is reached)."""
-    raise click.ClickException(
-        "`biahub optimize-registration` has been removed. Refine a registration with "
-        "`biahub estimate-transform` using method `ants` (intensity-based) or `manual` "
-        "(point annotation in napari)."
+    typer.echo(
+        "Error: `biahub optimize-registration` has been removed. Refine a registration "
+        "with `biahub estimate-transform` using method `ants` (intensity-based) or "
+        "`manual` (point annotation in napari).",
+        err=True,
     )
+    raise typer.Exit(1)

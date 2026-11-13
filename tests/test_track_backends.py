@@ -7,12 +7,12 @@ import pandas as pd
 import pytest
 import yaml
 
-from click.testing import CliRunner
 from iohub.ngff import open_ome_zarr
 from iohub.ngff.utils import create_empty_labels
 from pydantic import ValidationError
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 from biahub.settings import HoctConfig, TrackastraConfig, TrackingSettings, TracksdataConfig
 
 INPUT_IMAGES = [{"path": None, "channels": {"nuclei_prediction": []}}]
@@ -364,13 +364,13 @@ def test_track_debug_run_with_a_label_tracker(tracker, dividing_plate, tmp_path,
     (plate_path / "A" / "1" / "0" / "tracks.geff").mkdir()
 
     init = CliRunner().invoke(
-        cli, ["track", "--init", "-i", position, "-o", out, "-c", str(config)]
+        app, ["track", "--init", "-i", position, "-o", out, "-c", str(config)]
     )
     assert init.exit_code == 0, init.output
     assert warmed == {"hoct": ["general_v1"], "trackastra": ["general_2d"]}.get(tracker, [])
 
     result = CliRunner().invoke(
-        cli, ["track", "--cluster", "debug", "-i", position, "-o", out, "-c", str(config)]
+        app, ["track", "--cluster", "debug", "-i", position, "-o", out, "-c", str(config)]
     )
 
     assert result.exit_code == 0, result.output
@@ -514,13 +514,13 @@ def test_an_empty_result_reaches_the_outputs(tracker, dividing_plate, tmp_path, 
     position, out = str(plate_path / "A" / "1" / "0"), str(tmp_path / "out")
     assert (
         CliRunner()
-        .invoke(cli, ["track", "--init", "-i", position, "-o", out, "-c", str(config)])
+        .invoke(app, ["track", "--init", "-i", position, "-o", out, "-c", str(config)])
         .exit_code
         == 0
     )
 
     result = CliRunner().invoke(
-        cli, ["track", "--cluster", "debug", "-i", position, "-o", out, "-c", str(config)]
+        app, ["track", "--cluster", "debug", "-i", position, "-o", out, "-c", str(config)]
     )
 
     assert result.exit_code == 0, result.output
@@ -563,7 +563,7 @@ def test_track_init_checks_the_hoct_solver_override(dividing_plate, tmp_path, mo
     monkeypatch.setattr(track_mod, "warm_hoct_weights", lambda model: None)
     config = _track_config(tmp_path, "hoct", hoct_config={"solver": {"divison_weight": 1.0}})
     result = CliRunner().invoke(
-        cli,
+        app,
         [
             "track",
             "--init",
@@ -726,7 +726,7 @@ def test_track_init_refuses_a_missing_image_channel(dividing_plate, tmp_path, mo
     monkeypatch.setattr(track_mod, "warm_trackastra_weights", lambda model: None)
     config = _track_config(tmp_path, "trackastra", trackastra_config={"image_channel": "BF"})
     result = CliRunner().invoke(
-        cli, ["track", "--init", "-i", str(plate_path / "A" / "1" / "0"), "-c", str(config)]
+        app, ["track", "--init", "-i", str(plate_path / "A" / "1" / "0"), "-c", str(config)]
     )
     assert result.exit_code != 0
     assert "'BF'" in str(result.exception) + result.output

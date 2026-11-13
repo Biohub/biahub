@@ -11,6 +11,11 @@ from iohub.ngff import TransformationMeta, open_ome_zarr
 # Use submitit debug executor (in-process, no forking) for fast tests
 os.environ["CI"] = "true"
 
+# Typer prints usage errors in a Rich panel that wraps long messages at the terminal
+# width, which would split the phrases tests look for. Typer reads TERMINAL_WIDTH once,
+# when it first renders a panel, so set it before any test runs a command.
+os.environ["TERMINAL_WIDTH"] = "1000"
+
 # Run ITK (ANTs) on one thread for the whole suite. ITK reads this once, at its
 # first threaded operation, so it must be set before any test module imports
 # ants. The test volumes are tiny, so threading buys nothing, and with one

@@ -21,13 +21,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-import click
 import numpy as np
+import typer
 import yaml
 
 from pydantic import Field, NonNegativeInt, PositiveFloat, field_validator, model_validator
 
-from biahub.cli.parsing import config_filepaths, output_filepath
+from biahub.cli.parsing import ConfigFilepaths, OutputFilepath
 from biahub.settings import (
     AffineTransformSettings,
     AntsRegistrationSettings,
@@ -419,13 +419,13 @@ def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, li
     for path in paths:
         legacy = load_legacy_settings(path)
         if not isinstance(legacy, StabilizationSettings):
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{path}: several -c files are folded as per-position stabilize configs, "
                 f"but this is a {type(legacy).__name__}"
             )
         parts = path.stem.split("_")
         if len(parts) != 3:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{path}: per-position stabilize configs are named <row>_<col>_<fov>.yml"
             )
         settings, file_notes = transform_settings_from_legacy(legacy)
@@ -435,7 +435,7 @@ def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, li
             first.moving_channels,
             first.voxel_size,
         ):
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"{path}: channels / voxel size differ from {paths[0]}; these are not one plate"
             )
         positions["/".join(parts)] = settings.transforms
@@ -460,17 +460,16 @@ def convert_settings_file(config_filepaths: list[Path], output_filepath: Path) -
         if isinstance(settings, EstimateTransformSettings)
         else "apply-transform"
     )
-    click.echo(
+    typer.echo(
         f"{source} -> {output_filepath} ({type(settings).__name__}, for `biahub {command}`)"
     )
     for note in notes:
-        click.echo(f"  note: {note}")
+        typer.echo(f"  note: {note}")
 
 
-@click.command("convert-settings")
-@config_filepaths()
-@output_filepath()
-def convert_settings_cli(config_filepaths: list[Path], output_filepath: Path) -> None:
+def convert_settings_cli(
+    config_filepaths: ConfigFilepaths, output_filepath: OutputFilepath
+) -> None:
     """Convert a retired registration / stabilization config to the unified one.
 
     estimate-registration / estimate-stabilization -> estimate-transform;

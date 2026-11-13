@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal, cast
 
-import click
 import matplotlib.pyplot as plt
 import numpy as np
+import typer
 
 from numpy.typing import ArrayLike
 from scipy.fftpack import next_fast_len
@@ -105,7 +105,7 @@ def phase_cross_corr_padding(
     )
 
     if verbose:
-        click.echo(
+        typer.echo(
             f"phase cross corr. fft shape of {shape} for arrays of shape {ref_img.shape} and {mov_img.shape} "
             f"with maximum shift of {maximum_shift}"
         )
@@ -144,7 +144,7 @@ def phase_cross_corr_padding(
     )
 
     if verbose:
-        click.echo(f"phase cross corr. peak at {peak}")
+        typer.echo(f"phase cross corr. peak at {peak}")
     if output_path:
         plot_cross_correlation(corr, title="Cross-Correlation", output_path=output_path)
 

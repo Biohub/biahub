@@ -1,8 +1,8 @@
 """HOCT: link fixed labels with a learned edge classifier and an ILP."""
 
-import click
 import numpy as np
 import pandas as pd
+import typer
 
 from biahub.settings import HoctConfig
 from biahub.tracking.methods.tracksdata import (
@@ -41,7 +41,7 @@ def warm_hoct_weights(model: str) -> None:
     """Download HOCT weights into the shared cache once (from --init, on the head node)."""
     hoct = _import_hoct()
     hoct.load_model(model, device="cpu")
-    click.echo(f"HOCT weights ready: {model}")
+    typer.echo(f"HOCT weights ready: {model}")
 
 
 def _select_sparse_links(graph):
@@ -106,7 +106,7 @@ def run_hoct(
         # (0.3.0 then fails on an empty prediction list); each link is the only option.
         if "non-empty list of Tensors" not in str(e):
             raise
-        click.echo(
+        typer.echo(
             "HOCT scored no inference window (each holds at most one candidate link); "
             "keeping every detection and its candidate links."
         )

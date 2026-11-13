@@ -85,9 +85,9 @@ def test_segment_cli_rejects_a_stack_for_a_2d_model(fake_cellpose, example_plate
     """Segment does not project: a 2D model needs the Z=1 plate `biahub project` writes."""
     import yaml
 
-    from click.testing import CliRunner
+    from typer.testing import CliRunner
 
-    from biahub.cli.main import cli
+    from biahub.cli.main import app
 
     plate_path, _ = example_plate  # Z = 4
     config = tmp_path / "segment.yml"
@@ -106,7 +106,7 @@ def test_segment_cli_rejects_a_stack_for_a_2d_model(fake_cellpose, example_plate
     )
 
     result = CliRunner().invoke(
-        cli,
+        app,
         # --init: the dimensionality check runs while creating the plate, before any job.
         [
             "segment",

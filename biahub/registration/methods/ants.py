@@ -18,8 +18,8 @@ from __future__ import annotations
 import os
 
 import ants
-import click
 import numpy as np
+import typer
 
 from numpy.typing import ArrayLike
 from skimage import filters
@@ -111,7 +111,7 @@ def estimate(
     ref_ants = ants.from_numpy(ref)
 
     if verbose:
-        click.echo(f"Optimizing registration parameters using ANTs with kwargs: {ants_kwargs}")
+        typer.echo(f"Optimizing registration parameters using ANTs with kwargs: {ants_kwargs}")
 
     reg = ants.registration(
         fixed=ref_ants,

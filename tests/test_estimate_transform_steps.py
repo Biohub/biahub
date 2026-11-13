@@ -5,11 +5,11 @@ import json
 import numpy as np
 import pytest
 
-from click.testing import CliRunner
 from iohub import open_ome_zarr
 from scipy.ndimage import shift as ndi_shift
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 from biahub.estimate_transform import JOBS_FAILED_EXIT_CODE, estimate_transform
 from biahub.settings import PhaseCrossCorrSettings, load_transform_settings
 from tests.test_estimate_transform import (
@@ -35,7 +35,7 @@ SWEEP = {"grid": [{"beads.hungarian_match_settings.cost_threshold": [0.05, 0.2]}
 
 
 def _cli(*args):
-    result = CliRunner().invoke(cli, ["estimate-transform", *map(str, args)])
+    result = CliRunner().invoke(app, ["estimate-transform", *map(str, args)])
     return result
 
 

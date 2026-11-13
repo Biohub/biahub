@@ -336,7 +336,6 @@ name = "biahub"
 source = { editable = "." }
 dependencies = [
     { name = "antspyx" },
-    { name = "click" },
     { name = "dask", extra = ["array"] },
     { name = "humanize" },
     { name = "imageio-ffmpeg" },
@@ -357,6 +356,7 @@ dependencies = [
     { name = "toml" },
     { name = "torch" },
     { name = "tqdm" },
+    { name = "typer" },
     { name = "waveorder" },
 ]
 
@@ -379,7 +379,7 @@ build = [
     { name = "twine" },
 ]
 doc = [
-    { name = "mkdocs-click" },
+    { name = "mkdocs-typer2", extra = ["zensical"] },
     { name = "zensical" },
 ]
 gui = [
@@ -419,7 +419,6 @@ requires-dist = [
     { name = "build", marker = "extra == 'build'" },
     { name = "cellpose", marker = "extra == 'all'", specifier = ">=4.0.1" },
     { name = "cellpose", marker = "extra == 'segment'", specifier = ">=4.0.1" },
-    { name = "click" },
     { name = "cytoland", marker = "extra == 'all'" },
     { name = "cytoland", marker = "extra == 'stain'" },
     { name = "dask", extras = ["array"] },
@@ -437,7 +436,7 @@ requires-dist = [
     { name = "llvmlite", specifier = ">=0.41.0" },
     { name = "markdown" },
     { name = "matplotlib" },
-    { name = "mkdocs-click", marker = "extra == 'doc'", specifier = ">=0.8" },
+    { name = "mkdocs-typer2", extras = ["zensical"], marker = "extra == 'doc'", specifier = ">=0.4.1" },
     { name = "napari", extras = ["pyqt6"], marker = "extra == 'all'" },
     { name = "napari", extras = ["pyqt6"], marker = "extra == 'gui'" },
     { name = "napari-animation", marker = "extra == 'all'" },
@@ -461,6 +460,7 @@ requires-dist = [
     { name = "tracksdata", marker = "extra == 'all'", git = "https://github.com/royerlab/tracksdata?rev=e13cf379b5127deeb8301ce56410fda35b5a3cf9" },
     { name = "tracksdata", marker = "extra == 'track'", git = "https://github.com/royerlab/tracksdata?rev=e13cf379b5127deeb8301ce56410fda35b5a3cf9" },
     { name = "twine", marker = "extra == 'build'" },
+    { name = "typer", specifier = ">=0.27.2" },
     { name = "ultrack", marker = "extra == 'all'", git = "https://github.com/ieivanov/ultrack?rev=69e7589a050b0aa5f84ccda3bdf072f5289f939c" },
     { name = "ultrack", marker = "extra == 'track'", git = "https://github.com/ieivanov/ultrack?rev=69e7589a050b0aa5f84ccda3bdf072f5289f939c" },
     { name = "waveorder", git = "https://github.com/mehta-lab/waveorder?rev=8d796509b88bafc46a31b81889f6b8034a9050db" },
@@ -2463,7 +2463,7 @@ wheels = [
 
 [[package]]
 name = "iohub"
-version = "0.3.12.dev29+c9c85b9"
+version = "0.4.0"
 source = { git = "https://github.com/czbiohub-sf/iohub?rev=c9c85b9372b5c7fbc902ef0954c7529bc3fa80a5#c9c85b9372b5c7fbc902ef0954c7529bc3fa80a5" }
 dependencies = [
     { name = "blosc2" },
@@ -3455,16 +3455,22 @@ wheels = [
 ]
 
 [[package]]
-name = "mkdocs-click"
-version = "0.9.0"
+name = "mkdocs-typer2"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
     { name = "markdown" },
+    { name = "pydantic" },
+    { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a1/c7/8c25f3a3b379def41e6d0bb5c4beeab7aa8a394b17e749f498504102cfa5/mkdocs_click-0.9.0.tar.gz", hash = "sha256:6050917628d4740517541422b607404d044117bc31b770c4f9e9e1939a50c908", size = 18720, upload-time = "2025-04-07T16:59:36.387Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/53/09beebd17749d6fa27b7ff380e8007fd1f7afcde70ac9743146ffcccb045/mkdocs_typer2-0.4.1.tar.gz", hash = "sha256:b00a68d71c8b6f9efc75005619fe1da2036ea3c24b67b9978086d69389247ada", size = 45549, upload-time = "2026-06-17T12:51:02.54Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/fc/9124ab36e2341e78d8d9c669511bd70f52ea0de8105760c31fabec1f9396/mkdocs_click-0.9.0-py3-none-any.whl", hash = "sha256:5208e828f4f68f63c847c1ef7be48edee9964090390afc8f5b3d4cbe5ea9bbed", size = 15104, upload-time = "2025-04-07T16:59:34.807Z" },
+    { url = "https://files.pythonhosted.org/packages/47/09/2633221fcd537b55c425950c8af23cb38d5760dc0a8b8f1bd53d38f7b5e6/mkdocs_typer2-0.4.1-py3-none-any.whl", hash = "sha256:9ecde0c020ffdf5cffd7cef3cc65906b38caaa3887c0f3b5ffbeb73b7887b34c", size = 24587, upload-time = "2026-06-17T12:51:01.557Z" },
+]
+
+[package.optional-dependencies]
+zensical = [
+    { name = "zensical" },
 ]
 
 [[package]]
@@ -8551,7 +8557,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/df/b2/30d59a91ed2828fbe6d9a297990dd6de1fd3c5d722354421d80352bba322/zensical-0.0.72-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:9afa0bdb357e0197f5d65cb882e2ad1652d7a3790e2fc3d243f0669092aab536", size = 18269323, upload-time = "2026-10-23T14:52:02.987Z" },
     { url = "https://files.pythonhosted.org/packages/2b/46/33d705f40d8fb3c2291fff63fce8b0688d11e11b4729c7bd11491ead3649/zensical-0.0.72-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:2103dabfb6fcbea16ffbf226b5405389f3ac67370293eb649f949f03314dd64c", size = 17790144, upload-time = "2026-10-23T14:52:06.092Z" },
     { url = "https://files.pythonhosted.org/packages/45/02/9d4ed7fa43f0cc8464e4ba4e844201c83abcfce9043073c06acf3518f4ba/zensical-0.0.72-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3631d44074d4b28448e710d7b54a506caacb6156b38bd0d91d6a033d65da6ad3", size = 18290933, upload-time = "2026-10-23T14:52:09.003Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/e9/8aa7a24085811cb62987427e86bb5071dbc7c8da7a541a1128996311f070/zensical-0.0.72-cp311-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:1298ced62e0acfe52787ab59607358fbcf6643bf793a1a66813fb760aec009f9", size = 18237453, upload-time = "2026-10-23T14:52:11.589Z" },
     { url = "https://files.pythonhosted.org/packages/98/d8/d176cc7515465c5347c20b412f7e52313f051dc4bcf585b18060044d0d61/zensical-0.0.72-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3513bf501ff5e28b9e8b7255f225bb117d5651c5d50af39a1eb7bb3bbd7251b0", size = 18789079, upload-time = "2026-10-23T14:52:13.896Z" },
     { url = "https://files.pythonhosted.org/packages/07/01/e378f3cb316bd0f3d1e7c2610d4eb8e6a4adf8797fdfebcaf6cb7e15f85f/zensical-0.0.72-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:a0603827ea0a04f920cf2a5be555f9e81818beaac1ff5a92399f19f79e330b2e", size = 18467423, upload-time = "2026-10-23T14:52:16.554Z" },
     { url = "https://files.pythonhosted.org/packages/95/b3/979d2344d0efcb3d43bdcf613fa9846daae174993ba79ba5bab6e02aad45/zensical-0.0.72-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:042795a983823efd2478630164afa708b04b6aff7708a04177657e57292bc1b8", size = 19047304, upload-time = "2026-10-23T14:52:19.283Z" },

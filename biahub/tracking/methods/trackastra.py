@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-import click
 import numpy as np
 import pandas as pd
+import typer
 
 from biahub.settings import TrackastraConfig
 from biahub.tracking.methods.tracksdata import _empty_result, _isolated_tracks
@@ -16,7 +16,7 @@ def warm_trackastra_weights(model: str) -> None:
     from trackastra.model import Trackastra
 
     Trackastra.from_pretrained(model, device="cpu")
-    click.echo(f"Trackastra weights ready: {model}")
+    typer.echo(f"Trackastra weights ready: {model}")
 
 
 def run_trackastra(

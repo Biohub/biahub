@@ -15,10 +15,10 @@ Key conventions
 """
 
 import ants
-import click
 import largestinteriorrectangle as lir
 import numpy as np
 import scipy
+import typer
 
 from matplotlib import pyplot as plt
 from numpy.typing import ArrayLike
@@ -49,7 +49,7 @@ def get_aprox_transform(
     # Calculate scaling factors for displaying data     source_channel_voxel_size, target_channel_voxel_size
     scaling_factor_z = mov_voxel_size[-3] / ref_voxel_size[-3]
     scaling_factor_yx = mov_voxel_size[-1] / ref_voxel_size[-1]
-    click.echo(
+    typer.echo(
         f"Z scaling factor: {scaling_factor_z:.3f}; XY scaling factor: {scaling_factor_yx:.3f}\n"
     )
 
@@ -235,7 +235,7 @@ def find_overlapping_volume(
         moving_volume_ants, reference=fixed_volume_ants
     ).numpy()
     if method == "LIR":
-        click.echo("Starting Largest interior rectangle (LIR) search")
+        typer.echo("Starting Largest interior rectangle (LIR) search")
         mask = (registered_volume > 0) & (fixed_volume > 0)
         z_slice, y_slice, x_slice = find_lir(mask, plot=plot)
 
@@ -483,7 +483,7 @@ def pad_to_shape(
     pad_width = [[s // 2, s - s // 2] for s in dif]
 
     if verbose:
-        click.echo(
+        typer.echo(
             f"padding: input shape {arr.shape}, output shape {shape}, padding {pad_width}"
         )
 
@@ -512,7 +512,7 @@ def center_crop(
 
     slicing = tuple(slice(s, s + d) for s, d in zip(starts, shape, strict=True))
     if verbose:
-        click.echo(
+        typer.echo(
             f"center crop: input shape {arr.shape}, output shape {shape}, slicing {slicing}"
         )
     return arr[slicing]
@@ -547,7 +547,7 @@ def match_shape(
         img = center_crop(img, shape)
 
     if verbose:
-        click.echo(f"matched shape: input shape {img.shape}, output shape {shape}")
+        typer.echo(f"matched shape: input shape {img.shape}, output shape {shape}")
 
     return img
 
@@ -575,10 +575,10 @@ def resolve_time_indices(time_indices, n_t: int) -> list[int]:
         return list(range(n_t))
     indices = [time_indices] if isinstance(time_indices, int) else list(time_indices)
     if not indices:
-        raise click.UsageError("time_indices selects no timepoints")
+        raise typer.BadParameter("time_indices selects no timepoints")
     outside = sorted({t for t in indices if not 0 <= t < n_t})
     if outside:
-        raise click.UsageError(
+        raise typer.BadParameter(
             f"time_indices {outside} out of range: the store has {n_t} timepoints "
             f"(0-{n_t - 1})"
         )

@@ -5,10 +5,10 @@ import json
 import numpy as np
 import pytest
 
-from click.testing import CliRunner
 from iohub.ngff import open_ome_zarr
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 from biahub.pyramid import PROVENANCE_KEY, pyramid_dims
 
 POSITIONS = (("A", "1", "0"), ("B", "1", "0"))
@@ -30,7 +30,7 @@ def plate(create_custom_plate, tmp_path):
 
 
 def _run(*args):
-    return CliRunner().invoke(cli, ["pyramid", *map(str, args)])
+    return CliRunner().invoke(app, ["pyramid", *map(str, args)])
 
 
 def _levels(position_path):

@@ -7,10 +7,10 @@ import ast
 
 from pathlib import Path
 
-import click
 import dask.array as da
 import numpy as np
 import pandas as pd
+import typer
 
 from numpy.typing import ArrayLike
 
@@ -263,7 +263,7 @@ def run_preprocessing_pipeline(
     for image in input_images:
         for channel_name, pipeline in image.channels.items():
             for step in pipeline:
-                click.echo(f"Processing {channel_name} with {step.function}")
+                typer.echo(f"Processing {channel_name} with {step.function}")
                 f_name = step.function
                 run_function = resolve_function(f_name, custom_functions=CUSTOM_FUNCTIONS)
                 f_kwargs = step.kwargs

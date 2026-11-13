@@ -17,24 +17,24 @@ import json
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Annotated, Literal
 
-import click
 import numpy as np
+import typer
 
 from iohub import open_ome_zarr
 
 from biahub.cli.parsing import (
+    ConfigFilepath,
+    MovingPositionDirpaths,
+    OutputFilepath,
+    ReferencePositionDirpaths,
+    SbatchFilepath,
     cluster,
-    config_filepath,
     init_only,
-    monitor,
-    moving_position_dirpaths,
-    output_filepath,
+    monitor_long,
     pair_reference_positions,
     position_key,
-    reference_position_dirpaths,
-    resume,
-    sbatch_filepath,
 )
 from biahub.registration.engine import (
     JOB_FAILED_PREFIX,
@@ -128,7 +128,7 @@ class _Run:
         self.keys = [position_key(p) for p in self.movings]
         if self.settings.reference.frame == "cross":
             if not reference_position_dirpaths:
-                raise click.UsageError(
+                raise typer.BadParameter(
                     "reference frame 'cross' needs the reference positions (-r)"
                 )
             self.reference_for = pair_reference_positions(
@@ -149,15 +149,17 @@ class _Run:
         """Read what `--init` recorded; refuse positions or a config it did not start."""
         path = self.output_dir / RUN_FILENAME
         if not path.exists():
-            raise click.UsageError(f"no run for {self.output_filepath}: run with --init first")
+            raise typer.BadParameter(
+                f"no run for {self.output_filepath}: run with --init first"
+            )
         run = json.loads(path.read_text())
         if run["config_sha256"] != self.config_sha256:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"the config changed since --init started {self.output_dir}; run --init again"
             )
         unknown = sorted(set(self.keys) - set(run["positions"]))
         if unknown:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"positions {unknown} are not in the run --init started (it has "
                 f"{run['positions']})"
             )
@@ -189,12 +191,16 @@ class _Run:
         else:
             model = TransformSettings(**common, positions=entries_by_key)
         model_to_yaml(model, self.output_filepath)
-        click.echo(f"Transform settings saved to {self.output_filepath.resolve()}")
+        typer.echo(f"Transform settings saved to {self.output_filepath.resolve()}")
 
     def entries(self, result, time_indices, transforms) -> list[TransformEntry]:
         return transform_entries(
             result, time_indices, transforms, self.settings.fallback.flag.hard_fail
         )
+
+
+class PositionsFailedError(RuntimeError):
+    """Some positions of a per-position estimate failed; no transforms file was written."""
 
 
 def estimate_transform(
@@ -243,7 +249,7 @@ def estimate_transform(
         run.write(entries_by_key)
         _exit_if_jobs_failed(entries_by_key)
         return
-    click.echo(f"Estimating {len(run.keys)} positions, each with its own transforms")
+    typer.echo(f"Estimating {len(run.keys)} positions, each with its own transforms")
     workers = min(len(run.keys), MAX_CONCURRENT_POSITIONS)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {key: pool.submit(estimate_position, key) for key in run.keys}
@@ -256,7 +262,7 @@ def estimate_transform(
             failed[key] = f"{type(e).__name__}: {e}"
     if failed:
         listing = "\n".join(f"  {k}: {v}" for k, v in failed.items())
-        raise click.ClickException(
+        raise PositionsFailedError(
             f"{len(failed)} of {len(run.keys)} positions failed; no transforms file "
             f"written (rerun with --resume to redo only what is missing):\n{listing}"
         )
@@ -277,7 +283,7 @@ def _exit_if_jobs_failed(entries_by_key: dict[str, list[TransformEntry]]) -> Non
     failed = {key: ts for key, ts in failed.items() if ts}
     if failed:
         listing = "\n".join(f"  {key}: t={ts}" for key, ts in failed.items())
-        click.echo(
+        typer.echo(
             f"jobs failed (their timepoints hold stand-ins; rerun with --resume to redo "
             f"them):\n{listing}",
             err=True,
@@ -319,7 +325,7 @@ def estimate_transform_init(
     }
     estimate = first["resources"]["estimate"]
     echo_resources(estimate["cpus"], estimate["mem_gb"], estimate["time_minutes"])
-    click.echo("PLAN:" + json.dumps(plan))
+    typer.echo("PLAN:" + json.dumps(plan))
     return plan
 
 
@@ -347,7 +353,7 @@ def estimate_transform_step(
     if step == "finalize":
         missing = sorted(set(run.run_positions) - set(run.keys))
         if missing:
-            raise click.UsageError(f"finalize writes every position; missing {missing}")
+            raise typer.BadParameter(f"finalize writes every position; missing {missing}")
         run.write({key: run.entries(*finalize_run(run.work_dir(key))) for key in run.keys})
         return None
     if step == "flag":
@@ -355,7 +361,7 @@ def estimate_transform_step(
         for key in run.keys:
             _result, position_flags = flag_run(run.work_dir(key))
             flags[key] = {"repair": position_flags["repair"], "sweep": position_flags["sweep"]}
-        click.echo("PLAN:" + json.dumps(flags))
+        typer.echo("PLAN:" + json.dumps(flags))
         return flags
     failed = {}
     for key in run.keys:
@@ -372,45 +378,48 @@ def estimate_transform_step(
     return {"failed": failed}
 
 
-@click.command("estimate-transform")
-@moving_position_dirpaths()
-@reference_position_dirpaths(required=False)
-@config_filepath()
-@output_filepath()
-@sbatch_filepath()
-@cluster()
-@monitor(short=False)
-@resume(
-    help="Keep the timepoints an earlier run of this output already finished and estimate "
-    "only the rest (e.g. after jobs hit their time limit). Refused if the settings or "
-    "inputs changed since that run."
-)
-@init_only()
-@click.option(
-    "--step",
-    type=click.Choice(STEPS),
-    default=None,
-    help="Run one step of a run --init started, in this process (for Nextflow): "
-    "estimate -> flag -> repair / sweep -> finalize.",
-)
-@click.option(
-    "--timepoints",
-    default=None,
-    help="Timepoints for --step estimate / repair / sweep, comma-separated (e.g. 5 or "
-    "5,6); default: every timepoint the step has.",
-)
 def estimate_transform_cli(
-    moving_position_dirpaths: list[Path],
-    reference_position_dirpaths: list[Path],
-    config_filepath: Path,
-    output_filepath: Path,
-    sbatch_filepath: str | None,
-    cluster: str,
-    monitor: bool,
-    resume: bool,
-    init_only: bool,
-    step: str | None,
-    timepoints: str | None,
+    *,
+    moving_position_dirpaths: MovingPositionDirpaths,
+    reference_position_dirpaths: ReferencePositionDirpaths,
+    config_filepath: ConfigFilepath,
+    output_filepath: OutputFilepath,
+    sbatch_filepath: SbatchFilepath = None,
+    cluster: cluster = "slurm",
+    monitor: monitor_long = False,
+    resume: Annotated[
+        bool,
+        typer.Option(
+            "--resume/--no-resume",
+            show_default=True,
+            help=(
+                "Keep the timepoints an earlier run of this output already finished and "
+                "estimate only the rest (e.g. after jobs hit their time limit). Refused if "
+                "the settings or inputs changed since that run."
+            ),
+        ),
+    ] = False,
+    init_only: init_only = False,
+    step: Annotated[
+        Literal[STEPS] | None,
+        typer.Option(
+            "--step",
+            help=(
+                "Run one step of a run --init started, in this process (for Nextflow): "
+                "estimate -> flag -> repair / sweep -> finalize."
+            ),
+        ),
+    ] = None,
+    timepoints: Annotated[
+        str | None,
+        typer.Option(
+            "--timepoints",
+            help=(
+                "Timepoints for --step estimate / repair / sweep, comma-separated (e.g. 5 "
+                "or 5,6); default: every timepoint the step has."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Estimate a transform series mapping a moving channel onto its reference.
 
@@ -445,9 +454,9 @@ def estimate_transform_cli(
     >>> biahub estimate-transform --step finalize -m <every position> ...
     """  # noqa: D301
     if init_only and step:
-        raise click.UsageError("--init and --step are separate calls")
+        raise typer.BadParameter("--init and --step are separate calls")
     if timepoints is not None and step not in ("estimate", "repair", "sweep"):
-        raise click.UsageError("--timepoints goes with --step estimate / repair / sweep")
+        raise typer.BadParameter("--timepoints goes with --step estimate / repair / sweep")
     common = dict(
         moving_position_dirpaths=moving_position_dirpaths,
         reference_position_dirpaths=reference_position_dirpaths,
@@ -469,20 +478,20 @@ def estimate_transform_cli(
         if result and result.get("failed"):
             # Recorded (the run can carry on), but not a success: a distinct exit code
             # lets a workflow retry it and keep it out of its cache (nextflow/modules/registration.nf).
-            click.echo(f"{step}: jobs failed at {result['failed']}", err=True)
+            typer.echo(f"{step}: jobs failed at {result['failed']}", err=True)
             raise SystemExit(JOBS_FAILED_EXIT_CODE)
         return
-    estimate_transform(
-        moving_position_dirpaths=moving_position_dirpaths,
-        reference_position_dirpaths=reference_position_dirpaths,
-        config_filepath=config_filepath,
-        output_filepath=output_filepath,
-        sbatch_filepath=sbatch_filepath,
-        cluster=cluster,
-        monitor=monitor,
-        resume=resume,
-    )
-
-
-if __name__ == "__main__":
-    estimate_transform_cli()
+    try:
+        estimate_transform(
+            moving_position_dirpaths=moving_position_dirpaths,
+            reference_position_dirpaths=reference_position_dirpaths,
+            config_filepath=config_filepath,
+            output_filepath=output_filepath,
+            sbatch_filepath=sbatch_filepath,
+            cluster=cluster,
+            monitor=monitor,
+            resume=resume,
+        )
+    except PositionsFailedError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(1) from None

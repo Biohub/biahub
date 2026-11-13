@@ -24,10 +24,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
-import click
 import numpy as np
 import pandas as pd
 import submitit
+import typer
 
 from iohub import open_ome_zarr
 from numpy.typing import ArrayLike
@@ -253,14 +253,14 @@ def select_flagged(
     try:
         flags = flag_timepoints(score_col, k_mad=k_mad, floor=floor, hard_fail=hard_fail)
     except ValueError:
-        click.echo(f"{label}: no finite scores to flag against; skipping.")
+        typer.echo(f"{label}: no finite scores to flag against; skipping.")
         return [], {}
     flagged = [int(t) for t in flags.loc[flags["flagged"], "t"]]
     if not flagged:
-        click.echo(f"{label}: nothing flagged, nothing to do.")
+        typer.echo(f"{label}: nothing flagged, nothing to do.")
         return [], dict(flags.attrs)
 
-    click.echo(
+    typer.echo(
         f"{label}: {len(flagged)} of {n_t} timepoints flagged "
         f"(adaptive line {flags.attrs['adaptive_line']:.3f}, median "
         f"{flags.attrs['median']:.3f}) -> {flagged}"
@@ -278,7 +278,7 @@ def cap_worst(
     worst = sorted(timepoints, key=lambda t: np.nan_to_num(scores[t], nan=-1.0))
     dropped = sorted(worst[max_timepoints:])
     kept = sorted(worst[:max_timepoints])
-    click.echo(
+    typer.echo(
         f"  capped at max_timepoints={max_timepoints}; taking the worst {len(kept)} "
         f"and LEAVING {len(dropped)} untouched: {dropped}"
     )
@@ -991,7 +991,7 @@ def build_estimator(
             pre_affine_fliplr=manual.affine_fliplr,
         )
     else:
-        raise click.UsageError(f"unknown method '{settings.method}'")
+        raise typer.BadParameter(f"unknown method '{settings.method}'")
     return estimator, score_fn, seed
 
 
@@ -1154,7 +1154,7 @@ def _start_run(
         previous = json.loads(manifest_path.read_text())
         changed = sorted(k for k in fingerprint if previous.get(k) != fingerprint[k])
         if changed:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"--resume: {', '.join(changed)} changed since the run in {output_dir}; "
                 "rerun without --resume"
             )
@@ -1163,7 +1163,7 @@ def _start_run(
         (output_dir / name).is_dir() and any((output_dir / name).iterdir())
         for name in ("timepoints", "repairs", "sweeps")
     ):
-        raise click.UsageError(
+        raise typer.BadParameter(
             f"--resume: no {RUN_MANIFEST_FILENAME} in {output_dir}, so its records cannot be "
             "checked against these settings and inputs; rerun without --resume"
         )
@@ -1390,7 +1390,7 @@ def _run_jobs(
             jobs.append(executor.submit(fn, *args))
     log_path = Path(executor.folder) / f"{label}_job_ids.log"
     log_path.write_text("\n".join(str(job.job_id) for job in jobs))
-    click.echo(f"{label}: submitted {len(jobs)} job(s) on cluster='{resolved_cluster}'")
+    typer.echo(f"{label}: submitted {len(jobs)} job(s) on cluster='{resolved_cluster}'")
 
     if monitor_flag and resolved_cluster == "slurm":
         monitor_jobs(jobs, [Path(f"t={t}") for t, _fn, _args in submissions])
@@ -1402,7 +1402,7 @@ def _run_jobs(
             records[t] = job.result()
         except Exception as e:  # noqa: BLE001 -- one job's infrastructure failure must not abort the run
             failures[t] = _job_failure(e)
-            click.echo(f"{label} t={t}: {failures[t]}")
+            typer.echo(f"{label} t={t}: {failures[t]}")
     return records, failures
 
 
@@ -1582,7 +1582,7 @@ def init_run(
     if settings.reference.frame == "cross":
         beyond = [t for t in time_indices if t >= ref_T]
         if beyond:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 f"timepoints {beyond} are past the reference store, which has {ref_T} "
                 f"timepoints ({target})"
             )
@@ -1600,7 +1600,7 @@ def init_run(
         )
         settings.transform.seed = approx.to_list()
         settings.transform.seed_direction = "inverse"
-        click.echo(f"Computed seed from the store shapes:\n{approx.matrix}")
+        typer.echo(f"Computed seed from the store shapes:\n{approx.matrix}")
     estimator, _score_fn, _seed_transform = build_estimator(
         settings, (Z, Y, X), mov_voxel_size, ref_voxel_size
     )
@@ -1641,14 +1641,14 @@ def _run_settings(output_dir: Path) -> EstimateTransformSettings:
     """Return the settings `init_run` resolved for this run."""
     path = Path(output_dir) / ENGINE_SETTINGS_FILENAME
     if not path.exists():
-        raise click.UsageError(f"no run in {output_dir}: run with --init first")
+        raise typer.BadParameter(f"no run in {output_dir}: run with --init first")
     return yaml_to_model(path, EstimateTransformSettings)
 
 
 def _run_plan(output_dir: Path) -> dict:
     path = Path(output_dir) / RUN_PLAN_FILENAME
     if not path.exists():
-        raise click.UsageError(f"no run in {output_dir}: run with --init first")
+        raise typer.BadParameter(f"no run in {output_dir}: run with --init first")
     return json.loads(path.read_text())
 
 
@@ -1682,7 +1682,7 @@ def flag_run(
         line = f"t={t}: score={result.scores[t]:.4f}"
         if t in result.errors:
             line += f"  estimate failed: {result.errors[t]}"
-        click.echo(line)
+        typer.echo(line)
 
     flag = settings.fallback.flag
     flagged = flag_series(result, k_mad=flag.k_mad, floor=flag.floor, hard_fail=flag.hard_fail)
@@ -1694,7 +1694,7 @@ def flag_run(
         else []
     )
     if repair_ts and not plan["uses_seed"]:
-        click.echo(
+        typer.echo(
             f"repair skipped: method {settings.method!r} ignores seeds, so re-seeding "
             f"would return the same transforms ({len(repair_ts)} flagged timepoint(s) stay flagged)"
         )
@@ -1717,7 +1717,7 @@ def flag_run(
 def _flags(output_dir: Path) -> dict:
     path = Path(output_dir) / FLAGS_FILENAME
     if not path.exists():
-        raise click.UsageError(f"no flags in {output_dir}: run --step flag first")
+        raise typer.BadParameter(f"no flags in {output_dir}: run --step flag first")
     return json.loads(path.read_text())
 
 
@@ -1792,7 +1792,7 @@ def finalize_run(
         # current estimate -- a repair kept by resume may predate a redone, better one.
         if outcome.accepted and _beats(outcome.score, result.scores.get(t)):
             _accept(result, t, outcome.transform, outcome.score, outcome.source)
-        click.echo(f"repair t={t}: {outcome.source} -> {outcome.score:.4f}")
+        typer.echo(f"repair t={t}: {outcome.source} -> {outcome.score:.4f}")
 
     # The sweep competes with repair rather than following it: it starts from each
     # timepoint's pre-fallback estimate, and the better of the two is kept.
@@ -1809,7 +1809,7 @@ def finalize_run(
             failures=outcome.failures,
         )
         _fold_sweep(result, t, outcome)
-        click.echo(
+        typer.echo(
             f"sweep t={t}: {outcome.source} -> {outcome.score:.4f}"
             + ("" if result.provenance.get(t, "").startswith("sweep:") else " (not kept)")
         )
@@ -1850,7 +1850,7 @@ def run_timepoint_jobs(
 
     if step == "estimate" and plan["propagated"]:
         if timepoints is not None:
-            raise click.UsageError(
+            raise typer.BadParameter(
                 "seed_from: previous_timepoint estimates the whole series in one job, in "
                 "order; drop --timepoints"
             )
@@ -1863,7 +1863,7 @@ def run_timepoint_jobs(
             )
         except Exception as e:  # noqa: BLE001 -- recorded per timepoint, as the driver does
             # The timepoints it reached keep their records; the rest failed with it.
-            click.echo(f"estimate: {_job_failure(e)}")
+            typer.echo(f"estimate: {_job_failure(e)}")
             timepoints_dir.mkdir(parents=True, exist_ok=True)
             records, failed = {}, []
             for t in time_indices:
@@ -1884,7 +1884,7 @@ def run_timepoint_jobs(
     wanted = available if timepoints is None else list(timepoints)
     unknown = sorted(set(wanted) - set(available))
     if unknown:
-        raise click.UsageError(
+        raise typer.BadParameter(
             f"{step}: timepoints {unknown} are not in this run's {step} list {available}"
         )
     flagged = _flags(output_dir)["flagged"] if step == "repair" else None
@@ -1909,13 +1909,13 @@ def run_timepoint_jobs(
             # As the driver records a job that raised: an estimate becomes a failed record
             # (the timepoint gets a stand-in, the error in its note); a repair / sweep
             # leaves no record, so the timepoint keeps its estimate.
-            click.echo(f"{step} t={t}: {_job_failure(e)}")
+            typer.echo(f"{step} t={t}: {_job_failure(e)}")
             if step == "estimate":
                 record_path.parent.mkdir(parents=True, exist_ok=True)
                 _write_json(record_path, _failed_record(t, e))
             failed.append(t)
             continue
-        click.echo(f"{step} t={t}: score={records[t].get('score')}")
+        typer.echo(f"{step} t={t}: score={records[t].get('score')}")
     return records, failed
 
 
@@ -1983,7 +1983,7 @@ def estimate_transform_series(
     resolved_cluster = (
         "debug" if plan["interactive"] else get_submitit_cluster(cluster=cluster)
     )
-    click.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
+    typer.echo(f"Preparing jobs on cluster='{resolved_cluster}': {slurm_args}")
     executor = submitit.AutoExecutor(folder=slurm_out_path, cluster=resolved_cluster)
     executor.update_parameters(**slurm_args)
 
@@ -1991,7 +1991,7 @@ def estimate_transform_series(
         t for t in time_indices if not (resume and _finished(timepoints_dir / f"{t}.json"))
     ]
     if resume:
-        click.echo(
+        typer.echo(
             f"resume: {len(time_indices) - len(to_estimate)} timepoint(s) already estimated"
         )
     # An sbatch file that sets a time limit wins over every phase's default below.
@@ -2123,7 +2123,7 @@ def chain_to_first_frame(
     F_t = F_{t-1} @ (t -> t-1). That needs every link, hence contiguous timepoints.
     """
     if list(time_indices) != list(range(time_indices[0], time_indices[-1] + 1)):
-        raise click.UsageError(
+        raise typer.BadParameter(
             "reference 'previous' needs contiguous time_indices (each timepoint is chained "
             f"through the one before it); got {time_indices}"
         )

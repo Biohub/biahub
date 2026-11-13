@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 import yaml
 
-from click.testing import CliRunner
 from iohub.ngff import open_ome_zarr
+from typer.testing import CliRunner
 
-from biahub.cli.main import cli
+from biahub.cli.main import app
 
 Z = 8
 
@@ -30,7 +30,7 @@ def _config(tmp_path, channels, focus=None, **extra):
 
 
 def _run(*args):
-    return CliRunner().invoke(cli, ["project", *map(str, args)])
+    return CliRunner().invoke(app, ["project", *map(str, args)])
 
 
 def _read(position_path):
