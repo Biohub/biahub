@@ -228,9 +228,8 @@ def apply_inverse_transfer_function(
 
 
 def apply_inverse_transfer_function_cli(
+    *,
     input_position_dirpaths: InputPositionDirpaths,
-    config_filepath: ConfigFilepath,
-    output_dirpath: OutputDirpath,
     transfer_function_dirpath: Annotated[
         Path | None,
         typer.Option(
@@ -239,6 +238,8 @@ def apply_inverse_transfer_function_cli(
             help="Path to transfer function zarr (not required for --init).",
         ),
     ] = None,
+    config_filepath: ConfigFilepath,
+    output_dirpath: OutputDirpath,
     sbatch_filepath: SbatchFilepath = None,
     cluster: cluster = "slurm",
     monitor: monitor = False,
