@@ -75,9 +75,10 @@ track = [
   # Split it on 3.14 here, beside hoct, not in a [tool.uv] constraint: from a
   # constraint uv only splits the resolution at ultrack, after it has queued hoct,
   # and then keeps hoct's gurobipy<13 on 3.14 too, so `uv lock --upgrade` (and any
-  # lock without the split already in uv.lock) fails.
+  # lock without the split already in uv.lock) fails. Gurobi licences are tied to
+  # the major version, so hold 3.14 below gurobipy 14 until we move to a v14 licence.
   "gurobipy>12.0.1,<13; python_version < '3.14'",
-  "gurobipy>=13; python_version >= '3.14'",
+  "gurobipy>=13,<14; python_version >= '3.14'",
   "trackastra[ilp]",
 ]
 
