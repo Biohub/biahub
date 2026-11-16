@@ -222,6 +222,8 @@ def survey_positions(
     t: int = 0,
     nuclei: bool = False,
     cells: int = 4,
+    reference_positions: list | None = None,
+    reference_channel: str | None = None,
 ) -> list[dict]:
     """Return one row per position: whether it is usable, and how its structure lies.
 
@@ -230,12 +232,25 @@ def survey_positions(
     `spread`, the share of a `cells` x `cells` grid holding foreground (structure all over
     the field constrains scale and rotation; a corner does not). `peak_z` per channel:
     the slice of highest mean signal. `n_nuclei` when `nuclei` (detect_nuclei).
+
+    A registration's reference is usually another store (DragonFly: DAPI in `0-convert`,
+    VS nuclei in `2-VS`): with `reference_positions` (paired by position key; one serves
+    all) and `reference_channel`, `reference_blank` says whether the reference holds no
+    data there (unwritten, all NaN or one value); `select_positions` skips those.
     """
     from iohub import open_ome_zarr
 
+    from biahub.cli.parsing import pair_reference_positions
+
+    keys = [position_key(p) for p in position_dirpaths]
+    reference_for = pair_reference_positions(keys, reference_positions)
     rows = []
     for path in position_dirpaths:
         row = {"position": position_key(path), "empty": False}
+        if reference_channel is not None and reference_for:
+            row["reference_blank"] = _reference_blank(
+                reference_for[row["position"]], reference_channel, t
+            )
         with open_ome_zarr(path, mode="r") as position:
             if is_unwritten(position):
                 rows.append({**row, "empty": True})
@@ -273,16 +288,34 @@ def survey_positions(
     return rows
 
 
+def _reference_blank(path, channel: str, t: int) -> bool:
+    """Whether a reference position holds no data for `channel` at `t`."""
+    from iohub import open_ome_zarr
+
+    with open_ome_zarr(path, mode="r") as position:
+        if is_unwritten(position):
+            return True
+        volume = np.asarray(
+            position.data[t, position.channel_names.index(channel)], dtype=np.float32
+        )
+    return _blank(volume)
+
+
 def select_positions(survey_rows: list[dict], n_held_out: int = 3) -> tuple[str, list[str]]:
     """Return (the position to estimate on, held-out positions) from `survey_positions`.
 
-    Usable positions are written and under half NaN. The estimate position has the most
+    Usable positions are written, under half NaN, and have reference data (when the
+    survey read the reference store). The estimate position has the most
     spread-out structure (what constrains scale and rotation; ties: more nuclei, then more
     foreground); held-out ones are the next most spread, one per other well first, so the
     evaluation sees how the transform carries across the plate.
     """
     usable = [
-        r for r in survey_rows if not r.get("empty") and (r.get("nan_fraction") or 0) < 0.5
+        r
+        for r in survey_rows
+        if not r.get("empty")
+        and not r.get("reference_blank")
+        and (r.get("nan_fraction") or 0) < 0.5
     ]
     if not usable:
         raise ValueError("no usable position: every one is empty or mostly NaN")

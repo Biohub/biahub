@@ -188,7 +188,11 @@ on held-out positions instead of guessing, with `biahub.registration.benchmark`:
 from biahub.registration.benchmark import (
     select_pipeline, select_positions, survey_positions, write_benchmark_config,
 )
-rows = survey_positions(positions, [moving_channel, reference_channel], nuclei=True)
+# the reference is usually another store: survey it too, so positions it lacks are skipped
+rows = survey_positions(
+    moving_positions, [moving_channel], nuclei=True,
+    reference_positions=reference_positions, reference_channel=reference_channel,
+)
 estimate_on, held_out = select_positions(rows)  # most spread-out structure; other wells
 write_benchmark_config(
     "benchmark.yml", "<case>", moving_store, reference_store, moving_channel,

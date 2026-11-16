@@ -36,3 +36,30 @@ def test_the_survey_names_unusable_positions_and_how_structure_is_spread(tmp_pat
     assert rows["A/1/0"]["foreground"] > rows["A/1/1"]["foreground"]
     # the depth of peak signal, per channel
     assert set(rows["A/1/0"]["peak_z"]) == {"DAPI", "VS"}
+
+
+def test_the_survey_reads_the_reference_store_and_skips_positions_it_lacks(tmp_path):
+    # moving and reference are usually two stores (DragonFly: 0-convert DAPI, 2-VS nuclei):
+    # the survey read the moving one only, and picked positions where the VS was blank
+    from biahub.registration.benchmark import select_positions, survey_positions
+    from tests.test_registration_estimators import _synthetic_blob_volume
+
+    rng = np.random.default_rng(1)
+    cells = _synthetic_blob_volume(rng, (24, 256, 256), n_blobs=300, sigma=3.0) + 10
+    moving, reference = tmp_path / "m.zarr", tmp_path / "r.zarr"
+    with open_ome_zarr(moving, layout="hcs", mode="w", channel_names=["DAPI"]) as plate:
+        for fov in "012":
+            plate.create_position("A", str(int(fov) + 1), fov)["0"] = cells[None, None]
+    with open_ome_zarr(reference, layout="hcs", mode="w", channel_names=["VS"]) as plate:
+        for fov in "012":  # the VS of the best-looking well is blank
+            volume = np.zeros_like(cells) if fov == "0" else cells
+            plate.create_position("A", str(int(fov) + 1), fov)["0"] = volume[None, None]
+    keys = ["A/1/0", "A/2/1", "A/3/2"]
+    rows = survey_positions(
+        [moving / k for k in keys], ["DAPI"],
+        reference_positions=[reference / k for k in keys], reference_channel="VS",
+    )  # fmt: skip
+    blank = {r["position"]: r["reference_blank"] for r in rows}
+    assert blank == {"A/1/0": True, "A/2/1": False, "A/3/2": False}
+    estimate, held_out = select_positions(rows, n_held_out=2)
+    assert "A/1/0" not in [estimate, *held_out]
