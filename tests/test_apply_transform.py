@@ -1184,3 +1184,62 @@ def test_a_registration_is_not_applied_onto_a_grid_of_another_voxel_size(
             [position], config, tmp_path / "out.zarr", reference_position_dirpaths=[reference],
             cluster="debug", channels=["GFP"],
         )  # fmt: skip
+
+
+def test_how_to_apply_comes_from_the_runs_config_a_file_then_the_flags(tmp_path):
+    # interpolation, crop, version and channels were command-line only
+    import yaml
+
+    from biahub.apply_transform import resolve_apply
+    from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME
+
+    transforms = tmp_path / "transforms.yml"
+    transforms.write_text("{}")
+    run_dir = tmp_path / "transforms"
+    run_dir.mkdir()
+    (run_dir / ENGINE_SETTINGS_FILENAME).write_text(
+        yaml.safe_dump(
+            {
+                "moving": {"channel": "GFP"},
+                "reference": {"frame": "first"},
+                "method": "phase_cross_corr",
+                "apply": {"interpolation": "nearest", "crop_to_overlap": True},
+            }
+        )
+    )
+    run_own = resolve_apply(transforms, None)
+    assert (run_own.interpolation, run_own.crop_to_overlap) == ("nearest", True)
+    other = tmp_path / "apply.yml"
+    other.write_text(yaml.safe_dump({"channels": ["GFP"], "ome_zarr_version": "0.4"}))
+    from_file = resolve_apply(transforms, other, interpolation="linear")
+    assert (from_file.interpolation, from_file.channels, from_file.ome_zarr_version) == (
+        "linear", ["GFP"], "0.4",
+    )  # fmt: skip
+    bare = tmp_path / "hand.yml"
+    bare.write_text("{}")
+    assert resolve_apply(bare, None).interpolation == "linear"  # no run: the defaults
+
+
+def test_convert_settings_keeps_a_register_files_apply_options(tmp_path):
+    # they were dropped with a note to pass the flags
+    import yaml
+
+    from biahub.registration.legacy.convert_settings import convert_settings_file
+    from biahub.settings import ApplySettings
+    from biahub.utils.config import yaml_to_model
+
+    legacy = tmp_path / "register.yml"
+    legacy.write_text(
+        yaml.safe_dump(
+            {
+                "source_channel_names": ["GFP"],
+                "target_channel_name": "Phase3D",
+                "affine_transform_zyx": np.eye(4).tolist(),
+                "keep_overhang": False,
+                "interpolation": "nearest",
+            }
+        )
+    )
+    convert_settings_file([legacy], tmp_path / "transforms.yml")
+    apply = yaml_to_model(tmp_path / "transforms_apply.yml", ApplySettings)
+    assert (apply.crop_to_overlap, apply.interpolation) == (True, "nearest")

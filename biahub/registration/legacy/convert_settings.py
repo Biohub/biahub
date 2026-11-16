@@ -35,6 +35,7 @@ from biahub.settings import (
     RENAMED_METHODS,
     AffineTransformSettings,
     AntsRegistrationSettings,
+    ApplySettings,
     BeadsMatchSettings,
     ChannelSettings,
     EstimateTransformSettings,
@@ -442,20 +443,7 @@ def transform_settings_from_legacy(
         notes.append(
             f"time_indices {legacy.time_indices!r} dropped: pass --timepoints to apply-transform"
         )
-    if legacy.output_ome_zarr_version is not None:
-        notes.append(
-            "output_ome_zarr_version dropped: pass --ome-zarr-version to apply-transform"
-        )
     if isinstance(legacy, RegistrationSettings):
-        if not legacy.keep_overhang:
-            notes.append(
-                "register cropped to the overlap: pass --crop-to-overlap to apply-transform "
-                "(it keeps the full grid by default)"
-            )
-        if legacy.interpolation != "linear":
-            notes.append(
-                f"interpolation {legacy.interpolation!r} dropped: pass --interpolation to apply-transform"
-            )
         settings = TransformSettings(
             direction="inverse",
             moving_channels=legacy.source_channel_names,
@@ -492,6 +480,24 @@ def transform_settings_from_legacy(
         ],
     )
     return settings, notes
+
+
+def apply_settings_from_legacy(
+    legacy: RegistrationSettings | StabilizationSettings,
+) -> ApplySettings:
+    """Return how a legacy register / stabilize config applied its transforms.
+
+    The crop, interpolation and output version are no longer stored with the transforms:
+    they are apply-transform's settings (`ApplySettings`, `-a`).
+    """
+    fields = {}
+    if legacy.output_ome_zarr_version is not None:
+        fields["ome_zarr_version"] = legacy.output_ome_zarr_version
+    if isinstance(legacy, RegistrationSettings):
+        # register cropped to the overlap unless keep_overhang; apply keeps the full grid
+        fields["crop_to_overlap"] = not legacy.keep_overhang
+        fields["interpolation"] = legacy.interpolation
+    return ApplySettings(**fields)
 
 
 def load_legacy_settings(path: Path) -> LegacySettings:
@@ -596,6 +602,19 @@ def convert_settings_file(
         source = f"{len(config_filepaths)} per-position stabilize configs"
     Path(output_filepath).parent.mkdir(parents=True, exist_ok=True)
     model_to_yaml(settings, output_filepath)
+    if len(config_filepaths) == 1 and isinstance(
+        legacy, (RegistrationSettings, StabilizationSettings)
+    ):
+        apply = apply_settings_from_legacy(legacy)
+        if apply != ApplySettings():  # how the old config applied it, beside the file
+            apply_path = Path(output_filepath).with_name(
+                Path(output_filepath).stem + "_apply.yml"
+            )
+            model_to_yaml(apply, apply_path)
+            notes.append(
+                f"how it was applied (crop, interpolation, version) is in {apply_path}: "
+                f"pass -a {apply_path} to apply-transform"
+            )
     command = (
         "estimate-transform"
         if isinstance(settings, EstimateTransformSettings)

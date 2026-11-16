@@ -376,7 +376,10 @@ transforms (e.g. unregistered, a previous registration, this one):
 `--apply`: with Nextflow, set `APPLY=true` (and `APPLY_POSITIONS`) in
 `run_registration_nf.sh`, or apply an existing file with `TRANSFORMS=<file>`; with the plain
 CLI, copy `templates/run_apply_transform.sh` next to the transforms file, fill it in and
-run it in tmux. The output keeps the full reference grid by default (one wrong transform
+run it in tmux. How it is applied (interpolation, crop to overlap, OME-Zarr version,
+channels) goes in the config's `apply:` section, read from the run folder (editing it does
+not change the run); `-a apply.yml` for a transforms file without a run (`convert-settings`
+writes one beside a converted register file); a flag overrides either. The output keeps the full reference grid by default (one wrong transform
 cannot shrink every timepoint's field of view); `--crop-to-overlap` crops to the box every
 transform covers. `--timepoints` applies a subset: the output then holds only those, in
 order (t = 0, 40, 80 stored as 0, 1, 2), with the original indices in the output's

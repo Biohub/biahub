@@ -100,7 +100,10 @@ def test_register_config_converts_to_a_single_inverse_matrix():
         unified.moving_channels == ["GFP", "mCherry"]
         and unified.reference_channel == "Phase3D"
     )
-    assert any("--crop-to-overlap" in n for n in notes)
+    # how it was applied is apply-transform's settings now (convert-settings writes them)
+    from biahub.registration.legacy.convert_settings import apply_settings_from_legacy
+
+    assert apply_settings_from_legacy(legacy).crop_to_overlap
     np.testing.assert_allclose(unified.matrix_for(0, "forward")[:3, 3], [-2, 3, -4])
 
 

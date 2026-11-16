@@ -28,6 +28,7 @@ from biahub.registration.engine.series import (
 from biahub.registration.utils import RunError
 from biahub.settings import (
     EstimateTransformSettings,
+    load_estimate_transform_settings,
 )
 from biahub.utils.config import yaml_to_model
 
@@ -58,8 +59,9 @@ def config_fingerprint(settings: EstimateTransformSettings) -> dict:
     fingerprint behind both checks: `run.json` (a `--step` must use the config `--init`
     planned) and the resume manifest (records may be reused).
     """
-    # `evaluation` is read by evaluate-transform only: editing it leaves the run the same
-    settings_json = settings.model_dump_json(exclude={"evaluation"})
+    # `evaluation` and `apply` are read by evaluate- / apply-transform only: editing them
+    # leaves the run the same
+    settings_json = settings.model_dump_json(exclude={"evaluation", "apply"})
     fingerprint = {"settings_sha256": hashlib.sha256(settings_json.encode()).hexdigest()}
     initial_file = settings.transform.initial_file
     if initial_file is not None:
@@ -145,6 +147,32 @@ class RunFolder:
         if len(positions) == 1:
             return [(None, self.path)]
         return [(key, self.work_dir(key, positions)) for key in positions]
+
+
+def run_folder_of(transforms_filepath: Path) -> Path:
+    """Return the run folder of a transforms file: `<stem>/`, or the run folder it is in.
+
+    The second is a pooled run's `per_position.yml`, written inside its run folder.
+    """
+    transforms_filepath = Path(transforms_filepath)
+    beside = transforms_filepath.with_suffix("")
+    if not beside.is_dir() and (transforms_filepath.parent / RUN_FILENAME).exists():
+        return transforms_filepath.parent
+    return beside
+
+
+def run_settings_of(transforms_filepath: Path) -> EstimateTransformSettings | None:
+    """Return the estimate settings of the run that wrote a transforms file, or None.
+
+    Every position of a run shares its settings: the first work folder that has them.
+    None for a file without a run (e.g. a hand registration).
+    """
+    run_dir = run_folder_of(transforms_filepath)
+    if not run_dir.is_dir():
+        return None
+    files = [w / ENGINE_SETTINGS_FILENAME for _, w in RunFolder(run_dir).work_dirs()]
+    settings_file = next((f for f in files if f.exists()), None)
+    return None if settings_file is None else load_estimate_transform_settings(settings_file)
 
 
 def start_run(

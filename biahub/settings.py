@@ -2007,6 +2007,24 @@ class PoolSettings(MyBaseModel):
     z: Literal["medoid", "median"] = "medoid"
 
 
+class ApplySettings(MyBaseModel):
+    """How `apply-transform` writes a registration or stabilization.
+
+    `interpolation`: the resampling; `crop_to_overlap`: crop to the box every transform
+    covers (default: the full reference grid -- one wrong transform cannot shrink every
+    timepoint's field); `ome_zarr_version` of the output store (0.5 lets --resume track
+    progress); `channels`: the moving channels to transform (unset: every one, except a
+    channel the reference store also has, copied unless it is in the file's
+    moving_channels). In an estimate config it is read by `apply-transform` only, so
+    editing it does not change the run.
+    """
+
+    interpolation: Literal["linear", "nearest"] = "linear"
+    crop_to_overlap: bool = False
+    ome_zarr_version: Literal["0.4", "0.5"] = "0.5"
+    channels: list[str] | None = None
+
+
 class BeadThresholds(MyBaseModel):
     """Bead detection thresholds per channel (fluorescence and phase differ)."""
 
@@ -2074,8 +2092,10 @@ class EstimateTransformSettings(MyBaseModel):
     time_indices: StrictTimepoint | list[StrictTimepoint] | Literal["all"] = "all"
     score: ScoreSettings = ScoreSettings()
     fallback: FallbackSettings = FallbackSettings()
-    # how evaluate-transform measures this run (not read by the estimate)
+    # how evaluate-transform measures this run, and how apply-transform writes it (not
+    # read by the estimate)
     evaluation: EvaluationSettings = EvaluationSettings()
+    apply: ApplySettings = ApplySettings()
     # Estimate on several positions, write one shared transform (their medoid); each
     # position's own estimate is kept in the run folder (per_position.yml).
     pool: PoolSettings | None = None

@@ -29,6 +29,7 @@ from biahub.cli.parsing import (
 from biahub.cli.slurm import wait_for_jobs_to_finish
 from biahub.core.transform import Transform
 from biahub.registration.benchmark import block_candidates, evaluate_candidates
+from biahub.registration.engine.disk import run_folder_of, run_settings_of
 from biahub.settings import load_transform_settings
 from biahub.utils.cluster import apply_sbatch_overrides, get_submitit_cluster
 
@@ -38,19 +39,6 @@ def _file_candidate(transforms, position_keys: list[str], t: int) -> dict:
     if transforms.per_position:
         return {(key, t): transforms.transform_for(t, key) for key in position_keys}
     return {t: transforms.transform_for(t)}
-
-
-def _run_dir(transforms_filepath: Path) -> Path:
-    """Return the run folder of a transforms file: `<stem>/`, or the run folder it is in.
-
-    The second is a pooled run's `per_position.yml`, written inside its run folder.
-    """
-    from biahub.registration.engine.disk import RUN_FILENAME
-
-    beside = transforms_filepath.with_suffix("")
-    if not beside.is_dir() and (transforms_filepath.parent / RUN_FILENAME).exists():
-        return transforms_filepath.parent
-    return beside
 
 
 def _bead_detection(run_dir: Path, threshold: float | tuple | None) -> dict:
@@ -148,7 +136,7 @@ def evaluate_transform(
         }
     else:
         candidates = {"transforms": _file_candidate(transforms, keys, t)}
-    run_dir = _run_dir(Path(transforms_filepath))
+    run_dir = run_folder_of(Path(transforms_filepath))
     # a per-position file on its own positions: each position's own blocks; otherwise
     # (held out, or a pooled file) a run's per-position blocks are each a candidate,
     # named after the position they were estimated on
@@ -290,25 +278,14 @@ def resolve_evaluation(transforms_filepath: Path, evaluation_file=None, **flags)
     (the estimate settings in the transforms file's run folder), else the defaults (a
     transforms file without a run, e.g. a hand registration).
     """
-    from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME, RunFolder
-    from biahub.settings import EvaluationSettings, load_estimate_transform_settings
+    from biahub.settings import EvaluationSettings
     from biahub.utils.config import yaml_to_model
 
     if evaluation_file is not None:
         base = yaml_to_model(Path(evaluation_file), EvaluationSettings)
     else:
-        run_dir = _run_dir(transforms_filepath)
-        files = (
-            [w / ENGINE_SETTINGS_FILENAME for _, w in RunFolder(run_dir).work_dirs()]
-            if run_dir.is_dir()
-            else []
-        )
-        settings_file = next((f for f in files if f.exists()), None)
-        base = (
-            load_estimate_transform_settings(settings_file).evaluation
-            if settings_file is not None
-            else EvaluationSettings()
-        )
+        run = run_settings_of(transforms_filepath)
+        base = run.evaluation if run is not None else EvaluationSettings()
     given = {k: v for k, v in flags.items() if v is not None}
     if given.get("landmarks") == "none":
         given["landmarks"] = None

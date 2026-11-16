@@ -40,10 +40,11 @@ from biahub.cli.parsing import (
 )
 from biahub.core.transform import Transform
 from biahub.estimate_crop import shared_crop
+from biahub.registration.engine.disk import run_settings_of
 from biahub.registration.utils import (
     resolve_time_indices,
 )
-from biahub.settings import TransformSettings, load_transform_settings
+from biahub.settings import ApplySettings, TransformSettings, load_transform_settings
 from biahub.utils.array_ops import copy_n_paste_czyx
 from biahub.utils.cluster import (
     apply_sbatch_overrides,
@@ -51,6 +52,7 @@ from biahub.utils.cluster import (
     estimate_resources,
     get_submitit_cluster,
 )
+from biahub.utils.config import yaml_to_model
 from biahub.utils.ngff import PROVENANCE_METADATA_KEYS, is_unwritten, resolve_ome_zarr_version
 
 
@@ -138,6 +140,22 @@ def _say_which_timepoints_reuse_an_end_entry(settings, key, time_indices) -> Non
                 f"{where}outside the transforms file's timepoints ({first}-{last}): "
                 f"t={outside} use the entry of t={end}"
             )
+
+
+def resolve_apply(transforms_filepath, apply_file=None, **flags) -> ApplySettings:
+    """Return how to apply, with every flag given (not None) on top of a base.
+
+    The base is `apply_file` when given, else the run's own `apply:` section (the
+    estimate settings in the transforms file's run folder), else the defaults (a
+    transforms file without a run, e.g. a hand registration or a converted one).
+    """
+    if apply_file is not None:
+        base = yaml_to_model(Path(apply_file), ApplySettings)
+    else:
+        run = run_settings_of(Path(transforms_filepath))
+        base = run.apply if run is not None else ApplySettings()
+    given = {k: v for k, v in flags.items() if v is not None}
+    return ApplySettings.model_validate({**base.model_dump(), **given})
 
 
 def apply_transform(
@@ -478,30 +496,39 @@ def apply_transform(
 )
 @click.option(
     "--keep-overhang/--crop-to-overlap",
-    default=True,
-    show_default=True,
+    default=None,
     help="Keep the full reference grid, or crop to the largest box every transform in the "
-    "file covers (one wrong transform can shrink that box for every timepoint).",
+    "file covers (one wrong transform can shrink that box for every timepoint). Default: "
+    "the apply settings' (the full grid).",
 )
 @click.option(
     "--interpolation",
-    default="linear",
-    show_default=True,
+    default=None,
     type=click.Choice(["linear", "nearest"]),
-    help="Resampling interpolation.",
+    help="Resampling interpolation. Default: the apply settings' (linear).",
 )
 @click.option(
     "--ome-zarr-version",
-    default="0.5",
-    show_default=True,
+    default=None,
     type=click.Choice(["0.4", "0.5"]),
-    help="OME-Zarr version of the output store (0.5 lets --resume track progress).",
+    help="OME-Zarr version of the output store (0.5 lets --resume track progress). "
+    "Default: the apply settings' (0.5).",
 )
 @click.option(
     "--channels",
     multiple=True,
-    help="Moving-store channel to transform (repeat for several); default: every channel, "
-    "but one the reference store also has is copied unless it is in the file's moving_channels.",
+    help="Moving-store channel to transform (repeat for several); default: the apply "
+    "settings', else every channel, but one the reference store also has is copied unless "
+    "it is in the file's moving_channels.",
+)
+@click.option(
+    "--apply-config",
+    "-a",
+    "apply_config",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="ApplySettings YAML (how to apply). Default: the run's own (the `apply:` section "
+    "of its estimate config), else the defaults. Flags override it.",
 )
 @sbatch_filepath()
 @cluster()
@@ -522,17 +549,19 @@ def apply_transform_cli(
     cluster: str,
     monitor: bool,
     channels: tuple[str, ...],
+    apply_config: str | None,
     init_only: bool,
     resume: bool,
 ) -> None:
     """Apply a transform series to positions -- one matrix for all timepoints or one per timepoint.
 
     Takes the `TransformSettings` file written by `estimate-transform`. How it is applied
-    is decided here, not in the file: which timepoints, the crop (the full reference
-    grid, or `--crop-to-overlap` for the box every transform covers), the
+    -- the crop (the full reference grid, or the box every transform covers), the
     interpolation, the output OME-Zarr version, and which moving channels are
-    transformed (`--channels`; default all of them, except that a channel the reference
-    store also has is copied unless the file names it in `moving_channels`).
+    transformed (default all of them, except that a channel the reference store also has
+    is copied unless the file names it in `moving_channels`) -- is the run's `apply:`
+    section (its estimate config), or `-a`'s file, and a flag overrides either. Which
+    timepoints is `--timepoints`.
 
     \b
     Registration (moving channels onto the reference store's grid and channels):
@@ -548,18 +577,26 @@ def apply_transform_cli(
     >>> biahub apply-transform --init -m data.zarr/*/*/* -c transforms.yml -o out.zarr
     >>> biahub apply-transform --cluster debug --resume -m data.zarr/A/1/0 -c ... -o out.zarr
     """  # noqa: D301
+    how = resolve_apply(
+        config_filepath,
+        apply_config,
+        interpolation=interpolation,
+        crop_to_overlap=None if keep_overhang is None else not keep_overhang,
+        ome_zarr_version=ome_zarr_version,
+        channels=list(channels) or None,
+    )
     apply_transform(
         moving_position_dirpaths=moving_position_dirpaths,
         reference_position_dirpaths=reference_position_dirpaths,
         config_filepath=config_filepath,
         output_dirpath=output_dirpath,
         time_indices=parse_time_indices(time_indices),
-        keep_overhang=keep_overhang,
-        interpolation=interpolation,
-        output_ome_zarr_version=ome_zarr_version,
+        keep_overhang=not how.crop_to_overlap,
+        interpolation=how.interpolation,
+        output_ome_zarr_version=how.ome_zarr_version,
         sbatch_filepath=sbatch_filepath,
         cluster=cluster,
-        channels=list(channels) or None,
+        channels=how.channels,
         monitor=monitor,
         init_only=init_only,
         resume=resume,
