@@ -58,9 +58,9 @@ def config_fingerprint(settings: EstimateTransformSettings) -> dict:
     fingerprint behind both checks: `run.json` (a `--step` must use the config `--init`
     planned) and the resume manifest (records may be reused).
     """
-    fingerprint = {
-        "settings_sha256": hashlib.sha256(settings.model_dump_json().encode()).hexdigest()
-    }
+    # `evaluation` is read by evaluate-transform only: editing it leaves the run the same
+    settings_json = settings.model_dump_json(exclude={"evaluation"})
+    fingerprint = {"settings_sha256": hashlib.sha256(settings_json.encode()).hexdigest()}
     initial_file = settings.transform.initial_file
     if initial_file is not None:
         content = Path(initial_file).read_bytes()

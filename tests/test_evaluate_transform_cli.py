@@ -463,3 +463,51 @@ def test_the_comparison_and_tile_grid_are_command_line_options(tmp_path, monkeyp
     assert result.exit_code == 0, result.output
     assert (seen["compare"], seen["grid"], seen["tile_px"]) == ("intensity", 5, 128)
     assert seen["detect_kwargs"]["reference"] == {"threshold_abs": 800.0}
+
+
+def test_the_evaluation_settings_come_from_the_runs_config_a_file_then_the_flags(
+    tmp_path, monkeypatch
+):
+    # how to evaluate was command-line only: a run's config now says it (`evaluation:`),
+    # an -e file does for a transforms file without a run, and a flag overrides either
+    import yaml
+
+    from biahub import evaluate_transform as module
+    from biahub.registration.benchmark import _empty_row
+    from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME
+
+    seen = {}
+
+    def capture(candidates, pairs, **kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        return [{**_empty_row("A/1/0", 0, None), "candidate": "transforms"}]
+
+    monkeypatch.setattr(module, "evaluate_candidates", capture)
+    positions = _plate(tmp_path)
+    transforms = _stabilization_file(tmp_path, "first")
+    run_dir = transforms.with_suffix("")
+    run_dir.mkdir()
+    (run_dir / ENGINE_SETTINGS_FILENAME).write_text(
+        yaml.safe_dump(
+            {
+                "moving": {"channel": "DAPI"},
+                "reference": {"frame": "first"},
+                "method": "phase_cross_corr",
+                "evaluation": {"compare": "intensity", "tile_px": 128, "grid": 5},
+            }
+        )
+    )
+    common = ["evaluate-transform", "--cluster", "debug", "-m", str(positions[0])]
+    common += ["-c", str(transforms), "-o", str(tmp_path / "e.csv"), "--no-blocks"]
+
+    def run(*extra):
+        result = CliRunner().invoke(cli, [*common, *extra])
+        assert result.exit_code == 0, result.output
+        return seen["compare"], seen.get("grid"), seen["tile_px"]
+
+    assert run() == ("intensity", 5, 128)  # the run's own section
+    other = tmp_path / "evaluation.yml"
+    other.write_text(yaml.safe_dump({"compare": "edges", "tile_px": 64}))
+    assert run("-e", str(other)) == ("edges", None, 64)  # a file replaces it
+    assert run("-e", str(other), "--tile-px", "32") == ("edges", None, 32)  # a flag wins

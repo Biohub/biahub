@@ -299,8 +299,12 @@ biahub evaluate-transform -m <store>/<fov> [<store>/<fov> ...] -r <reference sto
     [--landmarks nuclei|beads] [--figures]
 ```
 
-A stabilization takes no `-r` and is compared with its reference frame (`--reference-t`
-to choose another). Or in Python, with `biahub.registration.evaluate`:
+How to evaluate (landmarks, compare, tile_px, grid, crop_px, per-channel bead thresholds,
+reference_t, figures, blocks) goes in the config's `evaluation:` section, which
+evaluate-transform reads from the run folder (editing it does not change the run); `-e
+evaluation.yml` for a transforms file without a run (a hand registration); a flag
+overrides either for one call. A stabilization takes no `-r` and is compared with its
+reference frame (`--reference-t` to choose another; a `neighbours` run needs one). Or in Python, with `biahub.registration.evaluate`:
 
 ```python
 import json

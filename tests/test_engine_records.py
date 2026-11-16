@@ -361,3 +361,19 @@ def test_a_new_start_removes_the_earlier_runs_report_and_journal(tmp_path):
         start_run(tmp_path, settings, tmp_path / "mov", tmp_path / "ref", resume)
         assert not (tmp_path / REPORT_FILENAME).exists()
         assert not (tmp_path / JOURNAL_FILENAME).exists()
+
+
+def test_editing_how_a_run_is_evaluated_does_not_change_the_run():
+    # evaluate-transform reads `evaluation:`; the estimate does not, so a --step after an
+    # edit there is the same run
+    from biahub.registration.engine.disk import config_fingerprint
+    from biahub.settings import EstimateTransformSettings
+
+    common = dict(
+        moving={"channel": "GFP"}, reference={"frame": "first"}, method="phase_cross_corr"
+    )
+    plain = EstimateTransformSettings(**common)
+    evaluated = EstimateTransformSettings(
+        **common, evaluation={"compare": "intensity", "tile_px": 128}
+    )
+    assert config_fingerprint(plain) == config_fingerprint(evaluated)

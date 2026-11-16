@@ -283,6 +283,38 @@ def _run_per_position(
     return [row for job in jobs for row in job.result()]
 
 
+def resolve_evaluation(transforms_filepath: Path, evaluation_file=None, **flags):
+    """Return how to evaluate, with every flag given (not None) on top of a base.
+
+    The base is `evaluation_file` when given, else the run's own `evaluation:` section
+    (the estimate settings in the transforms file's run folder), else the defaults (a
+    transforms file without a run, e.g. a hand registration).
+    """
+    from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME, RunFolder
+    from biahub.settings import EvaluationSettings, load_estimate_transform_settings
+    from biahub.utils.config import yaml_to_model
+
+    if evaluation_file is not None:
+        base = yaml_to_model(Path(evaluation_file), EvaluationSettings)
+    else:
+        run_dir = _run_dir(transforms_filepath)
+        files = (
+            [w / ENGINE_SETTINGS_FILENAME for _, w in RunFolder(run_dir).work_dirs()]
+            if run_dir.is_dir()
+            else []
+        )
+        settings_file = next((f for f in files if f.exists()), None)
+        base = (
+            load_estimate_transform_settings(settings_file).evaluation
+            if settings_file is not None
+            else EvaluationSettings()
+        )
+    given = {k: v for k, v in flags.items() if v is not None}
+    if given.get("landmarks") == "none":
+        given["landmarks"] = None
+    return EvaluationSettings.model_validate({**base.model_dump(), **given})
+
+
 def _thresholds(value: str | None) -> float | tuple | None:
     """Parse --bead-threshold: one number, or 'moving,reference'."""
     if value is None:
@@ -326,9 +358,9 @@ def _parse_tags(tags) -> dict:
 @click.option(
     "--landmarks",
     type=click.Choice(["nuclei", "beads", "none"]),
-    default="none",
-    show_default=True,
-    help="Point-based residuals from detected nuclei or beads (z is read from points).",
+    default=None,
+    help="Point-based residuals from detected nuclei or beads (z is read from points). "
+    "Default: the evaluation settings' (none).",
 )
 @click.option(
     "--timepoint",
@@ -349,9 +381,9 @@ def _parse_tags(tags) -> dict:
 @click.option(
     "--tile-px",
     type=int,
-    default=256,
-    show_default=True,
-    help="Tile size (pixels); smaller (128) on a compact sample that fills few tiles.",
+    default=None,
+    help="Tile size (pixels); smaller (128) on a compact sample that fills few tiles. "
+    "Default: the evaluation settings' (256).",
 )
 @click.option(
     "--grid", type=int, default=None, help="Tiles per side of the grid (default: evaluate's)."
@@ -359,18 +391,31 @@ def _parse_tags(tags) -> dict:
 @click.option(
     "--compare",
     type=click.Choice(["edges", "intensity"]),
-    default="edges",
-    show_default=True,
+    default=None,
     help="What the tiles and z crops compare: edges (cross-modal pairs) or intensity "
-    "(the same kind of image, e.g. membranes onto virtual-stained membranes).",
+    "(the same kind of image, e.g. membranes onto virtual-stained membranes). Default: "
+    "the evaluation settings' (edges).",
 )
 @click.option(
-    "--no-blocks", is_flag=True, help="Only the file's transform, not each block of its stack."
+    "--blocks/--no-blocks",
+    default=None,
+    help="Each block of a stack too, or only the file's transform. Default: the "
+    "evaluation settings' (blocks).",
 )
 @click.option(
-    "--figures",
-    is_flag=True,
-    help="Save a figure per candidate and position next to the table.",
+    "--figures/--no-figures",
+    default=None,
+    help="Save a figure per candidate and position next to the table. Default: the "
+    "evaluation settings' (no figures).",
+)
+@click.option(
+    "--evaluation-config",
+    "-e",
+    "evaluation_config",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="EvaluationSettings YAML (how to evaluate). Default: the run's own (the "
+    "`evaluation:` section of its estimate config), else the defaults. Flags override it.",
 )
 @click.option(
     "--bead-threshold",
@@ -402,9 +447,10 @@ def evaluate_transform_cli(
     tile_px,
     grid,
     compare,
-    no_blocks,
+    blocks,
     figures,
     bead_threshold,
+    evaluation_config,
     tags,
     cluster,
     sbatch_filepath,
@@ -425,6 +471,18 @@ def evaluate_transform_cli(
     >>> biahub evaluate-transform -m data.zarr/A/1/0 -c out/transforms.yml \\
         -o out/evaluation.csv --t 5 --reference-t 0
     """  # noqa: D301
+    evaluation = resolve_evaluation(
+        Path(config_filepath),
+        evaluation_config,
+        landmarks=landmarks,
+        compare=compare,
+        tile_px=tile_px,
+        grid=grid,
+        reference_t=reference_t,
+        figures=figures,
+        blocks=blocks,
+    )
+    thresholds = evaluation.bead_thresholds
     rows = evaluate_transform(
         moving_position_dirpaths,
         reference_position_dirpaths,
@@ -432,18 +490,24 @@ def evaluate_transform_cli(
         output_filepath,
         moving_channel=moving_channel,
         reference_channel=reference_channel,
-        landmarks=None if landmarks == "none" else landmarks,
+        landmarks=evaluation.landmarks,
         t=t,
-        blocks=not no_blocks,
-        figures=figures,
+        blocks=evaluation.blocks,
+        figures=evaluation.figures,
         tags=_parse_tags(tags),
-        bead_threshold=bead_threshold,
-        reference_t=reference_t,
-        compare=compare,
+        bead_threshold=(
+            bead_threshold
+            if bead_threshold is not None
+            else (thresholds.moving, thresholds.reference)
+            if thresholds is not None
+            else None
+        ),
+        reference_t=evaluation.reference_t,
+        compare=evaluation.compare,
         cluster=cluster,
         sbatch_filepath=sbatch_filepath,
-        tile_px=tile_px,
-        **({} if grid is None else {"grid": grid}),
+        tile_px=evaluation.tile_px,
+        **{k: v for k, v in (("grid", evaluation.grid), ("crop_px", evaluation.crop_px)) if v},
     )
     for row in rows:
         if row["empty"]:

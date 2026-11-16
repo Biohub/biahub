@@ -2007,6 +2007,44 @@ class PoolSettings(MyBaseModel):
     z: Literal["medoid", "median"] = "medoid"
 
 
+class BeadThresholds(MyBaseModel):
+    """Bead detection thresholds per channel (fluorescence and phase differ)."""
+
+    moving: PositiveFloat
+    reference: PositiveFloat
+
+
+class EvaluationSettings(MyBaseModel):
+    """How `evaluate-transform` measures a registration (`biahub.registration.evaluate`).
+
+    `landmarks`: point residuals from detected nuclei or beads (else images only);
+    `compare`: what the tiles and z crops compare, edges (cross-modal pairs) or intensity
+    (the same kind of image); `tile_px`, `grid`, `crop_px`: the tiles and z crops
+    (`grid`/`crop_px` unset: evaluate's defaults); `bead_thresholds`: with beads, the
+    detection per channel (unset: the estimate's own); `reference_t`: a stabilization's
+    reference timepoint (unset: its reference frame; a `neighbours` run needs one);
+    `figures`: a figure per candidate and position; `blocks`: each block of a stack too.
+    In an estimate config it is read by `evaluate-transform` only (not by the estimate),
+    so editing it does not change the run.
+    """
+
+    landmarks: Literal["beads", "nuclei"] | None = None
+    compare: Literal["edges", "intensity"] = "edges"
+    tile_px: PositiveInt = 256
+    grid: PositiveInt | None = None
+    crop_px: PositiveInt | None = None
+    bead_thresholds: BeadThresholds | None = None
+    reference_t: NonNegativeInt | None = None
+    figures: bool = False
+    blocks: bool = True
+
+    @model_validator(mode="after")
+    def check_bead_thresholds_go_with_beads(self) -> "EvaluationSettings":
+        if self.bead_thresholds is not None and self.landmarks != "beads":
+            raise ValueError("bead_thresholds go with landmarks: beads")
+        return self
+
+
 class EstimateTransformSettings(MyBaseModel):
     """Everything `estimate-transform` needs.
 
@@ -2036,6 +2074,8 @@ class EstimateTransformSettings(MyBaseModel):
     time_indices: StrictTimepoint | list[StrictTimepoint] | Literal["all"] = "all"
     score: ScoreSettings = ScoreSettings()
     fallback: FallbackSettings = FallbackSettings()
+    # how evaluate-transform measures this run (not read by the estimate)
+    evaluation: EvaluationSettings = EvaluationSettings()
     # Estimate on several positions, write one shared transform (their medoid); each
     # position's own estimate is kept in the run folder (per_position.yml).
     pool: PoolSettings | None = None
