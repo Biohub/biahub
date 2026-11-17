@@ -148,3 +148,22 @@ def test_a_correlation_run_scoring_about_0_1_is_not_unreliable_as_a_whole():
     )
     assert flagged == [17]
     assert [t for t, e in enumerate(entries) if e.status == "unreliable"] == [17]
+
+
+def test_select_flagged_names_the_rule_that_flagged_a_single_timepoint(capsys):
+    # One beads timepoint at 0.354 overlap: the adaptive line equals its own score, so
+    # only the absolute hard_fail (0.40) can flag it. The log named the adaptive line
+    # only ("adaptive line 0.354, median 0.354"), which read as the line flagging itself.
+    flagged, stats = select_flagged(
+        np.array([0.354]), label="flag", floor=0.80, hard_fail=0.40
+    )
+    assert flagged == [0]
+    assert stats["reasons"] == {0: ["below_hard_fail"]}
+    out = capsys.readouterr().out
+    assert "below hard_fail 0.400: [0]" in out
+
+
+def test_a_single_timepoint_is_never_flagged_by_the_adaptive_line_alone():
+    flagged, stats = select_flagged(np.array([0.05]), label="flag", floor=None, hard_fail=None)
+    assert flagged == []
+    assert stats["reasons"] == {}

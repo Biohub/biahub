@@ -49,6 +49,9 @@ class SeriesResult:
     flagged: list[int] = field(default_factory=list)
     # the run's own flagging line (median - k * MAD) the flags were judged against
     flag_line: float | None = None
+    # the rules that flagged each flagged t ("below_adaptive_line", "below_hard_fail",
+    # "no_score")
+    flag_reasons: dict[int, list[str]] = field(default_factory=dict)
     repairs: dict[int, PassResult] = field(default_factory=dict)
     sweeps: dict[int, PassResult] = field(default_factory=dict)
     # How an accepted fallback transform was reached, e.g. "consensus+polish1".

@@ -120,16 +120,38 @@ def select_flagged(
         click.echo(f"{label}: no finite scores to flag against; skipping.")
         return [], {}
     flagged = [int(t) for t in flags.loc[flags["flagged"], "t"]]
+    stats = dict(flags.attrs)
+    # the rules that flagged each one: with one timepoint the adaptive line is its own
+    # score, so only an absolute threshold (or a missing score) can flag it
+    stats["reasons"] = {
+        int(row.t): row.reasons.split(";") for row in flags.itertuples() if row.flagged
+    }
     if not flagged:
         click.echo(f"{label}: nothing flagged, nothing to do.")
-        return [], dict(flags.attrs)
+        return [], stats
 
     click.echo(
-        f"{label}: {len(flagged)} of {n_t} timepoints flagged "
-        f"(adaptive line {flags.attrs['adaptive_line']:.3f}, median "
-        f"{flags.attrs['median']:.3f}) -> {flagged}"
+        f"{label}: {len(flagged)} of {n_t} timepoints flagged -> {flagged} "
+        f"({_describe_reasons(stats)}; adaptive line {stats['adaptive_line']:.3f}, "
+        f"median {stats['median']:.3f})"
     )
-    return flagged, dict(flags.attrs)
+    return flagged, stats
+
+
+def _describe_reasons(stats: dict) -> str:
+    """Which flagged timepoints each rule caught, with its threshold, for the log."""
+    by_reason: dict[str, list[int]] = {}
+    for t, reasons in stats["reasons"].items():
+        for reason in reasons:
+            by_reason.setdefault(reason, []).append(t)
+    floor = stats.get("floor")
+    names = {
+        "below_adaptive_line": f"below the adaptive line {stats['adaptive_line']:.3f}"
+        + (f" and floor {floor:.3f}" if floor is not None else ""),
+        "below_hard_fail": f"below hard_fail {stats.get('hard_fail') or 0:.3f}",
+        "no_score": "no score",
+    }
+    return "; ".join(f"{names.get(r, r)}: {ts}" for r, ts in by_reason.items())
 
 
 def cap_worst(
@@ -406,6 +428,7 @@ def flag_series(
     if not any(np.isfinite(result.scores[t]) for t in attempted):
         click.echo(f"flag: no finite scores; all {len(attempted)} timepoint(s) flagged")
         result.flagged = attempted
+        result.flag_reasons = {t: ["no_score"] for t in attempted}
         return result.flagged
     flagged_positions, stats = select_flagged(
         np.array([result.scores[t] for t in attempted]),
@@ -416,6 +439,7 @@ def flag_series(
     )
     result.flagged = [attempted[i] for i in flagged_positions]
     result.flag_line = stats.get("adaptive_line")
+    result.flag_reasons = {attempted[i]: r for i, r in stats.get("reasons", {}).items()}
     return result.flagged
 
 

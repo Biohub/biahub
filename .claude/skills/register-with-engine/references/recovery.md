@@ -16,7 +16,8 @@
 | a timepoint `unreliable` with note `the estimate scored below its start` | the method ended worse than where it started (an optimizer that wandered off): the start is written instead | check the start is right (an earlier registration, the shapes geometry); try another method or reference channel for that timepoint |
 | a timepoint `unreliable` with note `empty frame (no data)` | the raw acquisition is empty there | expected; nothing moves at that timepoint |
 | a timepoint `unreliable` with `too few matches` / `too few nodes` | too few beads detected | check the bead thresholds on that timepoint; or substitute another method's result for it |
-| several timepoints `unreliable` with a correlation-based method | with an intensity metric the absolute thresholds are off: only the run's own line flags, so these score well below the rest of this run (a single-timepoint run never flags) | check them visually; `references/methods.md`, "Judging the result" |
+| several timepoints `unreliable` with a correlation-based method | with an intensity metric the absolute thresholds are off: only the run's own line flags, so these score well below the rest of this run (a single timepoint is never flagged by the line: its line is its own score) | check them visually; `references/methods.md`, "Judging the result" |
+| `flag: 1 of 1 timepoints flagged` on a single-timepoint run | not the run's line: an absolute threshold, e.g. beads overlap below `hard_fail` 0.40 (few beads matched). The log and `flags.json` (`reasons`, `floor`, `hard_fail`) name the rule | check the bead detection (thresholds, a saturated channel, the peaks drawn on the volume) or the method; the transform is written, marked unreliable |
 
 ## Rules
 

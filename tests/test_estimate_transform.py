@@ -1049,6 +1049,24 @@ def test_flagging_with_repair_off_does_not_announce_a_repair(
     assert "repair and sweep are off" in out
 
 
+def test_the_flags_file_records_why_each_timepoint_was_flagged(
+    beads_plate_with_a_blank_timepoint, tmp_path, capsys
+):
+    # flags.json listed the flagged timepoints and the adaptive line, not the rule that
+    # flagged each one, nor the absolute thresholds it was judged against.
+    import json
+
+    plate = beads_plate_with_a_blank_timepoint
+    config = _write_config(tmp_path, fallback={"repair": None, "sweep": None})
+    _run(plate, config, tmp_path / "out" / "transforms.yml")
+    (flags_file,) = (tmp_path / "out").rglob("flags.json")
+    flags = json.loads(flags_file.read_text())
+    assert flags["flagged"]
+    assert set(flags["reasons"]) == {str(t) for t in flags["flagged"]}
+    assert all(flags["reasons"][str(t)] for t in flags["flagged"])
+    assert flags["hard_fail"] == 0.40 and flags["floor"] == 0.80
+
+
 def test_a_previous_chain_starts_at_the_first_requested_timepoint(drifting_plate, tmp_path):
     # time_indices [1, 2]: t=1 starts the chain on its own grid (identity) and t=2 is one
     # step from it. Measured against frame 0, outside the run, t=1 carried a step and the

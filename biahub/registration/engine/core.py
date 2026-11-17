@@ -658,8 +658,8 @@ def flag_run(
 
     Records come from `records` (this call's jobs) and, for the timepoints in
     `from_disk` (all of them when None), from the run's record files. Writes and returns
-    the flags (`flags.json`): flagged, repair and sweep timepoints, and the scores they
-    were decided on.
+    the flags (`flags.json`): flagged, repair and sweep timepoints, the scores they
+    were decided on, and why each was flagged (with the floor and hard_fail used).
     """
     work_dir = Path(work_dir)
     settings, plan = read_run_settings(work_dir), read_run_plan(work_dir)
@@ -713,6 +713,10 @@ def flag_run(
         "sweep": sweep_ts,
         "base_scores": {str(t): finite_or_none(v) for t, v in base_scores.items()},
         "line": finite_or_none(result.flag_line),
+        # why each flagged timepoint was flagged, and the absolute thresholds it met
+        "reasons": {str(t): r for t, r in result.flag_reasons.items()},
+        "floor": thresholds.floor,
+        "hard_fail": thresholds.hard_fail,
     }
     write_json(work_dir / FLAGS_FILENAME, flags, indent=2)
     return result, flags
