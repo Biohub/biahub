@@ -274,4 +274,6 @@ Do not report security vulnerabilities in public issues. Follow our
 ## License
 
 [BSD-3-Clause](https://github.com/czbiohub-sf/biahub/blob/main/LICENSE.md)
+
+The optional `cpdino` extra installs [DINOv3](https://github.com/facebookresearch/dinov3), which is under the [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md), not BSD-3-Clause: it prohibits some uses (including military, weapons, nuclear, and ITAR-controlled work) and requires publications that use DINOv3 to acknowledge it.
 <!-- --8<-- [end:body] -->
