@@ -45,6 +45,7 @@ def test_the_tolerance_can_be_set_and_the_worst_pair_is_named():
     spread = transform_spread(estimates, SHAPE, UM, tolerance_um=1.0)
     assert spread["choice"] == "one"  # 0.6 µm apart, under a 1 µm tolerance
     assert set(spread["worst_positions"]) == {"A/1/0", "B/1/0"}
+    assert spread["worst_positions_t"] in TIMES  # and says when
 
 
 def test_one_sample_on_an_axis_cannot_show_spread_there():
@@ -54,13 +55,6 @@ def test_one_sample_on_an_axis_cannot_show_spread_there():
     spread = transform_spread(one_time, SHAPE, UM)
     assert spread["across_timepoints_um"] is None
     assert spread["choice"] == "per position"
-
-
-def test_the_worst_position_pair_says_when():
-    from biahub.estimate_transform import transform_spread
-
-    spread = transform_spread(_estimates(per_position=3.0), SHAPE, UM)
-    assert spread["worst_positions_t"] in TIMES
 
 
 def test_the_default_tolerance_is_in_um_not_voxels():

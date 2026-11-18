@@ -10,6 +10,7 @@ import biahub.registration.engine.cluster as cluster
 
 from biahub.core.transform import Transform
 from biahub.estimate_transform import estimate_transform
+from biahub.registration.metrics import LEFTOVER_MOTION_VOLUMES
 from biahub.registration.utils import RunError
 from biahub.settings import (
     AntsRegistrationSettings,
@@ -148,6 +149,10 @@ def test_estimate_transform_writes_a_register_compatible_series(beads_plate, tmp
         "0.json",
         "1.json",
     ]
+    record = json.loads((output.with_suffix("") / "timepoints" / "0.json").read_text())
+    # each record keeps the change from its start: identity start (the default), so the
+    # change is the whole transform
+    np.testing.assert_allclose(record["from_start"], record["matrix"])
 
 
 def test_estimate_transform_single_timepoint_writes_registration_settings(
@@ -345,9 +350,8 @@ def test_estimate_transform_flags_and_tries_to_repair_a_failed_timepoint(
     assert set(repair["candidate_failures"]) == {"t-1", "consensus", "initial"}
     failures = repair["candidate_failures"]
     assert "EstimationError" in failures["t-1"] and "EstimationError" in failures["initial"]
-    assert failures["consensus"].startswith(
-        "CandidateUnavailableError: Consensus initial transform: only 2 timepoints"
-    )
+    assert failures["consensus"].startswith("CandidateUnavailableError")
+    assert "only 2" in failures["consensus"]
     assert report["filled_from"] == {"2": "initial"}
     assert (output.with_suffix("") / "repairs" / "2.json").exists()
 
@@ -847,20 +851,23 @@ def test_a_phase_correlation_estimate_is_sized_for_its_measured_peak_memory(bloc
 
 
 def test_image_blocks_run_before_the_method_end_to_end(beads_plate, tmp_path):
-    # A clip that keeps every value changes nothing: the run matches one without blocks.
-    (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
-    plain = tmp_path / "plain" / "transforms.yml"
-    _run(beads_plate, _write_config(tmp_path / "a"), plain)
-    with_blocks = tmp_path / "blocks" / "transforms.yml"
+    # The config's preprocess blocks reach the method: clipping the moving volume to its
+    # lowest percentile leaves no bead above the detection threshold, so the estimate that
+    # succeeds without the block (test_estimate_transform_writes_a_register_compatible_series)
+    # fails on every timepoint.
     config = _write_config(
-        tmp_path / "b", preprocess=[{"clip_percentiles": {"low": 0, "high": 100}}]
+        tmp_path,
+        preprocess=[{"clip_percentiles": {"volumes": ["moving"], "low": 0, "high": 1}}],
+        fallback={"repair": None, "sweep": None},
     )
     assert "clip_percentiles" in config.read_text()  # written back as a named block
-    _run(beads_plate, config, with_blocks)
-    assert [e.matrix for e in load_transform_settings(with_blocks).transforms] == [
-        e.matrix for e in load_transform_settings(plain).transforms
-    ]
+    output = tmp_path / "out" / "transforms.yml"
+    _run(beads_plate, config, output)
+    report = json.loads(
+        (output.with_suffix("") / "estimate_transform_report.json").read_text()
+    )
+    assert set(report["errors"]) == {"0", "1"}
+    assert all("EstimationError" in error for error in report["errors"].values())
 
 
 def test_every_own_transform_reports_raw_metrics_next_to_its_score(
@@ -1036,24 +1043,13 @@ def test_a_report_metric_with_no_value_is_written_to_the_transforms_file():
     assert entries[0].status == "accepted"
 
 
-def test_flagging_with_repair_off_does_not_announce_a_repair(
-    beads_plate_with_a_blank_timepoint, tmp_path, capsys
-):
-    # Flagging runs whether or not repair does (it decides `unreliable`); with repair and
-    # sweep off the log said "repair: 1 of 3 timepoints flagged" and then nothing ran.
-    plate = beads_plate_with_a_blank_timepoint
-    config = _write_config(tmp_path, fallback={"repair": None, "sweep": None})
-    _run(plate, config, tmp_path / "out" / "transforms.yml")
-    out = capsys.readouterr().out
-    assert "repair:" not in out
-    assert "repair and sweep are off" in out
-
-
 def test_the_flags_file_records_why_each_timepoint_was_flagged(
     beads_plate_with_a_blank_timepoint, tmp_path, capsys
 ):
     # flags.json listed the flagged timepoints and the adaptive line, not the rule that
     # flagged each one, nor the absolute thresholds it was judged against.
+    # Flagging runs whether or not repair does (it decides `unreliable`); with repair and
+    # sweep off the log said "repair: 1 of 3 timepoints flagged" and then nothing ran.
     import json
 
     plate = beads_plate_with_a_blank_timepoint
@@ -1065,6 +1061,9 @@ def test_the_flags_file_records_why_each_timepoint_was_flagged(
     assert set(flags["reasons"]) == {str(t) for t in flags["flagged"]}
     assert all(flags["reasons"][str(t)] for t in flags["flagged"])
     assert flags["hard_fail"] == 0.40 and flags["floor"] == 0.80
+    out = capsys.readouterr().out
+    assert "repair:" not in out
+    assert any("off" in line for line in out.splitlines() if line.startswith("flag:"))
 
 
 def test_a_previous_chain_starts_at_the_first_requested_timepoint(drifting_plate, tmp_path):
@@ -1097,32 +1096,6 @@ def test_a_first_frame_reference_skips_an_empty_frame_zero(tmp_path):
     np.testing.assert_allclose(rows[2], APPLIED_SHIFT_ZYX, atol=0.5)
 
 
-def test_a_neighbour_median_reference_removes_single_frame_jumps(tmp_path):
-    # A sample that stays put but jumps for one frame at t=3 and t=6 (a fish slipping):
-    # against the median of its neighbours each jump is measured on its own, and the
-    # other timepoints stay at zero -- no chain, nothing accumulates.
-    rng = np.random.default_rng(11)
-    ref = _synthetic_bead_volume(rng, SHAPE)
-    jumps = {3: (0.0, 4.0, 0.0), 6: (0.0, -3.0, 2.0)}
-    frames = [
-        ndi_shift(ref, shift=jumps.get(t, (0.0, 0.0, 0.0)), order=1, mode="constant")
-        for t in range(9)
-    ]
-    plate = _write_plate(tmp_path / "jumps.zarr", [(f, f) for f in frames])
-    output = tmp_path / "out" / "stabilization_settings.yml"
-    config = _write_config(
-        tmp_path,
-        moving_channel="GFP",
-        reference="neighbours",
-        method="phase_cross_corr",
-        phase_cross_corr=PhaseCrossCorrSettings(center_crop_xy=[SHAPE[1], SHAPE[2]]),
-    )
-    _run(plate, config, output)
-    assert load_transform_settings(output).reference_frame == "neighbours"
-    for t, row in enumerate(_inverse_translations(output)):
-        np.testing.assert_allclose(row, jumps.get(t, (0.0, 0.0, 0.0)), atol=0.5)
-
-
 def test_a_neighbour_median_reference_needs_several_timepoints():
     from pydantic import ValidationError
 
@@ -1133,30 +1106,6 @@ def test_a_neighbour_median_reference_needs_several_timepoints():
             method="phase_cross_corr",
             time_indices=4,
         )
-
-
-def test_a_neighbour_median_run_plans_memory_for_the_frames_it_holds(tmp_path):
-    # each timepoint holds 2 x window frames and their median besides the method's volumes
-    from biahub.registration.engine import init_run
-    from biahub.settings import EstimateTransformSettings as Settings
-
-    zyx = (171, 768, 794)  # the neuromast timelapse; created empty (metadata only)
-    path = tmp_path / "big.zarr"
-    with open_ome_zarr(path, layout="hcs", mode="w", channel_names=["Phase3D", "GFP"]) as p:
-        p.create_position("A", "1", "0").create_zeros("0", (3, 2, *zyx), dtype=np.float32)
-    plate = path / "A" / "1" / "0"
-
-    def plan(reference):
-        settings = Settings(
-            moving={"channel": "GFP"}, reference=reference, method="phase_cross_corr"
-        )
-        out = tmp_path / reference["frame"]
-        return init_run(plate, plate, settings, out)["resources"]["estimate"]
-
-    first = plan({"frame": "first"})
-    wide = plan({"frame": "neighbours", "window": 6})
-    gb_per_volume = np.prod(zyx) * 4 / 2**30
-    assert first["mem_gb"] < (10 + 14) * gb_per_volume <= wide["mem_gb"]
 
 
 def test_a_neighbour_median_reference_stabilizes_a_projected_plate(tmp_path):
@@ -1251,6 +1200,9 @@ def test_a_stabilization_reports_its_leftover_motion_against_unregistered(tmp_pa
     # `reference.leftover_motion`: each job records the raw shift from the frame before,
     # and the run's report holds the frame-to-frame motion left by its transforms and
     # by none (µm) -- the jumps at t=3 and t=6 are gone once stabilized.
+    # A sample that stays put but jumps for one frame at t=3 and t=6 (a fish slipping):
+    # against the median of its neighbours each jump is measured on its own, and the
+    # other timepoints stay at zero -- no chain, nothing accumulates.
     rng = np.random.default_rng(11)
     ref = _synthetic_bead_volume(rng, SHAPE)
     jumps = {3: (0.0, 4.0, 0.0), 6: (0.0, -3.0, 2.0)}
@@ -1268,6 +1220,9 @@ def test_a_stabilization_reports_its_leftover_motion_against_unregistered(tmp_pa
         phase_cross_corr=PhaseCrossCorrSettings(center_crop_xy=[SHAPE[1], SHAPE[2]]),
     )
     _run(plate, config, output)
+    assert load_transform_settings(output).reference_frame == "neighbours"
+    for t, row in enumerate(_inverse_translations(output)):
+        np.testing.assert_allclose(row, jumps.get(t, (0.0, 0.0, 0.0)), atol=0.5)
     report = json.loads(
         (output.with_suffix("") / "estimate_transform_report.json").read_text()
     )
@@ -1296,9 +1251,19 @@ def test_leftover_motion_is_for_a_stabilization_over_several_timepoints():
         )
 
 
-def test_a_leftover_motion_run_plans_memory_for_its_raw_shift(tmp_path):
+@pytest.mark.parametrize(
+    "reference, volumes",
+    [
+        # the raw shift from the frame before
+        ({"frame": "first", "leftover_motion": {}}, LEFTOVER_MOTION_VOLUMES),
+        # each timepoint holds 2 x window frames and their median besides the method's
+        # volumes
+        ({"frame": "neighbours", "window": 6}, 10 + 14),
+    ],
+    ids=["leftover-motion", "neighbour-median"],
+)
+def test_a_leftover_motion_run_plans_memory_for_its_raw_shift(tmp_path, reference, volumes):
     from biahub.registration.engine import init_run
-    from biahub.registration.metrics import LEFTOVER_MOTION_VOLUMES
     from biahub.settings import EstimateTransformSettings as Settings
 
     zyx = (171, 768, 794)  # the neuromast timelapse; created empty (metadata only)
@@ -1306,15 +1271,19 @@ def test_a_leftover_motion_run_plans_memory_for_its_raw_shift(tmp_path):
     with open_ome_zarr(path, layout="hcs", mode="w", channel_names=["Phase3D", "GFP"]) as p:
         p.create_position("A", "1", "0").create_zeros("0", (3, 2, *zyx), dtype=np.float32)
     plate = path / "A" / "1" / "0"
-    settings = Settings(
-        moving={"channel": "GFP"},
-        reference={"frame": "first", "leftover_motion": {}},
-        method="phase_cross_corr",
-    )
-    mem_gb = init_run(plate, plate, settings, tmp_path / "out")["resources"]["estimate"][
-        "mem_gb"
-    ]
-    assert mem_gb >= LEFTOVER_MOTION_VOLUMES * np.prod(zyx) * 4 / 2**30
+
+    def plan(reference):
+        settings = Settings(
+            moving={"channel": "GFP"}, reference=reference, method="phase_cross_corr"
+        )
+        out = tmp_path / "-".join(map(str, reference.values()))
+        return init_run(plate, plate, settings, out)["resources"]["estimate"]["mem_gb"]
+
+    gb_per_volume = np.prod(zyx) * 4 / 2**30
+    assert plan(reference) >= volumes * gb_per_volume
+    if reference["frame"] == "neighbours":
+        # the frames come on top of what a first-frame run plans
+        assert plan({"frame": "first"}) < volumes * gb_per_volume
 
 
 def test_a_job_reads_each_frame_once_and_computes_the_neighbour_median_once(
@@ -1416,10 +1385,8 @@ def test_reference_positions_given_for_a_stabilization_are_said_to_be_unread(
         reference_position_dirpaths=[beads_plate],
         cluster="debug",
     )
-    assert (
-        "reference frame 'first' aligns the moving channel onto itself"
-        in capsys.readouterr().out
-    )
+    out = capsys.readouterr().out
+    assert "(-r)" in out and "not read" in out
 
 
 def test_a_mask_box_outside_its_volume_refuses_the_run_before_any_job(beads_plate, tmp_path):

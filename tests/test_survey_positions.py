@@ -63,3 +63,19 @@ def test_the_survey_reads_the_reference_store_and_skips_positions_it_lacks(tmp_p
     assert blank == {"A/1/0": True, "A/2/1": False, "A/3/2": False}
     estimate, held_out = select_positions(rows, n_held_out=2)
     assert "A/1/0" not in [estimate, *held_out]
+
+
+def test_the_survey_counts_nuclei_when_asked(tmp_path):
+    from iohub.ngff.models import TransformationMeta
+
+    from biahub.registration.benchmark import survey_positions
+    from tests.test_registration_evaluate import VOX3, _disk_nuclei
+
+    path = tmp_path / "nuclei.zarr"
+    volume = _disk_nuclei()
+    with open_ome_zarr(path, layout="hcs", mode="w", channel_names=["DAPI"]) as plate:
+        position = plate.create_position("A", "1", "0")
+        scale = TransformationMeta(type="scale", scale=[1.0, 1.0, *VOX3])
+        position.create_image("0", volume[None, None], transform=[scale])
+    (row,) = survey_positions([path / "A" / "1" / "0"], ["DAPI"], nuclei=True)
+    assert row["n_nuclei"] > 5

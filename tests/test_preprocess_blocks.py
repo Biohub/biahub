@@ -176,6 +176,7 @@ def test_the_method_gets_prepared_volumes_and_masks_and_keeps_its_interface():
     assert (inner.seen["initial_transform"], inner.seen["competitor"]) == ("s", "c")
     # the engine reads the method's members through the wrapper
     assert (wrapped.uses_initial_transform, wrapped.accepts_competitor) == (True, True)
+    assert wrapped.holds_xy_across_gaps == inner.holds_xy_across_gaps
     assert wrapped.trace()["best_candidate"] == "hungarian"
 
 
@@ -199,7 +200,13 @@ def test_mask_blocks_are_refused_for_methods_that_cannot_use_them(method, tmp_pa
     [
         # what #402 wrote into every resolved ANTs config, even with all defaults
         ({"sobel_filter": False, "crop": False, "clip": False}, "remove them"),
-        ({"sobel_filter": True}, "- sobel: {}"),
+        # fixing it by hand from the message changed the score: the old score compared
+        # edges, so the message names both blocks and the converter
+        (
+            {"sobel_filter": True},
+            r"- sobel: \{\}.*score:, preprocess: \[\{sobel: \{\}\}\]"
+            r".*biahub convert-settings",
+        ),
         ({"clip": True}, "- clip_percentiles: {}"),
         ({"ref_mask_radius": 0.9, "crop": True}, "radius: 0.9"),
         ({"crop": True}, "mask_box"),

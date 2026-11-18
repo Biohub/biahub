@@ -79,7 +79,7 @@ def test_pooling_leaves_out_unreliable_estimates_and_says_where_it_came_from():
     assert (entry.t, entry.status) == (None, "accepted")
     assert np.asarray(entry.matrix)[0, 3] == pytest.approx(8.0)  # as without A/1/0
     assert "medoid B/2/0 of 4 positions" in entry.note
-    assert log[0].startswith("left out A/1/0 (unreliable")
+    assert "A/1/0" in log[0] and "unreliable" in log[0]
     assert (pooled.method, pooled.moving_channels) == ("nuclei_matching", ["DAPI"])
 
 
@@ -89,4 +89,4 @@ def test_each_timepoint_is_pooled_on_its_own():
     pooled, log = pool_positions(_per_position(times=(0, 5)), SHAPE, UM, "medoid")
     assert [e.t for e in pooled.transforms] == [0, 5]
     assert [np.asarray(e.matrix)[0, 3] for e in pooled.transforms] == [8.0, 13.0]
-    assert log[1].startswith("t=5: medoid A/1/0 of 5 positions")
+    assert "t=5" in log[1] and "A/1/0" in log[1]

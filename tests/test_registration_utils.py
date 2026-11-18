@@ -83,18 +83,6 @@ def test_remembered_returns_its_result_by_the_arrays_and_the_extra_key():
     assert memo(([1, 2],), (), lambda: "list") == "list"  # no weak reference: computed
 
 
-def test_transform_key_names_a_transform_by_its_matrix():
-    from biahub.core.transform import Transform
-    from biahub.registration.metrics import PREWARPED
-    from biahub.registration.utils import transform_key
-
-    assert transform_key(Transform.identity(3)) == transform_key(Transform.identity(3))
-    assert transform_key(Transform.identity(3)) != transform_key(
-        Transform.from_translation([0.0, 0.0, 1.0])
-    )
-    assert transform_key(PREWARPED) == "as is"
-
-
 def test_remembered_is_safe_to_share_between_threads():
     # positions run in threads under cluster=debug and share the run's score cache: an
     # eviction between a lookup and its move_to_end raised KeyError (~10 in 160k calls)

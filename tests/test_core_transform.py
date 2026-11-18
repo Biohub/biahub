@@ -90,11 +90,6 @@ def test_fit_recovers_a_transform_from_matched_points(ndim, transform_type):
     assert fitted.ndim == ndim
 
 
-def test_fit_says_when_it_cannot():
-    with pytest.raises(ValueError, match="similarity fit failed on 1 pairs"):
-        Transform.fit(np.zeros((1, 3)), np.ones((1, 3)), "similarity")
-
-
 def _coplanar_pairs():
     # beads in one z plane: nothing constrains z, so a 3D affine would invent its z row
     rng = np.random.default_rng(2)
@@ -103,18 +98,21 @@ def _coplanar_pairs():
 
 
 @pytest.mark.parametrize(
-    "src, dst",
+    "transform_type, src, dst",
     [
-        (np.zeros((1, 3)), np.ones((1, 3))),  # too few
-        (np.arange(9.0).reshape(3, 3), np.arange(9.0).reshape(3, 3) + 1),  # collinear
-        _coplanar_pairs(),
+        ("similarity", np.zeros((1, 3)), np.ones((1, 3))),  # too few
+        ("affine", np.zeros((1, 3)), np.ones((1, 3))),  # too few
+        # collinear
+        ("affine", np.arange(9.0).reshape(3, 3), np.arange(9.0).reshape(3, 3) + 1),
+        ("affine", *_coplanar_pairs()),
     ],
-    ids=["one pair", "collinear", "coplanar"],
+    ids=["similarity one pair", "one pair", "collinear", "coplanar"],
 )
-def test_the_least_squares_affine_fit_says_when_it_cannot(src, dst):
-    # it returned the minimum-norm answer: on beads in one plane a z scale of 1.35 and shear
-    with pytest.raises(ValueError, match=f"affine fit failed on {len(src)} pairs"):
-        Transform.fit(src, dst, "affine")
+def test_the_least_squares_fit_says_when_it_cannot(transform_type, src, dst):
+    # the affine fit returned the minimum-norm answer: on beads in one plane a z scale of
+    # 1.35 and shear
+    with pytest.raises(ValueError, match=f"{transform_type} fit failed on {len(src)} pairs"):
+        Transform.fit(src, dst, transform_type)
 
 
 def test_fit_can_use_scikit_images_affine_estimator():

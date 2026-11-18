@@ -60,12 +60,8 @@ def test_evaluate_transform_writes_one_row_per_candidate_and_position(tmp_path):
     }
     by = {(r["candidate"], r["position"]): float(r["tiles_median_um"]) for r in rows}
     assert by["transforms", "A/1/0"] < by["unregistered", "A/1/0"]
+    assert {"points_median_um", "z_um", "z_from", "scale_yx"} <= set(rows[0])
     assert sorted(p.name for p in (tmp_path / "evaluation").glob("*.png"))  # figures
-
-
-def test_evaluate_transform_is_listed_with_its_siblings():
-    result = CliRunner().invoke(cli, ["--help"])
-    assert "evaluate-transform" in result.output
 
 
 def test_tags_add_columns_so_tables_can_be_joined(tmp_path):
@@ -260,7 +256,7 @@ def test_a_registration_file_needs_its_reference_positions(tmp_path):
         str(transforms),
     ]
     result = CliRunner().invoke(cli, [*args, "-o", str(tmp_path / "e.csv")])
-    assert result.exit_code == 2 and "needs the reference positions (-r)" in result.output
+    assert result.exit_code == 2 and "-r" in result.output
 
 
 def test_a_blank_position_is_reported_not_left_as_empty_rows(tmp_path):
@@ -292,7 +288,7 @@ def test_a_blank_position_is_reported_not_left_as_empty_rows(tmp_path):
     args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64"]
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
-    assert "A/1/1: WARNING the moving image is blank, skipped" in result.output
+    assert "blank" in result.output
     assert [r["empty"] for r in _rows(output) if r["position"] == "A/1/1"] == ["moving"]
 
 

@@ -152,15 +152,6 @@ def test_propagation_loads_for_phase_correlation_without_its_section():
     assert _settings(method=stack, transform=propagate).transform.propagates
 
 
-def test_an_old_ants_sobel_filter_names_both_blocks_and_the_converter():
-    # fixing it by hand from the message changed the score: the old score compared edges
-    with pytest.raises(ValidationError) as error:
-        _settings(method="ants", ants={"sobel_filter": True})
-    message = str(error.value)
-    assert "- sobel: {}" in message and "score:, preprocess: [{sobel: {}}]" in message
-    assert "biahub convert-settings" in message
-
-
 @pytest.mark.parametrize(
     "method, preprocess, message",
     [
@@ -204,12 +195,6 @@ def test_a_config_that_is_not_a_mapping_is_refused_saying_so(text, tmp_path):
     path.write_text(text)
     with pytest.raises(ValueError, match="must hold a mapping of settings"):
         load_estimate_transform_settings(path)
-
-
-def test_time_indices_refuses_a_bool():
-    # `time_indices: true` loaded as timepoint 1
-    with pytest.raises(ValidationError):
-        _settings(time_indices=True)
 
 
 def test_a_stack_blocks_transform_sets_only_its_type():

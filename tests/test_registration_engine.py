@@ -289,6 +289,19 @@ def test_neighbour_consensus_initial_candidates_skips_flagged_neighbours():
     first = factory(0, history, scores, flagged={0})
     assert list(first) == ["t+1", "consensus", "initial"]
 
+    # repair tries the initial transform as a candidate by default; with no history
+    # only the consensus and the initial transform are left
+    from biahub.settings import RepairSettings
+
+    assert RepairSettings().candidates == ["t-1", "t+1", "consensus", "initial"]
+    alone = factory(5, {}, {}, set())
+    assert list(alone) == ["consensus", "initial"]
+    assert alone["initial"].initial_for(5) is config_initial_transform
+
+    # the consensus repair candidate keeps its config name
+    only_consensus = neighbour_consensus_initial_candidates(IDENTITY, order=("consensus",))
+    assert list(only_consensus(0, {}, {}, set())) == ["consensus"]
+
 
 class _StepEstimator(EstimatorBase):
     """Moves the initial transform's x translation one step towards `target` per call."""
@@ -920,11 +933,18 @@ def test_empty_frames_are_not_flagged_and_an_all_failed_run_flags_every_attempt(
     assert flag_series(failed, floor=None, hard_fail=None) == [0, 2]
 
 
-def test_the_consensus_leaves_out_flagged_timepoints_with_a_threshold_too():
+@pytest.mark.parametrize(
+    "score_threshold, score", [(0.5, 0.9), (None, 0.1)], ids=["threshold", "no-threshold"]
+)
+def test_the_consensus_leaves_out_flagged_timepoints_with_a_threshold_too(
+    score_threshold, score
+):
+    # without a threshold (a correlation run scoring about 0.1) the consensus is built
+    # from the unflagged timepoints; with one, the flagged ones are left out too
     history = {t: _shift_x(1) for t in range(5)} | {5: _shift_x(100)}
-    scores = dict.fromkeys(range(6), 0.9)
+    scores = dict.fromkeys(range(6), score)
     consensus = ConsensusInitialTransform(
-        history, scores, score_threshold=0.5, min_good=5, excluded={5}
+        history, scores, score_threshold=score_threshold, min_good=5, excluded={5}
     )
     # without the flagged t=5, the median of five x=1 shifts (t=0 excluded as itself:
     # min_good counts the rest)
@@ -932,10 +952,13 @@ def test_the_consensus_leaves_out_flagged_timepoints_with_a_threshold_too():
         consensus.initial_for(0)
     assert consensus.initial_for(6).translation[2] == 1.0
 
-
-def test_the_consensus_repair_candidate_keeps_its_config_name():
-    candidates = neighbour_consensus_initial_candidates(IDENTITY, order=("consensus",))
-    assert list(candidates(0, {}, {}, set())) == ["consensus"]
+    history = {t: _shift_x(t) for t in range(8)}
+    scores = dict.fromkeys(history, score)
+    consensus = ConsensusInitialTransform(
+        history, scores, score_threshold=score_threshold, min_good=3, excluded={5, 6, 7}
+    )
+    # the median of t = 1, 2, 3, 4 (t = 0 is the one asked for; 5-7 are flagged)
+    assert consensus.initial_for(0).translation[2] == 2.5
 
 
 def test_the_previous_frame_reads_each_earlier_frame_once_per_timepoint():
@@ -1001,8 +1024,7 @@ def test_an_estimate_that_scores_below_its_start_keeps_the_start_and_is_unreliab
         assert [e.status for e in entries] == ["unreliable", "unreliable"]
         assert "scored below its start" in entries[0].note
 
-
-def test_a_tie_with_the_start_keeps_the_estimate():
+    # a tie with the start keeps the estimate
     mov = _frames([1])
     result = estimate_series(
         mov,

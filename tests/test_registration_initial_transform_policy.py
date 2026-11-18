@@ -9,23 +9,11 @@ from biahub.registration.engine.policies import (
 )
 
 
-def test_all_variants_satisfy_protocol():
-    identity = Transform.from_translation([0.0, 0.0, 0.0])
-    assert isinstance(FixedInitialTransform(identity), InitialTransformPolicy)
-    assert isinstance(ConsensusInitialTransform(history={}, scores={}), InitialTransformPolicy)
-
-
 def test_fixed_initial_transform_returns_the_same_transform_for_every_t():
     transform = Transform.from_translation([1.0, 2.0, 3.0])
     policy = FixedInitialTransform(transform)
     for t in range(5):
         assert policy.initial_for(t) is transform
-
-
-def test_a_fixed_initial_transform_is_the_same_transform_at_every_timepoint():
-    existing_transform = Transform.from_translation([7.0, -3.0, 0.5])
-    policy = FixedInitialTransform(existing_transform)
-    assert policy.initial_for(0) is existing_transform
 
 
 def test_consensus_initial_transform_raises_when_too_few_timepoints_score_well():
@@ -89,28 +77,9 @@ def test_a_file_initial_transform_gives_each_timepoints_and_asks_to_be_kept_unle
     assert (
         policy.keep_unless_beaten is True
     )  # an earlier result: the engine keeps it unless an estimate scores better
+    # only an earlier result asks to be kept unless beaten
+    for other in (FixedInitialTransform, ConsensusInitialTransform):
+        assert other.keep_unless_beaten is False
     with pytest.raises(KeyError, match="no initial transform for t=2"):
         policy.initial_for(2)
     assert isinstance(policy, InitialTransformPolicy)
-
-
-def test_repair_tries_the_initial_transform_as_the_candidate_initial():
-    from biahub.registration.engine import neighbour_consensus_initial_candidates
-    from biahub.settings import RepairSettings
-
-    assert RepairSettings().candidates == ["t-1", "t+1", "consensus", "initial"]
-    initial = Transform.from_translation([1.0, 0.0, 0.0])
-    candidates = neighbour_consensus_initial_candidates(initial)(5, {}, {}, set())
-    assert list(candidates) == ["consensus", "initial"]
-    assert candidates["initial"].initial_for(5) is initial
-
-
-def test_only_an_earlier_result_asks_to_be_kept_unless_beaten():
-    from biahub.registration.engine.policies import (
-        ConsensusInitialTransform,
-        FixedInitialTransform,
-    )
-
-    for policy in (FixedInitialTransform, ConsensusInitialTransform):
-        assert policy.keep_unless_beaten is False
-    assert "keep_unless_beaten" in InitialTransformPolicy.__annotations__

@@ -208,6 +208,9 @@ def test_time_indices_are_checked_when_the_config_is_read():
     # one 'previous' step is not a transform for the series: refuse a single timepoint
     with pytest.raises(ValueError, match="previous"):
         config(frame="previous", channel=None, time_indices=5)
+    # `time_indices: true` loaded as timepoint 1
+    with pytest.raises(ValueError):
+        config(time_indices=True)
     assert config(time_indices=[2, 5, 9]).time_indices == [2, 5, 9]
     assert config(frame="first", channel=None, time_indices=5).time_indices == 5
 

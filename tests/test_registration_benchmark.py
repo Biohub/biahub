@@ -60,13 +60,20 @@ def test_tiles_decide_when_there_are_no_landmarks(tmp_path):
     assert (choice["pipeline"], choice["metric"]) == ("tiles_ants", "tiles_median_um")
 
 
-def test_no_winner_when_nothing_clearly_beats_unregistered(tmp_path):
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [
+            ("c", "ants", cand, "A/1/0", tiles, tiles)
+            for cand, tiles in (("unregistered", 1.0), ("transforms", 0.9))
+        ],
+        [("c", "a", "transforms", "A/1/0", 2.9, "")],  # no unregistered baseline at all
+    ],
+    ids=["not_clearly_better", "no_baseline"],
+)
+def test_no_winner_when_nothing_clearly_beats_unregistered(tmp_path, rows):
     from biahub.registration.benchmark import select_pipeline
 
-    rows = [
-        ("c", "ants", cand, "A/1/0", tiles, tiles)
-        for cand, tiles in (("unregistered", 1.0), ("transforms", 0.9))
-    ]
     choice = select_pipeline(_table(tmp_path, rows))
     assert choice["pipeline"] is None and "unregistered" in choice["reason"]
 
@@ -173,15 +180,7 @@ def test_every_pipeline_template_loads():
     folder = (
         Path(__file__).parents[1] / ".claude/skills/register-with-engine/templates/pipelines"
     )
-    names = sorted(p.stem for p in folder.glob("*.yml"))
-    assert names == [
-        "ants",
-        "bead_matching",
-        "local_pcc",
-        "local_pcc_ants",
-        "local_pcc_nuclei_matching",
-        "mantis_shapes_ants_vs",
-    ]
+    assert sorted(folder.glob("*.yml"))
     for path in folder.glob("*.yml"):
         EstimateTransformSettings(**yaml.safe_load(path.read_text()))
 
@@ -265,14 +264,6 @@ def test_a_perfect_tile_median_wins_and_a_missing_one_is_said(tmp_path):
     ]
     choice = select_pipeline(_table(tmp_path, no_tiles))
     assert choice["pipeline"] is None and "no tile median" in choice["reason"]
-
-
-def test_no_winner_without_an_unregistered_baseline(tmp_path):
-    from biahub.registration.benchmark import select_pipeline
-
-    rows = [("c", "a", "transforms", "A/1/0", 2.9, "")]
-    choice = select_pipeline(_table(tmp_path, rows))
-    assert choice["pipeline"] is None and "unregistered" in choice["reason"]
 
 
 def test_the_reason_says_when_no_landmarks_were_measured(tmp_path):

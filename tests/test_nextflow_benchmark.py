@@ -78,7 +78,10 @@ def _rows(output):
 
 
 def test_the_benchmark_runs_every_pipeline_on_every_case_into_one_table(tmp_path):
+    # a failing pipeline (`broken`) does not stop the others
     plate = _plate(tmp_path)
+    broken = tmp_path / "broken.yml"
+    broken.write_text(yaml.safe_dump({"moving": {"channel": "x"}, "method": "no-such-method"}))
     spec = {
         "cases": [
             {
@@ -100,6 +103,7 @@ def test_the_benchmark_runs_every_pipeline_on_every_case_into_one_table(tmp_path
                     tmp_path / "stack.yml", [{"phase_cross_corr": {}}, BEADS_BLOCK]
                 ),
             },
+            {"name": "broken", "config": broken.name},
         ],
     }
     (tmp_path / "benchmark.yml").write_text(yaml.safe_dump(spec))
@@ -118,7 +122,12 @@ def test_the_benchmark_runs_every_pipeline_on_every_case_into_one_table(tmp_path
     with open(output / "benchmark.csv") as f:
         rows = list(csv.DictReader(f))
     by = {(r["pipeline"], r["candidate"]): r for r in rows}
-    assert {r["position"] for r in rows} == {"A/1/1"}  # the held-out position
+    evaluated = [r for r in rows if r["candidate"] != "refused"]
+    assert {r["position"] for r in evaluated} == {"A/1/1"}  # the held-out position
+    assert {r["pipeline"] for r in evaluated} == {"beads", "pcc_beads"}
+    # the refused config has one row saying why, not a silent absence
+    (refused,) = [r for r in rows if r["pipeline"] == "broken"]
+    assert refused["candidate"] == "refused" and "no-such-method" in refused["note"]
     assert {k for k in by if k[0] == "pcc_beads"} == {
         ("pcc_beads", c)
         for c in ("unregistered", "transforms", "1:phase_cross_corr", "2:bead_matching")
@@ -175,71 +184,6 @@ def test_resume_reuses_unchanged_runs_and_an_edited_config_reestimates(tmp_path)
     assert {r["pipeline"] for r in _rows(output)} == {"beads"}
 
 
-def test_one_failing_pipeline_does_not_stop_the_others(tmp_path):
-    plate = _plate(tmp_path)
-    beads = _config(tmp_path / "beads.yml", "bead_matching")
-    broken = tmp_path / "broken.yml"
-    broken.write_text(yaml.safe_dump({"moving": {"channel": "x"}, "method": "no-such-method"}))
-    _one_case_spec(
-        tmp_path,
-        plate,
-        [{"name": "beads", "config": beads}, {"name": "broken", "config": broken.name}],
-    )
-    output = tmp_path / "out"
-    _workflow(tmp_path, output)
-    rows = _rows(output)
-    assert {r["pipeline"] for r in rows if r["candidate"] != "refused"} == {"beads"}
-    # the refused config has one row saying why, not a silent absence
-    (refused,) = [r for r in rows if r["pipeline"] == "broken"]
-    assert refused["candidate"] == "refused" and "no-such-method" in refused["note"]
-
-
-def test_a_stabilization_case_needs_no_reference(tmp_path):
-    from tests.test_nextflow_registration import _drifting_plate
-
-    plate = _drifting_plate(tmp_path)
-    with open_ome_zarr(plate, mode="r") as position:
-        channel = position.channel_names[0]
-        n_t = position.data.shape[0]
-    pcc = tmp_path / "pcc.yml"
-    pcc.write_text(
-        yaml.safe_dump(
-            {
-                "moving": {"channel": "placeholder"},
-                "reference": {"frame": "cross", "channel": "placeholder"},
-                "method": "phase_cross_corr",
-                "transform": {"type": "euclidean"},
-                "fallback": {"repair": None},
-            }
-        )
-    )
-    store, position_key = str(plate.parents[2]), "/".join(plate.parts[-3:])
-    spec = {
-        "cases": [
-            {
-                "name": "drift",
-                "moving": store,
-                "moving_channel": channel,
-                "estimate_positions": position_key,
-                "evaluate_positions": [position_key],
-                "evaluate_t": n_t - 1,
-                "tile_px": 32,
-            }
-        ],
-        "pipelines": [{"name": "pcc", "config": pcc.name}],
-    }
-    (tmp_path / "benchmark.yml").write_text(yaml.safe_dump(spec))
-    output = tmp_path / "out"
-    _workflow(tmp_path, output)
-    rows = {r["candidate"]: r for r in _rows(output)}
-    assert yaml.safe_load((output / "drift" / "pcc" / "estimate.yml").read_text())[
-        "reference"
-    ] == {"frame": "first"}
-    assert float(rows["transforms"]["tiles_median_um"]) < float(
-        rows["unregistered"]["tiles_median_um"]
-    )
-
-
 def test_a_pipeline_starting_from_a_file_beside_its_config_runs(tmp_path):
     # the copied estimate.yml resolved a relative transform.initial.file from the output
     # folder: the file was not found and the pipeline left the table without a word
@@ -272,24 +216,29 @@ def test_a_pipeline_starting_from_a_file_beside_its_config_runs(tmp_path):
 
 def test_a_stabilization_case_keeps_the_pipelines_reference_settings(tmp_path):
     # the case replaced the whole reference section: a neighbours pipeline lost its
-    # window and ran as `first`
+    # window and ran as `first`. A stabilization case needs no reference: a cross
+    # pipeline runs as `first`.
     from tests.test_nextflow_registration import _drifting_plate
 
     plate = _drifting_plate(tmp_path)
     with open_ome_zarr(plate, mode="r") as position:
         channel = position.channel_names[0]
         n_t = position.data.shape[0]
-    (tmp_path / "pcc.yml").write_text(
-        yaml.safe_dump(
-            {
-                "moving": {"channel": "placeholder"},
-                "reference": {"frame": "neighbours", "window": 1},
-                "method": "phase_cross_corr",
-                "transform": {"type": "euclidean"},
-                "fallback": {"repair": None},
-            }
+    for name, reference in (
+        ("pcc_first", {"frame": "cross", "channel": "placeholder"}),
+        ("pcc_neighbours", {"frame": "neighbours", "window": 1}),
+    ):
+        (tmp_path / f"{name}.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "moving": {"channel": "placeholder"},
+                    "reference": reference,
+                    "method": "phase_cross_corr",
+                    "transform": {"type": "euclidean"},
+                    "fallback": {"repair": None},
+                }
+            )
         )
-    )
     store, position_key = str(plate.parents[2]), "/".join(plate.parts[-3:])
     spec = {
         "cases": [
@@ -304,11 +253,24 @@ def test_a_stabilization_case_keeps_the_pipelines_reference_settings(tmp_path):
                 "tile_px": 32,
             }
         ],
-        "pipelines": [{"name": "pcc", "config": "pcc.yml"}],
+        "pipelines": [
+            {"name": name, "config": f"{name}.yml"} for name in ("pcc_first", "pcc_neighbours")
+        ],
     }
     (tmp_path / "benchmark.yml").write_text(yaml.safe_dump(spec))
     output = tmp_path / "out"
     _workflow(tmp_path, output)
-    written = yaml.safe_load((output / "drift" / "pcc" / "estimate.yml").read_text())
-    assert written["reference"] == {"frame": "neighbours", "window": 1}
-    assert {r["pipeline"] for r in _rows(output)} == {"pcc"}
+
+    def written(name):
+        return yaml.safe_load((output / "drift" / name / "estimate.yml").read_text())
+
+    assert written("pcc_neighbours")["reference"] == {"frame": "neighbours", "window": 1}
+    assert written("pcc_first")["reference"] == {"frame": "first"}
+    rows = _rows(output)
+    assert {r["pipeline"] for r in rows} == {"pcc_first", "pcc_neighbours"}
+    tiles = {
+        r["candidate"]: float(r["tiles_median_um"])
+        for r in rows
+        if r["pipeline"] == "pcc_first"
+    }
+    assert tiles["transforms"] < tiles["unregistered"]

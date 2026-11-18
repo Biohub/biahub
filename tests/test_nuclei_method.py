@@ -64,29 +64,13 @@ def _estimator(**settings):
 PROBE = np.array([[12, 60, 60], [12, 60, 450], [12, 450, 60], [12, 450, 450], [12, 256, 256]])
 
 
-def test_nuclei_is_a_landmark_based_graph_matching_estimator():
-    # The same parts as beads: a detector per channel, a graph matcher, a fit.
-    from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
-    from biahub.registration.methods.landmark.nuclei_matching import NucleiNodeDetector
-
-    estimator = _estimator()
-    assert isinstance(estimator, NodeGraphEstimator)
-    assert isinstance(estimator.mov_detector, NucleiNodeDetector)
-    assert isinstance(estimator.ref_detector, NucleiNodeDetector)
-    assert estimator.matching.algorithm == "hungarian"
-
-
 def test_nuclei_recover_a_camera_scale_rotation_and_shift():
     truth = _forward()
     mov, ref = _pair(truth)
     found = _estimator().estimate(mov, ref, initial_transform=Transform.identity(3))
     err_um = (found.apply_points(PROBE) - truth.apply_points(PROBE)) * np.asarray(UM)
     assert np.abs(err_um).max() < 0.15
-
-
-def test_the_fit_holds_yx_and_a_z_offset_only():
-    # a cell layer constrains no z scale or tilt: the fit leaves them alone
-    found = _estimator().estimate(*_pair(_forward()), initial_transform=Transform.identity(3))
+    # a cell layer constrains no z scale or tilt: the fit holds yx and a z offset only
     m = np.asarray(found.matrix)
     assert (
         m[0, 0] == pytest.approx(1.0)

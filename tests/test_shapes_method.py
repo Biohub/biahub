@@ -107,38 +107,6 @@ def test_shapes_starts_a_stack_and_the_next_block_starts_from_it():
         ).stack_settings()
 
 
-def test_a_run_with_method_shapes_writes_the_transform_from_the_metadata(tmp_path):
-    # both stores on one grid, no turn or flip: identity at every timepoint
-    from scipy.ndimage import shift as ndi_shift
-
-    from biahub.settings import load_transform_settings
-    from biahub.utils.config import model_to_yaml
-    from tests.test_estimate_transform import (
-        APPLIED_SHIFT_ZYX,
-        SHAPE,
-        _run,
-        _synthetic_bead_volume,
-        _write_plate,
-    )
-
-    rng = np.random.default_rng(11)
-    ref = _synthetic_bead_volume(rng, SHAPE)
-    mov = ndi_shift(ref, shift=APPLIED_SHIFT_ZYX, order=1, mode="constant", cval=0.0)
-    plate = _write_plate(tmp_path / "plate.zarr", [(ref, mov), (ref, mov)])
-    config = tmp_path / "shapes.yml"
-    settings = _settings(
-        "shapes", shapes={"rotate90": 0, "fliplr": False}, transform={"type": "affine"}
-    )
-    model_to_yaml(settings, config)
-    output = tmp_path / "out" / "transforms.yml"
-    _run(plate, config, output)
-
-    entries = load_transform_settings(output).transforms
-    assert len(entries) == 2
-    for entry in entries:
-        np.testing.assert_allclose(entry.matrix, np.eye(4), atol=1e-12)
-
-
 def test_shapes_reads_no_pixels_so_preprocess_blocks_are_refused():
     shapes = {"rotate90": 0, "fliplr": False}
     with pytest.raises(ValidationError, match="shapes reads no pixels"):
@@ -174,6 +142,7 @@ def test_a_run_from_shapes_records_the_methods_forward_answer_once(tmp_path):
     from biahub.registration.engine.core import static_initial
     from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME
     from biahub.registration.methods.manual.shapes import ShapesEstimator
+    from biahub.settings import load_transform_settings
     from biahub.utils.config import model_to_yaml, yaml_to_model
     from tests.test_estimate_transform import (
         APPLIED_SHIFT_ZYX,
@@ -186,7 +155,7 @@ def test_a_run_from_shapes_records_the_methods_forward_answer_once(tmp_path):
     rng = np.random.default_rng(11)
     ref = _synthetic_bead_volume(rng, SHAPE)
     mov = ndi_shift(ref, shift=APPLIED_SHIFT_ZYX, order=1, mode="constant", cval=0.0)
-    plate = _write_plate(tmp_path / "plate.zarr", [(ref, mov)])
+    plate = _write_plate(tmp_path / "plate.zarr", [(ref, mov), (ref, mov)])
     config = tmp_path / "shapes.yml"
     turn = {"rotate90": 1, "fliplr": False}
     settings = _settings(
@@ -208,3 +177,11 @@ def test_a_run_from_shapes_records_the_methods_forward_answer_once(tmp_path):
     assert (initial.from_, initial.direction) == ("matrix", "forward")
     np.testing.assert_array_equal(initial.matrix, expected.matrix)
     np.testing.assert_array_equal(static_initial(resolved).matrix, expected.matrix)
+
+    # the run writes the transform from the metadata at every timepoint
+    written = load_transform_settings(output)
+    assert len(written.transforms) == 2
+    for t in range(2):
+        np.testing.assert_allclose(
+            written.matrix_for(t, "forward"), expected.matrix, atol=1e-12
+        )

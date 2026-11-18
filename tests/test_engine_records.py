@@ -281,20 +281,6 @@ def test_the_frame_that_starts_the_chain_is_identity_not_an_estimate_against_its
     assert result.transforms[0].is_identity and _Counting.calls == 2
 
 
-def test_a_fresh_run_clears_the_previous_runs_flags(tmp_path):
-    # start_run removed the record folders but left flags.json: a --step repair right
-    # after a fresh --init read the previous run's flags
-    from biahub.registration.engine.disk import FLAGS_FILENAME, start_run
-    from biahub.settings import EstimateTransformSettings
-
-    settings = EstimateTransformSettings(
-        moving={"channel": "GFP"}, reference={"frame": "first"}, method="phase_cross_corr"
-    )
-    (tmp_path / FLAGS_FILENAME).write_text('{"flagged": [3], "repair": [3], "sweep": []}')
-    start_run(tmp_path, settings, tmp_path / "mov", None, resume=False)
-    assert not (tmp_path / FLAGS_FILENAME).exists()
-
-
 def test_each_record_keeps_the_change_its_estimate_made_after_its_start():
     # the record kept only the final matrix: how far the method moved from where it
     # started (a file, a propagated result) could not be read back
@@ -322,34 +308,17 @@ def test_each_record_keeps_the_change_its_estimate_made_after_its_start():
     assert from_start(result, 5) is None  # nothing estimated there
 
 
-def test_a_job_writes_the_change_from_its_start_into_the_record(tmp_path):
-    import json
-
-    from scipy.ndimage import shift as ndi_shift
-
-    from tests.test_estimate_transform import (
-        APPLIED_SHIFT_ZYX,
-        SHAPE,
-        _run,
-        _synthetic_bead_volume,
-        _write_config,
-        _write_plate,
-    )
-
-    ref = _synthetic_bead_volume(np.random.default_rng(11), SHAPE)
-    mov = ndi_shift(ref, shift=APPLIED_SHIFT_ZYX, order=1, mode="constant", cval=0.0)
-    plate = _write_plate(tmp_path / "beads.zarr", [(ref, mov)])
-    output = tmp_path / "out" / "transforms.yml"
-    _run(plate, _write_config(tmp_path, transform_type="euclidean"), output)
-    record = json.loads((output.with_suffix("") / "timepoints" / "0.json").read_text())
-    # identity start (the default): the change is the whole transform
-    np.testing.assert_allclose(record["from_start"], record["matrix"])
-
-
 def test_a_new_start_removes_the_earlier_runs_report_and_journal(tmp_path):
     # a rerun that died before finalize left the earlier report: "done when the report
-    # exists" read the old run as this one's
-    from biahub.registration.engine.disk import JOURNAL_FILENAME, REPORT_FILENAME, start_run
+    # exists" read the old run as this one's. And start_run removed the record folders
+    # but left flags.json: a --step repair right after a fresh --init read the previous
+    # run's flags (a resume keeps them: they are the verdict on the records it keeps)
+    from biahub.registration.engine.disk import (
+        FLAGS_FILENAME,
+        JOURNAL_FILENAME,
+        REPORT_FILENAME,
+        start_run,
+    )
     from biahub.settings import EstimateTransformSettings
 
     settings = EstimateTransformSettings(
@@ -358,9 +327,12 @@ def test_a_new_start_removes_the_earlier_runs_report_and_journal(tmp_path):
     for resume in (False, True):
         for name in (REPORT_FILENAME, JOURNAL_FILENAME):
             (tmp_path / name).write_text("{}")
+        (tmp_path / FLAGS_FILENAME).write_text('{"flagged": [3], "repair": [3], "sweep": []}')
         start_run(tmp_path, settings, tmp_path / "mov", tmp_path / "ref", resume)
         assert not (tmp_path / REPORT_FILENAME).exists()
         assert not (tmp_path / JOURNAL_FILENAME).exists()
+        if not resume:
+            assert not (tmp_path / FLAGS_FILENAME).exists()
 
 
 def test_editing_how_a_run_is_evaluated_does_not_change_the_run():

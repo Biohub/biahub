@@ -110,31 +110,6 @@ def test_repair_skips_a_candidate_that_raises_without_failing_the_whole_pass():
     assert set(result.scores) == {"good", "good (as is)", "broken (as is)"}
 
 
-def test_repair_names_each_failed_candidate():
-    target = np.array([10.0, 10.0, 10.0])
-
-    class _RaisingInitialTransformPolicy:
-        keep_unless_beaten = False
-
-        def initial_for(self, t):
-            raise CandidateUnavailableError("not enough good timepoints yet")
-
-    result = repair(
-        t=3,
-        mov=None,
-        ref=None,
-        estimator=_EchoEstimator(),
-        current_transform=Transform.from_translation([0.0, 0.0, 0.0]),
-        current_score=_score_by_closeness(Transform.from_translation([0.0, 0.0, 0.0]), target),
-        candidates={"consensus": _RaisingInitialTransformPolicy()},
-        score_fn=lambda t: _score_by_closeness(t, target),
-    )
-
-    assert result.accepted is False
-    unavailable = "CandidateUnavailableError: not enough good timepoints yet"
-    assert result.failures == {"consensus": unavailable, "consensus (as is)": unavailable}
-
-
 def test_repair_skips_a_candidate_whose_initial_for_raises_without_failing_the_pass():
     """E.g. `ConsensusInitialTransform` raises `CandidateUnavailableError` when too few timepoints
     score well enough yet -- skipped like any other candidate failure, not crash `repair`."""
@@ -164,6 +139,9 @@ def test_repair_skips_a_candidate_whose_initial_for_raises_without_failing_the_p
 
     assert result.accepted is True
     assert result.repaired_from == "good"
+    # each failed candidate is named, the "as is" one too
+    unavailable = "CandidateUnavailableError: not enough good timepoints yet"
+    assert result.failures == {"not_ready": unavailable, "not_ready (as is)": unavailable}
 
 
 def test_a_repair_candidate_with_a_bug_is_not_hidden_as_a_failed_candidate():

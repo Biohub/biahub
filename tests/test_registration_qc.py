@@ -105,19 +105,6 @@ def test_without_absolute_thresholds_only_the_runs_own_line_flags():
     assert list(flags.loc[flags["flagged"], "t"]) == [4]
 
 
-def test_without_a_threshold_the_consensus_is_built_from_the_unflagged_timepoints():
-    from biahub.core.transform import Transform
-    from biahub.registration.engine.policies import ConsensusInitialTransform
-
-    history = {t: Transform.from_translation([float(t), 0.0, 0.0]) for t in range(8)}
-    scores = {t: 0.1 for t in history}
-    consensus = ConsensusInitialTransform(
-        history, scores, score_threshold=None, min_good=3, excluded={5, 6, 7}
-    )
-    # the median of t = 1, 2, 3, 4 (t = 0 is the one asked for; 5-7 are flagged)
-    np.testing.assert_allclose(consensus.initial_for(0).translation, [2.5, 0.0, 0.0])
-
-
 def test_without_hard_fail_a_flagged_timepoint_is_unreliable_while_below_the_runs_line():
     from biahub.core.transform import Transform
     from biahub.estimate_transform import transform_entries

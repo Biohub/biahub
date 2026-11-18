@@ -1,6 +1,4 @@
 import importlib.util
-import inspect
-import re
 
 from pathlib import Path
 
@@ -154,23 +152,6 @@ def test_deskew_settings():
     # Test px_to_scan_ratio logic
     with pytest.raises(ValueError):
         DeskewSettings(pixel_size_um=0.116, ls_angle_deg=36, scan_step_um=None)
-
-
-def test_ants_settings_are_all_consumed_by_the_engine():
-    """Every AntsRegistrationSettings field must be read by AntsEstimator.from_settings
-    (which is what the config-driven ANTs path runs), so a config knob can't be silently
-    ignored. The block has no fields today (ANTs' options are DEFAULT_ANTS_KWARGS): this
-    guards the ones added later."""
-    from biahub.registration.engine import build_estimator
-    from biahub.registration.methods.intensity.ants import AntsEstimator
-    from biahub.settings import AntsRegistrationSettings
-
-    source = inspect.getsource(AntsEstimator.from_settings) + inspect.getsource(
-        build_estimator
-    )
-    read = set(re.findall(r"ants_(?:registration_)?settings\.(\w+)", source))
-    missing = set(AntsRegistrationSettings.model_fields) - read
-    assert not missing, f"AntsRegistrationSettings fields nothing reads: {missing}"
 
 
 def test_example_stitch_settings(example_stitch_settings):

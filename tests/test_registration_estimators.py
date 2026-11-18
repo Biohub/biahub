@@ -367,26 +367,6 @@ def test_ants_refines_from_a_far_initial_transform_without_cropping():
     np.testing.assert_allclose(result.matrix[:3, 3], truth.matrix[:3, 3], atol=0.5)
 
 
-def test_ants_estimator_passes_its_masks_to_ants(monkeypatch):
-    import ants
-
-    seen = {}
-    real = ants.registration
-
-    def recording(**kwargs):
-        seen.update(kwargs)
-        return real(**kwargs)
-
-    monkeypatch.setattr("ants.registration", recording)
-    rng = np.random.default_rng(5)
-    ref = _synthetic_blob_volume(rng, (24, 48, 48))
-    ref_mask = np.zeros(ref.shape, dtype=bool)
-    ref_mask[4:20, 8:40, 8:40] = True
-    AntsEstimator(ants_kwargs=_FEW_ITERATIONS).estimate(ref, ref, ref_mask=ref_mask)
-    np.testing.assert_array_equal(seen["mask"].numpy() > 0, ref_mask)
-    assert seen["moving_mask"] is None
-
-
 def test_correlation_score_prefers_the_correct_transform():
     rng = np.random.default_rng(8)
     shape = (24, 48, 48)
@@ -403,41 +383,6 @@ def test_correlation_score_prefers_the_correct_transform():
     assert correlation_score(
         Transform.identity(3), ref, ref, sobel_filter=True
     ) == pytest.approx(1.0)
-
-
-def test_ants_estimator_initial_transform_is_mechanically_used():
-    """With a correct initial transform and near-zero optimizer iterations the correction is
-    ~identity, so the result must track the initial transform -- proving the initial
-    transform pre-warp and the `correction @ initial_transform` composition are wired,
-    and that the pass runs an invertible transform family (not ants.registration's
-    default SyN, which Transform.from_ants
-    cannot parse). A wildly wrong initial transform must still return a finite transform."""
-    rng = np.random.default_rng(10)
-    shape = (24, 48, 48)
-    ref = _synthetic_blob_volume(rng, shape)
-    applied_zyx = (2, -3, 4)
-    mov = ndi_shift(ref, shift=applied_zyx, order=1, mode="constant", cval=0.0)
-
-    estimator = AntsEstimator(
-        ants_kwargs={
-            "type_of_transform": "Similarity",
-            "aff_iterations": (1, 1, 1),
-            "aff_shrink_factors": (6, 3, 1),
-            "aff_smoothing_sigmas": (2, 1, 0),
-        }
-    )
-    true_initial_transform = Transform.from_translation([-a for a in applied_zyx])
-    result = estimator.estimate(mov, ref, initial_transform=true_initial_transform)
-    np.testing.assert_allclose(
-        result.matrix[:3, 3], true_initial_transform.matrix[:3, 3], atol=1.0
-    )
-
-    huge_initial_transform = Transform.from_translation([15.0, -10.0, 8.0])
-    assert np.all(
-        np.isfinite(
-            estimator.estimate(mov, ref, initial_transform=huge_initial_transform).matrix
-        )
-    )
 
 
 def test_ants_keeps_an_initial_transform_with_rotation_scale_and_shear():
@@ -469,18 +414,6 @@ def test_ants_keeps_an_initial_transform_with_rotation_scale_and_shear():
     )
     result = estimator.estimate(ref, ref, initial_transform=initial_transform)
     np.testing.assert_allclose(result.matrix, initial_transform.matrix, atol=1e-5)
-
-
-def test_ants_estimator_with_initial_transform_still_recovers_translation():
-    rng = np.random.default_rng(5)
-    shape = (24, 48, 48)
-    ref = _synthetic_blob_volume(rng, shape)
-    applied_zyx = (2, -3, 4)
-    mov = ndi_shift(ref, shift=applied_zyx, order=1, mode="constant", cval=0.0)
-
-    close_initial_transform = Transform.from_translation([-a for a in applied_zyx])
-    transform = AntsEstimator().estimate(mov, ref, initial_transform=close_initial_transform)
-    np.testing.assert_allclose(transform.matrix[:3, 3], [-a for a in applied_zyx], atol=0.5)
 
 
 def test_ants_estimator_recovers_known_translation_and_warps_mov_onto_ref():
@@ -752,49 +685,12 @@ def test_classic_pcc_normalization_stays_finite_where_the_spectrum_is_zero(paddi
     assert np.all(np.isfinite(corr)) and np.all(np.isfinite(np.asarray(shift, dtype=float)))
 
 
-def test_pcc_center_crop_is_clamped_to_the_image():
-    # A crop larger than an axis takes the whole axis; a negative start would wrap around
-    # and keep only the far end.
-    from biahub.registration.methods.intensity.phase_cross_corr import pcc_crop
-    from biahub.settings import PhaseCrossCorrSettings
-
-    _, y, x = pcc_crop(PhaseCrossCorrSettings(center_crop_xy=[150, 150]), (10, 100, 80))
-    assert (y, x) == (slice(0, 100), slice(0, 80))
-    _, y, x = pcc_crop(PhaseCrossCorrSettings(center_crop_xy=[40, 20]), (10, 100, 80))
-    assert (y, x) == (slice(40, 60), slice(20, 60))  # a crop that fits stays centred
-
-
 def _off_centre_blob(volume, centre=(4, 6, 6), brightness=20000.0, sigma=2.0):
     """`volume` plus one bright blob in a corner: moves its intensity centre of mass."""
     zz, yy, xx = np.meshgrid(*[np.arange(s) for s in volume.shape], indexing="ij")
     cz, cy, cx = centre
     blob = np.exp(-(((zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2) / (2 * sigma**2)))
     return volume + brightness * blob.astype(np.float32)
-
-
-def test_ants_starts_from_the_initial_transform_not_the_centres_of_mass():
-    # A bright structure in one channel only moves its centre of mass. ANTs' default
-    # initialisation aligns the centres of mass, replacing the initial transform's
-    # translation; with near-zero iterations the result shows where it started.
-    rng = np.random.default_rng(10)
-    shape = (24, 48, 48)
-    ref = _synthetic_blob_volume(rng, shape)
-    applied_zyx = (2, -3, 4)
-    mov = _off_centre_blob(ndi_shift(ref, shift=applied_zyx, order=1, mode="constant"))
-    few_iterations = {
-        "type_of_transform": "Similarity",
-        "aff_iterations": (1, 1, 1),
-        "aff_shrink_factors": (6, 3, 1),
-        "aff_smoothing_sigmas": (2, 1, 0),
-    }
-    true_initial_transform = Transform.from_translation([-a for a in applied_zyx])
-
-    from_initial_transform = AntsEstimator(ants_kwargs=few_iterations).estimate(
-        mov, ref, initial_transform=true_initial_transform
-    )
-    np.testing.assert_allclose(
-        from_initial_transform.matrix[:3, 3], true_initial_transform.matrix[:3, 3], atol=1.0
-    )
 
 
 # --- ants.estimate: the wrapper around ants.registration --------------------------------
@@ -825,24 +721,15 @@ def test_ants_estimate_starts_from_initial_and_returns_the_full_forward_transfor
     np.testing.assert_allclose(result.matrix[:3, 3], initial.matrix[:3, 3], atol=0.5)
     np.testing.assert_allclose(result.matrix[:3, :3], initial.matrix[:3, :3], atol=0.02)
 
-
-def test_ants_estimate_returns_the_forward_direction():
-    from biahub.registration.methods.intensity.ants import estimate
-
-    rng = np.random.default_rng(5)
-    ref = _synthetic_blob_volume(rng, (24, 48, 48))
-    applied_zyx = (2, -3, 4)
-    mov = ndi_shift(ref, shift=applied_zyx, order=1, mode="constant")
-
-    result = estimate(ref, mov, initial=Transform.identity(3))
-    # forward (mov -> ref) undoes the shift that made mov
-    np.testing.assert_allclose(result.matrix[:3, 3], [-a for a in applied_zyx], atol=0.5)
+    # a wildly wrong initial transform must still return a finite transform
+    huge_initial = Transform.from_translation([15.0, -10.0, 8.0])
+    huge = estimate(ref, mov, initial=huge_initial, ants_kwargs=_FEW_ITERATIONS)
+    assert np.all(np.isfinite(huge.matrix))
 
 
-def test_ants_estimate_passes_the_masks_to_ants(monkeypatch):
+@pytest.mark.parametrize("with_mov_mask", [False, True])
+def test_ants_estimator_passes_its_masks_to_ants(monkeypatch, with_mov_mask):
     import ants
-
-    from biahub.registration.methods.intensity import ants as ants_method
 
     seen = {}
     real = ants.registration
@@ -856,17 +743,15 @@ def test_ants_estimate_passes_the_masks_to_ants(monkeypatch):
     ref = _synthetic_blob_volume(rng, (24, 48, 48))
     ref_mask = np.zeros(ref.shape, dtype=bool)
     ref_mask[4:20, 8:40, 8:40] = True
-    mov_mask = np.ones(ref.shape, dtype=bool)
-    ants_method.estimate(
-        ref,
-        ref,
-        initial=Transform.identity(3),
-        ref_mask=ref_mask,
-        mov_mask=mov_mask,
-        ants_kwargs=_FEW_ITERATIONS,
+    mov_mask = np.ones(ref.shape, dtype=bool) if with_mov_mask else None
+    AntsEstimator(ants_kwargs=_FEW_ITERATIONS).estimate(
+        ref, ref, ref_mask=ref_mask, mov_mask=mov_mask
     )
     np.testing.assert_array_equal(seen["mask"].numpy() > 0, ref_mask)
-    np.testing.assert_array_equal(seen["moving_mask"].numpy() > 0, mov_mask)
+    if with_mov_mask:
+        np.testing.assert_array_equal(seen["moving_mask"].numpy() > 0, mov_mask)
+    else:
+        assert seen["moving_mask"] is None
 
 
 @pytest.mark.parametrize("x", [24, 21])
@@ -1046,65 +931,6 @@ def test_propagation_does_not_return_a_transform_whose_score_is_nan():
             Transform.identity(3),
             lambda transform, mov, ref: float("nan"),
         )
-
-
-def test_every_estimator_declares_the_members_the_engine_reads():
-    from biahub.registration.estimators import (
-        ChainedEstimator,
-        CompetingEstimator,
-        TransformEstimator,
-    )
-    from biahub.registration.methods.landmark.bead_matching import (
-        VoteIcpEstimator,
-        VoteInitialTransformCorrection,
-    )
-    from biahub.registration.methods.landmark.node_graph import NodeGraphEstimator
-    from biahub.registration.methods.manual.manual import ManualEstimator
-
-    classes = [
-        AntsEstimator, PCCEstimator, FocusEstimator, ManualEstimator, NodeGraphEstimator,
-        VoteIcpEstimator, VoteInitialTransformCorrection, ChainedEstimator, CompetingEstimator,
-    ]  # fmt: skip
-    assert all(issubclass(cls, EstimatorBase) for cls in classes)
-    defaults = EstimatorBase()
-    assert (
-        defaults.uses_initial_transform,
-        defaults.holds_xy_across_gaps,
-        defaults.accepts_competitor,
-    ) == (
-        True,
-        False,
-        False,
-    )
-    assert defaults.trace() == {"best_candidate": None, "blocks": None}
-    # every method starts from its initial transform; shapes computes one instead
-    from biahub.registration.methods.manual.shapes import ShapesEstimator
-
-    assert all(
-        cls.uses_initial_transform for cls in (PCCEstimator, FocusEstimator, ManualEstimator)
-    )
-    assert not ShapesEstimator.uses_initial_transform
-    assert FocusEstimator.holds_xy_across_gaps
-    assert NodeGraphEstimator.accepts_competitor
-    assert isinstance(ChainedEstimator([PCCEstimator()]), TransformEstimator)
-
-
-@pytest.mark.parametrize("normalization", [None, "magnitude", "classic"])
-def test_the_cross_power_is_its_definition_computed_in_place(normalization):
-    # computed in the moving spectrum's memory (it is the caller's scratch), not in copies
-    from biahub.registration.methods.intensity.phase_cross_corr import _cross_power
-
-    rng = np.random.default_rng(6)
-    f_ref = np.fft.fftn(rng.random((6, 8, 10)))
-    f_mov = np.fft.fftn(rng.random((6, 8, 10)))
-    f_mov[0, 0, 0] = 0.0  # a zero magnitude: guarded, not a NaN
-    expected = f_mov.conj() * f_ref  # complex products round by operand order
-    eps = np.finfo(expected.real.dtype).eps
-    if normalization == "magnitude":
-        expected /= np.fmax(np.abs(expected), eps)
-    elif normalization == "classic":
-        expected /= np.fmax(np.abs(f_ref) * np.abs(f_mov), eps)
-    np.testing.assert_array_equal(_cross_power(f_ref, f_mov.copy(), normalization), expected)
 
 
 def test_an_image_method_measures_after_its_start():

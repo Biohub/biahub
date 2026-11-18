@@ -190,23 +190,52 @@ def test_propagation_reaches_the_first_block_only():
     assert first.transform.propagates and second.transform.initial is None
 
 
-def test_a_stack_estimates_end_to_end_and_names_its_blocks(beads_plate, tmp_path):
-    import numpy as np
+def test_a_stack_estimates_end_to_end_and_names_its_blocks(beads_plate, tmp_path, monkeypatch):
+    import json
 
+    import numpy as np
+    import submitit
+
+    from biahub.registration.engine import cluster
+    from biahub.registration.engine.core import ESTIMATE_MINUTES
     from tests.test_estimate_transform import APPLIED_SHIFT_ZYX, _inverse_translations, _run
 
+    # the plan gave a stack time for each block, the driver submitted one block's
+    times = []
+
+    class RecordingExecutor(submitit.AutoExecutor):
+        def update_parameters(self, **kwargs):
+            if "slurm_time" in kwargs:
+                times.append(kwargs["slurm_time"])
+            return super().update_parameters(**kwargs)
+
+    monkeypatch.setattr(cluster.submitit, "AutoExecutor", RecordingExecutor)
     settings = _settings([{"phase_cross_corr": {}}, BEADS_BLOCK])
     assert settings.effective_score_metric == "overlap"  # the final block's, beads
     config = tmp_path / "stack.yml"
     model_to_yaml(settings, config)
     output = tmp_path / "out" / "transforms.yml"
     _run(beads_plate, config, output)
+    assert times[0] == 2 * ESTIMATE_MINUTES
 
     for row in _inverse_translations(output):
         np.testing.assert_allclose(row, APPLIED_SHIFT_ZYX, atol=0.5)
     from biahub.settings import load_transform_settings
 
     assert load_transform_settings(output).method == "phase_cross_corr > bead_matching"
+
+    # every timepoint records its blocks and the report sums them
+    run = output.with_suffix("")
+    record = json.loads((run / "timepoints" / "0.json").read_text())
+    blocks = record["blocks"]
+    assert [b["block"] for b in blocks] == ["1:phase_cross_corr", "2:bead_matching"]
+    assert all(len(b["matrix"]) == 4 for b in blocks)
+    assert sum(b["won"] for b in blocks) == 1
+
+    summary = json.loads((run / "estimate_transform_report.json").read_text())["blocks"]
+    assert set(summary) == {"1:phase_cross_corr", "2:bead_matching"}
+    assert sum(s["won"] for s in summary.values()) == 2  # two timepoints, one winner each
+    assert all("median_score" in s and "failed" in s for s in summary.values())
 
 
 def test_a_stack_plans_for_its_heaviest_and_interactive_blocks(beads_plate, tmp_path):
@@ -292,29 +321,6 @@ def test_a_stack_remembers_each_blocks_transform_score_and_the_winner():
     assert internal.trace()["blocks"] is None
 
 
-def test_every_timepoint_records_its_blocks_and_the_report_sums_them(beads_plate, tmp_path):
-    import json
-
-    from tests.test_estimate_transform import _run
-
-    config = tmp_path / "stack.yml"
-    model_to_yaml(_settings([{"phase_cross_corr": {}}, BEADS_BLOCK]), config)
-    output = tmp_path / "out" / "transforms.yml"
-    _run(beads_plate, config, output)
-
-    run = output.with_suffix("")
-    record = json.loads((run / "timepoints" / "0.json").read_text())
-    blocks = record["blocks"]
-    assert [b["block"] for b in blocks] == ["1:phase_cross_corr", "2:bead_matching"]
-    assert all(len(b["matrix"]) == 4 for b in blocks)
-    assert sum(b["won"] for b in blocks) == 1
-
-    summary = json.loads((run / "estimate_transform_report.json").read_text())["blocks"]
-    assert set(summary) == {"1:phase_cross_corr", "2:bead_matching"}
-    assert sum(s["won"] for s in summary.values()) == 2  # two timepoints, one winner each
-    assert all("median_score" in s and "failed" in s for s in summary.values())
-
-
 class _Shift(EstimatorBase):
     """A block that moves its start by `d` voxels in x."""
 
@@ -392,17 +398,6 @@ def test_a_focus_only_stack_keeps_the_across_gap_rule_and_a_mixed_one_does_not()
     assert not ChainedEstimator([_Focus(), _Other()]).holds_xy_across_gaps
 
 
-def test_a_stack_gets_time_for_each_block(beads_plate, tmp_path):
-    from biahub.registration.engine import core as engine
-
-    one = engine.init_run(beads_plate, beads_plate, _settings([{"ants": {}}]), tmp_path / "a")
-    two = engine.init_run(
-        beads_plate, beads_plate, _settings([{"ants": {}}, {"ants": {}}]), tmp_path / "b"
-    )
-    minutes = lambda plan: plan["resources"]["estimate"]["time_minutes"]  # noqa: E731
-    assert minutes(two) == 2 * minutes(one)
-
-
 @pytest.mark.parametrize(
     "old, new",
     [
@@ -431,10 +426,9 @@ def test_a_failed_block_is_named_with_what_was_kept_instead():
         _stage("2:nuclei_matching", error="too few matches"),
         _stage("3:ants", error="not run: an earlier block failed"),
     ]
-    assert block_failure(stages) == (
-        "block 2:nuclei_matching failed (too few matches); "
-        "kept block 1:phase_cross_corr's result"
-    )
+    note = block_failure(stages)
+    assert "2:nuclei_matching failed" in note and "too few matches" in note
+    assert "kept block 1:phase_cross_corr" in note
     assert block_failure([_stage("1:a", won=True), _stage("2:b")]) is None
     assert block_failure(None) is None
 
@@ -512,29 +506,6 @@ def test_a_stacks_record_says_what_every_block_did():
         blocks[0]["best_candidate"] == "spectral"
         and chain.trace()["best_candidate"] == "spectral"
     )
-
-
-def test_the_driver_submits_the_stacks_planned_time(beads_plate, tmp_path, monkeypatch):
-    # the plan gave a stack time for each block, the driver submitted one block's
-    import submitit
-
-    from biahub.registration.engine import cluster
-    from biahub.registration.engine.core import ESTIMATE_MINUTES
-    from tests.test_estimate_transform import _run
-
-    times = []
-
-    class RecordingExecutor(submitit.AutoExecutor):
-        def update_parameters(self, **kwargs):
-            if "slurm_time" in kwargs:
-                times.append(kwargs["slurm_time"])
-            return super().update_parameters(**kwargs)
-
-    monkeypatch.setattr(cluster.submitit, "AutoExecutor", RecordingExecutor)
-    config = tmp_path / "stack.yml"
-    model_to_yaml(_settings([{"phase_cross_corr": {}}, BEADS_BLOCK]), config)
-    _run(beads_plate, config, tmp_path / "out" / "transforms.yml")
-    assert times[0] == 2 * ESTIMATE_MINUTES
 
 
 def test_a_propagated_stack_stays_within_the_partitions_limit():

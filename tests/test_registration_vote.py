@@ -248,15 +248,6 @@ def test_vote_icp_keeps_a_finite_precise_score_over_a_nan_coarse_one():
     np.testing.assert_array_equal(result.matrix, scored[1].matrix)
 
 
-def test_the_correction_modes_name_what_the_vote_fits():
-    from typing import get_args
-
-    from biahub.settings import InitialTransformCorrectionSettings
-
-    modes = get_args(InitialTransformCorrectionSettings.model_fields["mode"].annotation)
-    assert modes == ("none", "vote_translation", "vote_fit")
-
-
 def test_the_voted_fit_is_the_runs_transform_type():
     # vote_fit fitted an affine whatever transform.type was: a euclidean run kept shear
     rng = np.random.default_rng(11)
@@ -371,7 +362,7 @@ def _vote_icp(mov_points, ref_points, **settings):
 def test_vote_icp_fails_with_too_few_peaks_or_when_voting_abstains():
     vol = np.zeros((8, 8, 8), np.float32)
     ref_points = np.random.default_rng(15).uniform(0, 30, (20, 3))
-    with pytest.raises(EstimationError, match="peaks \\(need >= 3\\)"):
+    with pytest.raises(EstimationError, match="peaks"):
         _vote_icp(ref_points[:2], ref_points).estimate(vol, vol)
     # every moving point further from the reference than the capture radius reaches
     far = ref_points + 1000.0

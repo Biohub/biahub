@@ -36,14 +36,13 @@ images) or `manual` (a person or the setup decides).
    scores its own choices (passes, candidates) gets a `tuning_metric` in its settings
    block (unset: the run's score). Raise `EstimationError` for a failed estimate (the run
    records it and moves on); anything else is a bug.
-   *(test: `test_every_method_but_shapes_starts_from_its_initial_transform`)*
+   *(test: `test_every_method_builds_from_its_default_settings`)*
 2. **Settings** (`biahub/settings.py`): a `<Method>Settings` block and its field on
    `EstimateTransformSettings`, the name in `EstimationMethod`,
    `METHOD_FAMILIES` (family, what it estimates) and `DEFAULT_SCORE_METRIC`; in
    `METHOD_TRANSFORM_TYPES` when it cannot fit every transform type; a default in
    `fill_method_block` unless the method has none to give (as `shapes`).
-   *(tests: `test_every_method_has_a_family_and_says_what_it_estimates`,
-   `test_every_method_has_a_default_score`)*
+   *(test: `test_every_method_has_a_family_and_says_what_it_estimates`)*
 3. **Engine** (`engine/core.py`): its branch in `build_estimator`.
    *(test: `test_every_method_builds_from_its_default_settings`)*
 4. **Resources.** Measure one job's peak memory (SLURM MaxRSS, or `/usr/bin/time -v` on a

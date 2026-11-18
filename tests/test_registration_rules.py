@@ -34,6 +34,8 @@ def test_every_method_has_a_family_and_says_what_it_estimates():
         "intensity-based",
         "manual",
     }
+    # and a default score
+    assert set(DEFAULT_SCORE_METRIC) == set(METHODS)
 
 
 def test_every_method_is_named_like_its_settings_section():
@@ -54,10 +56,6 @@ def test_every_method_lives_in_its_familys_folder_under_its_own_name():
     root = Path(methods.__file__).parent
     for method, (family, _) in METHOD_FAMILIES.items():
         assert (root / folders[family] / f"{method}.py").is_file(), method
-
-
-def test_every_method_has_a_default_score():
-    assert set(DEFAULT_SCORE_METRIC) == set(METHODS)
 
 
 # what a method needs besides its defaults: shapes its block, manual the timepoint to click
@@ -81,6 +79,9 @@ def test_every_method_builds_from_its_default_settings():
         )
         estimator, _ = build_estimator(settings, (8, 32, 32), (1.0, 1.0, 1.0), (1.0, 1.0, 1.0))
         assert isinstance(estimator, EstimatorBase), method
+        # repair, propagation and a stack's later blocks hand each method a start; a
+        # method that ignored it would make them return the same answer
+        assert estimator.uses_initial_transform == (method != "shapes"), method
 
 
 def test_the_skill_names_every_method():
@@ -150,23 +151,6 @@ def test_the_two_volumes_are_moving_and_reference():
         lines, first_line = inspect.getsourcelines(model)
         found += _role_words(textwrap.dedent("".join(lines)), model.__name__, first_line)
     assert not found, "say moving / reference for the two volumes:\n" + "\n".join(found)
-
-
-def test_every_method_but_shapes_starts_from_its_initial_transform():
-    # repair, propagation and a stack's later blocks hand each method a start; a method
-    # that ignored it would make them return the same answer
-    from biahub.registration.engine import build_estimator
-
-    for method in METHODS:
-        settings = EstimateTransformSettings(
-            moving={"channel": "GFP"},
-            reference={"frame": "cross", "channel": "Phase3D"},
-            method=method,
-            transform={"type": METHOD_TRANSFORM_TYPES.get(method, ("affine",))[0]},
-            **NEEDED.get(method, {}),
-        )
-        estimator, _ = build_estimator(settings, (8, 32, 32), (1.0, 1.0, 1.0), (1.0, 1.0, 1.0))
-        assert estimator.uses_initial_transform == (method != "shapes"), method
 
 
 def test_the_score_metric_names_agree_everywhere():

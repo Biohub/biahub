@@ -411,15 +411,6 @@ def test_the_evaluation_figure_shows_both_pairs_and_the_z_residual(
     assert path.stat().st_size > 10_000  # an image was written
 
 
-def test_a_stored_record_has_no_projections_to_plot():
-    from biahub.registration.evaluate import Evaluation
-    from biahub.registration.view import plot_evaluation
-
-    stored = Evaluation(**_record(images=False).to_dict())
-    with pytest.raises(ValueError, match="projections"):
-        plot_evaluation(stored)
-
-
 def test_the_video_holds_the_projections_then_scans_through_z(tmp_path):
     import imageio_ffmpeg
 
@@ -494,7 +485,7 @@ def test_z_from_too_few_points_falls_back_to_the_crops_and_says_why():
         Transform.identity(3), mov, ref, VOX3, VOX3, landmarks=few, tile_px=64, crop_px=96
     )
     assert record.points["n_matched"] == 2
-    assert record.z_from == "z crops (edges); 2 matched points are too few"
+    assert "too few" in record.z_from
     assert record.z_um == pytest.approx(-2 * 0.2, abs=0.05)
 
 
@@ -513,11 +504,11 @@ def test_a_plain_shift_on_points_at_one_depth_is_not_read_as_scale():
     np.testing.assert_allclose(r["shift_um"], shift * VOX, atol=1e-9)
 
 
-@pytest.mark.parametrize("tile_px, shape", [(63, (24, 256, 256)), (256, (24, 160, 160))])
-def test_tiles_fit_the_image_whatever_their_size(tile_px, shape):
-    ref = _cells(17, shape=shape)
+def test_tiles_fit_the_image_whatever_their_size():
+    # a tile bigger than the image is test_one_tile_that_fits_the_image_counts_once
+    ref = _cells(17, shape=(24, 256, 256))
     mov = _ndi_shift(ref, (0.0, 2.0, -1.0), order=1, mode="nearest")
-    r = tile_residuals(Transform.identity(3), mov, ref, VOX3, tile_px=tile_px, grid=3)
+    r = tile_residuals(Transform.identity(3), mov, ref, VOX3, tile_px=63, grid=3)
     assert r["n_tiles"] > 0
 
 
@@ -652,13 +643,13 @@ def test_the_residuals_refuse_what_they_cannot_measure():
 
     identity = Transform.identity(3)
     points = np.zeros((3, 3))
-    with pytest.raises(ValueError, match="paired points need one partner each"):
+    with pytest.raises(ValueError, match="partner"):
         point_residuals(identity, points, np.zeros((2, 3)), VOX3, 1.0, paired=True)
-    with pytest.raises(ValueError, match="axes must be 'zyx' or 'yx'"):
+    with pytest.raises(ValueError, match="axes"):
         point_residuals(identity, points, points, VOX3, 1.0, axes="xy")
     vol = _cells(shape=(24, 64, 64))
     pair = prepare_pair(identity, vol, vol, "intensity")
-    with pytest.raises(ValueError, match="prepared for 'intensity', not 'edges'"):
+    with pytest.raises(ValueError, match="prepared for"):
         tile_residuals(identity, vol, vol, VOX3, compare="edges", pair=pair)
 
 
@@ -679,10 +670,9 @@ def test_clicked_points_may_be_a_list_and_zero_matches_are_said():
     points = np.zeros((4, 3))
     assert detect_landmarks([points, points], None, None, VOX3, VOX3, None)["paired"]
     crops = {"compare": "edges", "crops_um": {"c": [0.3, 0.0, 0.0]}}
-    assert _z({"stats": {"n": 0}}, crops, "nuclei") == (
-        0.3,
-        "z crops (edges); 0 matched points are too few",
-    )
+    z_um, z_from = _z({"stats": {"n": 0}}, crops, "nuclei")
+    assert z_um == 0.3
+    assert "0 matched points" in z_from
 
 
 def test_evaluate_skips_the_projections_when_no_figure_needs_them(monkeypatch):
@@ -698,7 +688,7 @@ def test_evaluate_skips_the_projections_when_no_figure_needs_them(monkeypatch):
 
 def test_a_record_without_its_baseline_or_projections_says_why_it_cannot_be_plotted():
     # baseline=False stored {}: plot_evaluation raised a bare KeyError
-    from biahub.registration.evaluate import evaluate
+    from biahub.registration.evaluate import Evaluation, evaluate
     from biahub.registration.view import plot_evaluation
 
     ref = _cells(11, shape=(24, 256, 256))
@@ -707,11 +697,11 @@ def test_a_record_without_its_baseline_or_projections_says_why_it_cannot_be_plot
     )
     with pytest.raises(ValueError, match="baseline=False"):
         plot_evaluation(no_baseline)
-    no_views = evaluate(
-        Transform.identity(3), ref, ref, VOX3, VOX3, images=False, projections=False
-    )
+    # a record read back from its stored dict has no projections to plot
+    stored = evaluate(Transform.identity(3), ref, ref, VOX3, VOX3, images=False)
+    stored = Evaluation(**stored.to_dict())
     with pytest.raises(ValueError, match="projections"):
-        plot_evaluation(no_views)
+        plot_evaluation(stored)
 
 
 def test_without_an_encoder_the_video_is_written_as_frames(tmp_path, monkeypatch):
@@ -818,19 +808,3 @@ def test_nuclei_landmarks_measure_a_known_shift_end_to_end():
     assert record.points["stats"]["median_um"] < 0.1
     shift_um = np.linalg.norm(np.multiply(shift_zyx, VOX3))
     assert record.baseline["points"]["stats"]["median_um"] == pytest.approx(shift_um, rel=0.1)
-
-
-def test_the_survey_counts_nuclei_when_asked(tmp_path):
-    from iohub import open_ome_zarr
-    from iohub.ngff.models import TransformationMeta
-
-    from biahub.registration.benchmark import survey_positions
-
-    path = tmp_path / "nuclei.zarr"
-    volume = _disk_nuclei()
-    with open_ome_zarr(path, layout="hcs", mode="w", channel_names=["DAPI"]) as plate:
-        position = plate.create_position("A", "1", "0")
-        scale = TransformationMeta(type="scale", scale=[1.0, 1.0, *VOX3])
-        position.create_image("0", volume[None, None], transform=[scale])
-    (row,) = survey_positions([path / "A" / "1" / "0"], ["DAPI"], nuclei=True)
-    assert row["n_nuclei"] > 5

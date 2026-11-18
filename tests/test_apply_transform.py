@@ -972,7 +972,8 @@ def test_an_empty_input_position_is_named_and_recorded(tmp_path, capsys):
 
     apply_transform(positions, config, output, keep_overhang=True, cluster="debug")
 
-    assert "A/1/1: the moving input is empty" in capsys.readouterr().out
+    lines = capsys.readouterr().out.splitlines()
+    assert any("A/1/1" in line and "empty" in line for line in lines)
     for fov, empty in (("0", False), ("1", True)):
         with open_ome_zarr(output / "A" / "1" / fov, mode="r") as out:
             assert out.zattrs["biahub-apply-transform"]["input_empty"] is empty
@@ -1022,11 +1023,7 @@ def test_an_applied_output_matches_the_warp_and_copies_the_reference(
     assert check["copied"] == {"Phase3D": True}
     assert 0.8 < check["coverage"] <= 1.0 and check["input_empty"] is False
 
-
-def test_a_wrong_output_is_caught(structured_plate, tmp_path):
-    from biahub.apply_transform import verify_apply_transform
-
-    out, moving, config, reference = _registered(structured_plate, tmp_path)
+    # a wrong output is caught
     with open_ome_zarr(out, mode="r+") as position:
         gfp = position.channel_names.index("GFP")
         position.data[0, gfp] = np.roll(np.asarray(position.data[0, gfp]), 5, axis=-1)
@@ -1133,8 +1130,8 @@ def test_timepoints_outside_the_files_range_are_named_with_the_entry_they_reuse(
     apply_transform(
         [position], config, tmp_path / "out.zarr", keep_overhang=True, cluster="debug"
     )
-    out = capsys.readouterr().out
-    assert "outside the transforms file's timepoints (0-1): t=[2] use the entry of t=1" in out
+    lines = capsys.readouterr().out.splitlines()
+    assert any("t=[2]" in line and "entry of t=1" in line for line in lines)
 
 
 def test_a_registration_file_needs_its_reference_positions(structured_plate, tmp_path):

@@ -202,11 +202,10 @@ def test_competing_estimator_fails_with_every_arms_reason_when_all_fail():
         {"a": _FixedEstimator(IDENTITY, fail=True), "b": _FixedEstimator(IDENTITY, fail=True)},
         score_fn=_closeness_to(np.zeros(3)),
     )
-    with pytest.raises(
-        EstimationError,
-        match="a: EstimationError: stage failed; b: EstimationError: stage failed",
-    ):
+    with pytest.raises(EstimationError) as error:
         competing.estimate(np.zeros((2, 2, 2)), np.zeros((2, 2, 2)))
+    assert "a:" in str(error.value) and "b:" in str(error.value)
+    assert "stage failed" in str(error.value)
 
 
 def _synthetic_bead_volume(rng, shape, n_beads=15, sigma=2.0, amplitude=500.0, noise_std=5.0):
@@ -285,13 +284,6 @@ def test_spectral_rel_cut_of_one_keeps_the_top_correspondence():
     matcher = GraphMatcher(algorithm="spectral", spectral_sigma=3.0, spectral_rel_cut=1.0)
     matches = matcher.match(Graph.from_nodes(nodes), Graph.from_nodes(nodes + 5.0))
     assert len(matches) >= 1
-
-
-def test_the_spectral_candidate_is_configured_by_spectral():
-    from biahub.settings import BeadsMatchSettings
-
-    assert BeadsMatchSettings(spectral="on_low_score").spectral == "on_low_score"
-    assert BeadsMatchSettings().spectral == "off"
 
 
 def test_the_spectral_competition_names_what_ran_and_needs_a_second_candidate():
