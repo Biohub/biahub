@@ -309,14 +309,21 @@ def test_pcc_estimator_recovers_known_translation_and_warps_mov_onto_ref(functio
 def _synthetic_blob_volume(rng, shape, n_blobs=15, sigma=3.0, noise_std=5.0):
     """Sharp Gaussian blobs (fake beads), not random noise -- ANTs' intensity-based
     optimizer needs real structure to converge on; blurred noise wasn't enough."""
-    zz, yy, xx = np.meshgrid(*[np.arange(s) for s in shape], indexing="ij")
     margin = int(sigma * 3)
     centers = rng.uniform([margin] * 3, np.asarray(shape) - margin, size=(n_blobs, 3))
     volume = np.zeros(shape, dtype=np.float32)
-    for cz, cy, cx in centers:
-        volume += 500 * np.exp(
-            -(((zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2) / (2 * sigma**2))
+    # each blob only within ~5 sigma of its centre (beyond it a blob adds < 0.01, far
+    # under the noise): evaluating every blob over the whole volume took ~40 s at 400
+    # blobs on 24 x 384 x 384
+    reach = int(np.ceil(5 * sigma))
+    for center in centers:
+        box = tuple(
+            slice(max(int(c) - reach, 0), min(int(c) + reach + 1, n))
+            for c, n in zip(center, shape, strict=True)
         )
+        grids = np.meshgrid(*[np.arange(s.start, s.stop) for s in box], indexing="ij")
+        distance2 = sum((g - c) ** 2 for g, c in zip(grids, center, strict=True))
+        volume[box] += 500 * np.exp(-distance2 / (2 * sigma**2))
     volume += rng.normal(0, noise_std, size=shape).astype(np.float32)
     return volume
 
