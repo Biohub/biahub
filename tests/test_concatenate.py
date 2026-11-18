@@ -321,6 +321,7 @@ def test_concatenate_with_time_range_step(create_custom_plate, tmp_path, sbatch_
     plate_1_path, plate_1 = create_custom_plate(
         tmp_path / "zarr1", position_list=_ONE_POS, channel_names=["DAPI"], time_points=5
     )
+    plate_1["A/1/0"].set_scale("0", "T", 1800.0)
 
     settings = ConcatenateSettings(
         concat_data_paths=[str(plate_1_path) + "/*/*/*"],
@@ -338,8 +339,48 @@ def test_concatenate_with_time_range_step(create_custom_plate, tmp_path, sbatch_
         monitor=False,
     )
 
-    output = open_ome_zarr(output_path)["A/1/0"].data[:]
-    np.testing.assert_array_equal(output, plate_1["A/1/0"].data[[0, 2, 4]])
+    output = open_ome_zarr(output_path)["A/1/0"]
+    np.testing.assert_array_equal(output.data[:], plate_1["A/1/0"].data[[0, 2, 4]])
+    # Every other time point of a 30 min series is a 60 min series.
+    assert output.scale[0] == 3600.0
+
+
+@pytest.mark.parametrize("second_time_scale", [1800.0, 60.0])
+def test_concatenate_keeps_the_sources_time_scale(
+    create_custom_plate, tmp_path, sbatch_file, capsys, second_time_scale
+):
+    """
+    The output has the sources' time between time points, not a placeholder 1; sources
+    that disagree get a warning and the first one's
+    """
+    plate_1_path, plate_1 = create_custom_plate(
+        tmp_path / "zarr1", position_list=_ONE_POS, channel_names=["DAPI"]
+    )
+    plate_2_path, plate_2 = create_custom_plate(
+        tmp_path / "zarr2", position_list=_ONE_POS, channel_names=["GFP"]
+    )
+    plate_1["A/1/0"].set_scale("0", "T", 1800.0)
+    plate_2["A/1/0"].set_scale("0", "T", second_time_scale)
+
+    settings = ConcatenateSettings(
+        concat_data_paths=[str(plate_1_path) + "/*/*/*", str(plate_2_path) + "/*/*/*"],
+        time_indices="all",
+    )
+    output_path = tmp_path / "output.zarr"
+    config_path = tmp_path / "concat.yml"
+    model_to_yaml(settings, config_path)
+    concatenate(
+        input_position_dirpaths=None,
+        config_filepath=config_path,
+        output_dirpath=output_path,
+        sbatch_filepath=sbatch_file,
+        cluster="debug",
+        monitor=False,
+    )
+
+    assert open_ome_zarr(output_path)["A/1/0"].scale[0] == 1800.0
+    warned = "different T scales" in capsys.readouterr().out
+    assert warned == (second_time_scale != 1800.0)
 
 
 def test_concatenate_refuses_time_range_past_end(create_custom_plate, tmp_path, sbatch_file):

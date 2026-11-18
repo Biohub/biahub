@@ -53,7 +53,11 @@ from biahub.utils.cluster import (
     estimate_resources,
     get_submitit_cluster,
 )
-from biahub.utils.ngff import PROVENANCE_METADATA_KEYS, resolve_ome_zarr_version
+from biahub.utils.ngff import (
+    PROVENANCE_METADATA_KEYS,
+    output_time_scale,
+    resolve_ome_zarr_version,
+)
 
 Slices = tuple[slice, slice, slice]
 
@@ -280,6 +284,7 @@ def apply_transform(
         T, _C, *moving_shape = moving.data.shape
         moving_channel_names = list(moving.channel_names)
         moving_voxel_size = tuple(moving.scale[-3:])
+        moving_time_scale = float(moving.scale[0])
     unknown = sorted(set(channels or []) - set(moving_channel_names))
     if unknown:
         raise click.UsageError(
@@ -287,6 +292,8 @@ def apply_transform(
         )
     to_transform = [c for c in moving_channel_names if channels is None or c in channels]
     time_indices = resolve_time_indices(time_indices, T)
+    # The output's time points are these moving time points, whichever grid it is on.
+    output_scale_t = output_time_scale(moving_time_scale, time_indices)
     # Each moving position's matrices by timepoint: its own list, or the shared one.
     position_keys = [position_key(p) for p in moving_position_dirpaths]
     if settings.per_position:
@@ -405,7 +412,7 @@ def apply_transform(
             position_keys=[moving_path.parts[-3:]],
             shape=(len(time_indices), len(output_channel_names)) + cropped_shape,
             chunks=None,
-            scale=(1, 1) + tuple(output_voxel_size),
+            scale=(output_scale_t, 1) + tuple(output_voxel_size),
             channel_names=output_channel_names,
             dtype=np.float32,
             version=version,
