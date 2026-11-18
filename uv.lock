@@ -381,6 +381,10 @@ build = [
     { name = "build" },
     { name = "twine" },
 ]
+cpdino = [
+    { name = "cellpose" },
+    { name = "dinov3" },
+]
 doc = [
     { name = "mkdocs-click" },
     { name = "zensical" },
@@ -423,11 +427,13 @@ requires-dist = [
     { name = "antspyx", specifier = ">=0.6" },
     { name = "build", marker = "extra == 'build'" },
     { name = "cellpose", marker = "extra == 'all'", specifier = ">=4.0.1" },
+    { name = "cellpose", marker = "extra == 'cpdino'", specifier = ">=4.0.1" },
     { name = "cellpose", marker = "extra == 'segment'", specifier = ">=4.0.1" },
     { name = "click" },
     { name = "cytoland", marker = "extra == 'all'" },
     { name = "cytoland", marker = "extra == 'stain'" },
     { name = "dask", extras = ["array"] },
+    { name = "dinov3", marker = "extra == 'cpdino'", git = "https://github.com/facebookresearch/dinov3?rev=6876159a11b4df116f30f667f8c9888617df0751" },
     { name = "geff", marker = "extra == 'all'", specifier = ">=1.3" },
     { name = "geff", marker = "extra == 'track'", specifier = ">=1.3" },
     { name = "geff-spec", marker = "extra == 'all'", specifier = ">=1.3" },
@@ -475,7 +481,7 @@ requires-dist = [
     { name = "waveorder", git = "https://github.com/mehta-lab/waveorder?rev=0e25b9bbe760e5278fde867ef24bdf28979f0bca" },
     { name = "zensical", marker = "extra == 'doc'", specifier = ">=0.0.32" },
 ]
-provides-extras = ["all", "build", "doc", "gui", "qc", "segment", "stain", "track"]
+provides-extras = ["all", "build", "cpdino", "doc", "gui", "qc", "segment", "stain", "track"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1293,6 +1299,22 @@ wheels = [
 ]
 
 [[package]]
+name = "dinov3"
+version = "0.0.1"
+source = { git = "https://github.com/facebookresearch/dinov3?rev=6876159a11b4df116f30f667f8c9888617df0751#6876159a11b4df116f30f667f8c9888617df0751" }
+dependencies = [
+    { name = "ftfy" },
+    { name = "omegaconf" },
+    { name = "regex" },
+    { name = "scikit-learn" },
+    { name = "submitit" },
+    { name = "termcolor" },
+    { name = "torch" },
+    { name = "torchmetrics" },
+    { name = "torchvision" },
+]
+
+[[package]]
 name = "distlib"
 version = "0.4.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1737,6 +1759,18 @@ http = [
 ]
 s3 = [
     { name = "s3fs" },
+]
+
+[[package]]
+name = "ftfy"
+version = "6.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a5/d3/8650919bc3c7c6e90ee3fa7fd618bf373cbbe55dff043bd67353dbb20cd8/ftfy-6.3.1.tar.gz", hash = "sha256:9b3c3d90f84fb267fe64d375a07b7f8912d817cf86009ae134aa03e1819506ec", size = 308927, upload-time = "2024-10-26T00:50:35.149Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/6e/81d47999aebc1b155f81eca4477a616a70f238a2549848c38983f3c22a82/ftfy-6.3.1-py3-none-any.whl", hash = "sha256:7c70eb532015cd2f9adb53f101fb6c7945988d023a085d127d1573dc49dd0083", size = 44821, upload-time = "2024-10-26T00:50:33.425Z" },
 ]
 
 [[package]]
@@ -7089,6 +7123,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/66/5b/3d17038c7378fbe87f68836e3b7bad368dd1dee071990ed641fe7cf19e9a/tensorstore-0.1.86-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:f5a5ebf797b04ee9dec74c8a98d78eaa646ae76b5eb10809c5bbc836c61144c5", size = 15675157, upload-time = "2026-10-26T20:05:51.661Z" },
     { url = "https://files.pythonhosted.org/packages/1c/06/ec7948f42b68c94c7d1857c88c92c877a46a94ded09c32664e61050bf6da/tensorstore-0.1.86-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a84d49131947a662a8aed42e66d5fd6caef021a8a736a798ab2f0e4ce23c4840", size = 20212864, upload-time = "2026-10-26T20:05:53.751Z" },
     { url = "https://files.pythonhosted.org/packages/03/12/5d04e3e3009b8478b2c55762e6e269148ae80a95573108386eba18f46aea/tensorstore-0.1.86-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:38fd8190f7c353687ed4aad655d0592f3383b761c0ba17f5002279c126deda20", size = 21816193, upload-time = "2026-10-26T20:05:55.869Z" },
+]
+
+[[package]]
+name = "termcolor"
+version = "3.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/79/cf31d7a93a8fdc6aa0fbb665be84426a8c5a557d9240b6239e9e11e35fc5/termcolor-3.3.0.tar.gz", hash = "sha256:348871ca648ec6a9a983a13ab626c0acce02f515b9e1983332b17af7979521c5", size = 14434, upload-time = "2025-12-29T12:55:21.882Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/d1/8bb87d21e9aeb323cc03034f5eaf2c8f69841e40e4853c2627edf8111ed3/termcolor-3.3.0-py3-none-any.whl", hash = "sha256:cf642efadaf0a8ebbbf4bc7a31cec2f9b5f21a9f726f4ccbb08192c9c26f43a5", size = 7734, upload-time = "2025-12-29T12:55:20.718Z" },
 ]
 
 [[package]]
