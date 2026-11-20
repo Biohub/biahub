@@ -65,12 +65,14 @@ cpdino = [
 
 # micro-sam 2 (Segment Anything for Microscopy 2, on SAM2) as a `biahub segment` backend
 # (`backend: microsam`). Opt-in, not in `all`: micro_sam hard-requires napari and PyQt6
-# and caps pydantic<2.14. micro_sam 2.0.1 pins `sam2==1.1.0` from PyPI, which is not
-# Meta's SAM2 but a third-party upload of a fork (JinsuaFeito-dev/segment-anything-2);
-# Meta's repo builds the distribution `SAM-2` (import name `sam2`) and is not on PyPI.
-# So the extra installs Meta's SAM2 from git at a fixed commit, and the [tool.uv]
-# override below drops the PyPI `sam2`. Plain pip honours no override and would install
-# both (whichever lands last provides `sam2`): use uv.
+# and caps pydantic<2.14. Meta does not publish SAM2 on PyPI (its repo builds the
+# distribution `SAM-2`, import name `sam2`). micro_sam 2.0.1 pins `sam2==1.1.0`, a
+# third-party PyPI upload whose `sam2` code is identical to facebookresearch/sam2 at
+# 2b90b9f (only the setup.py name/author/URL differ; checked, and noted in micro_sam's
+# setup.cfg). We install SAM2 from Meta's repo at that same commit instead, so the
+# source is the original one and does not depend on who controls the PyPI name; the
+# [tool.uv] override below drops the PyPI `sam2`. Plain pip ignores the override and
+# installs both, which is the same code.
 microsam = [
   "biahub[segment]",
   "micro_sam==2.0.1",
@@ -144,8 +146,8 @@ biahub = "biahub.cli.main:cli"
 # when resolving build-system requirements such as iohub's hatchling /
 # uv-dynamic-versioning chain, which pulls in packaging>=24.2.
 index-strategy = "unsafe-best-match"
-# micro_sam 2.0.1 depends on the PyPI `sam2`, a third-party fork (see the `microsam`
-# extra); a never-true marker drops it, so only Meta's SAM-2 provides `sam2`.
+# micro_sam 2.0.1 depends on the PyPI `sam2`, a third-party upload of Meta's SAM2 (see
+# the `microsam` extra); a never-true marker drops it, so Meta's SAM-2 provides `sam2`.
 override-dependencies = ["sam2; sys_platform == 'never'"]
 
 [tool.uv.sources]

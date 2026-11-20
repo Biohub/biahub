@@ -71,10 +71,10 @@ uv sync --extra all
 uv run --extra stain biahub virtual-stain --help
 ```
 
-Install `microsam` with uv (`uv sync --extra microsam`), not pip. `micro_sam` 2.0.1 depends on the PyPI
-`sam2` package, which is a third-party upload of a SAM2 fork rather than Meta's release. uv replaces it with
-Meta's SAM2 pinned in `pyproject.toml`; pip would install both. The extra also pulls in `napari`/`PyQt6`
-and caps `pydantic<2.14`.
+The `microsam` extra installs SAM2 from Meta's repository at a fixed commit. `micro_sam` 2.0.1 depends on
+the PyPI `sam2` package instead, a third-party upload of the same code, because Meta does not publish SAM2 on
+PyPI. With uv (`uv sync --extra microsam`) an override drops that package. pip ignores the override and
+installs both, which is the same code. The extra also pulls in `napari`/`PyQt6` and caps `pydantic<2.14`.
 
 ### Development install
 
