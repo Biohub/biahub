@@ -1,4 +1,5 @@
-# Segmentation settings for cellpose 4 (`biahub segment`).
+# Segmentation settings for `biahub segment`: cellpose 4 (the default backend) or
+# micro-sam 2 (`backend: microsam`, see the last model; needs `uv sync --extra microsam`).
 # Model names become the label image names in each -i position (e.g. membrane ->
 # labels/membrane), which `biahub track` reads. Strategies accumulate as differently
 # named models; a name is only rewritten by the model that made it.
@@ -33,3 +34,10 @@ models:
       cellprob_threshold: 0.0
       do_3D: false
       min_size: 8000
+  nucleus_microsam:
+    backend: microsam           # micro-sam 2 (SAM2); 2D (Z=1) plates, one channel
+    pretrained_model: hvit_b_cells  # hvit_{t,s,b,l}_cells, a SAM2 backbone (engine amg only), or a checkpoint path
+    channels: ['nuc']
+    engine: apg                 # ais (default), apg or amg
+    downsample: 4               # every 4th pixel in Y and X; labels are scaled back to the input grid
+    eval_args: {}               # micro-sam post-processing overrides, e.g. {min_size: 100}

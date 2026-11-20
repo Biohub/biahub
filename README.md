@@ -59,6 +59,7 @@ Heavier or task-specific dependencies live in extras. Add them with `--extra`:
 | Extra | Installs | Needed for |
 | --- | --- | --- |
 | `segment` | `cellpose` | `biahub segment` |
+| `microsam` | `micro_sam` 2, Meta's SAM2 (opt-in, not in `all`) | `biahub segment` with `backend: microsam` |
 | `track` | `ultrack` | `biahub track` |
 | `stain` | `cytoland` (VisCy) | `biahub virtual-stain` |
 | `gui` | `napari`, `PyQt6` | interactive/visual commands |
@@ -69,6 +70,11 @@ uv sync --extra all
 # or, per command:
 uv run --extra stain biahub virtual-stain --help
 ```
+
+Install `microsam` with uv (`uv sync --extra microsam`), not pip. `micro_sam` 2.0.1 depends on the PyPI
+`sam2` package, which is a third-party upload of a SAM2 fork rather than Meta's release. uv replaces it with
+Meta's SAM2 pinned in `pyproject.toml`; pip would install both. The extra also pulls in `napari`/`PyQt6`
+and caps `pydantic<2.14`.
 
 ### Development install
 

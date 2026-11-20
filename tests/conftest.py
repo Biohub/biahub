@@ -282,3 +282,91 @@ def fake_cellpose(monkeypatch, tmp_path):
 
     segment._MODEL_CACHE.clear()  # models are cached per process
     return RecordingModel
+
+
+# --- micro-sam 2 stand-in for segment tests (the test extra does not install micro_sam)
+
+
+class RecordingMicroSam:
+    """Stand-in for micro_sam.v2: records the models built and the images segmented."""
+
+    MODEL_NAMES = ["hvit_t_cells", "hvit_s_cells", "hvit_b_cells", "hvit_l_cells"]
+    BACKBONES = ["hvit_t", "hvit_s", "hvit_b", "hvit_l"]
+    built = []  # (model_type, checkpoint, segmentation_mode)
+    segmented = []  # (image, generate_kwargs)
+    fetched = []  # registry names downloaded
+
+    @classmethod
+    def get_predictor_and_segmenter(
+        cls,
+        model_type="hvit_t_cells",
+        checkpoint=None,
+        device=None,
+        segmentation_mode=None,
+        **_,
+    ):
+        cls.built.append((model_type, checkpoint, segmentation_mode))
+        return object(), object()
+
+    @classmethod
+    def automatic_instance_segmentation(
+        cls, predictor, segmenter, input_path, ndim=None, verbose=True, **generate_kwargs
+    ):
+        assert ndim == 2
+        cls.segmented.append((np.array(input_path), generate_kwargs))
+        return np.ones(input_path.shape, dtype=np.uint32)
+
+    class _Registry:
+        registry = {
+            **{
+                n: "xxh128:0"
+                for n in ["hvit_t_cells", "hvit_s_cells", "hvit_b_cells", "hvit_l_cells"]
+            },
+            **{f"{n}_decoder": "xxh128:0" for n in ["hvit_t_cells", "hvit_b_cells"]},
+        }
+
+        def fetch(self, name, progressbar=True):
+            RecordingMicroSam.fetched.append(name)
+            return f"/cache/{name}"
+
+
+@pytest.fixture()
+def fake_microsam(monkeypatch):
+    automatic = types.ModuleType("micro_sam.v2.automatic_segmentation")
+    automatic.get_predictor_and_segmenter = RecordingMicroSam.get_predictor_and_segmenter
+    automatic.automatic_instance_segmentation = (
+        RecordingMicroSam.automatic_instance_segmentation
+    )
+    util = types.ModuleType("micro_sam.v2.util")
+    util.get_model_names = lambda: list(RecordingMicroSam.MODEL_NAMES)
+    util.SUPPORTED_MODELS = list(RecordingMicroSam.BACKBONES)
+    util.models = RecordingMicroSam._Registry
+    v2 = types.ModuleType("micro_sam.v2")
+    v2.automatic_segmentation, v2.util = automatic, util
+    package = types.ModuleType("micro_sam")
+    package.v2 = v2
+    for name, module in {
+        "micro_sam": package,
+        "micro_sam.v2": v2,
+        "micro_sam.v2.automatic_segmentation": automatic,
+        "micro_sam.v2.util": util,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    RecordingMicroSam.built, RecordingMicroSam.segmented, RecordingMicroSam.fetched = (
+        [],
+        [],
+        [],
+    )
+    from biahub import segment
+
+    segment._MODEL_CACHE.clear()
+    return RecordingMicroSam
+
+
+@pytest.fixture()
+def no_microsam(monkeypatch):
+    """micro_sam is not installed: importing it fails as it would without the extra."""
+    monkeypatch.setitem(sys.modules, "micro_sam", None)
+    from biahub import segment
+
+    segment._MODEL_CACHE.clear()

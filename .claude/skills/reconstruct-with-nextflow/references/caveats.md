@@ -157,6 +157,12 @@ biahub's `cpdino` extra installs (not on PyPI; DINOv3 License, not open source).
 Install it with `uv sync --extra cpdino` (or
 `pip install git+https://github.com/facebookresearch/dinov3`); without it,
 `biahub segment --init` stops with those commands.
+A model with `backend: microsam` uses micro-sam 2 instead of cellpose (`pretrained_model`
+`hvit_{t,s,b,l}_cells` or a checkpoint path, `engine: ais|apg|amg`, `downsample`; 2D, one
+channel). It needs `uv sync --extra microsam`, and `--init` stops if `micro_sam` is missing.
+On A549 VS nuclei, `hvit_b_cells` + `apg` + `downsample: 4` matched native cpsam_v2 on
+04_28 and found more mitotic nuclei on mantis-v1 data; at `downsample: 1` it outlines
+whole cell clusters.
 
 **`track.yml` — schema.** `TrackingSettings` forbids extra keys. Current
 fields: `output_mode`, `fov`, `blank_frames_path`, `segmentation_method`
