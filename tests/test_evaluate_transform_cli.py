@@ -1,0 +1,509 @@
+"""evaluate-transform: a transforms file (and each block of its run) on positions, in µm."""
+
+import csv
+
+import click
+import numpy as np
+import pytest
+
+from click.testing import CliRunner
+
+from biahub.cli.main import cli
+from biahub.core.transform import Transform
+from biahub.settings import TransformEntry, TransformSettings
+from biahub.utils.config import model_to_yaml
+from tests.test_benchmark_core import SHIFT, _plate
+
+
+def _rows(path):
+    with open(path) as f:
+        return list(csv.DictReader(f))
+
+
+def test_evaluate_transform_writes_one_row_per_candidate_and_position(tmp_path):
+    positions = _plate(tmp_path)
+    transforms = tmp_path / "transforms.yml"
+    exact = Transform.from_translation([-s for s in SHIFT])
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_channel="VS",
+            transforms=[TransformEntry(matrix=np.asarray(exact.matrix).tolist())],
+        ),
+        transforms,
+    )
+    output = tmp_path / "evaluation.csv"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "evaluate-transform",
+            "--cluster",
+            "debug",
+            "-m",
+            *map(str, positions),
+            "-r",
+            *map(str, positions),
+            "-c",
+            str(transforms),
+            "-o",
+            str(output),
+            "--tile-px",
+            "64",
+            "--figures",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    rows = _rows(output)
+    assert {(r["candidate"], r["position"]) for r in rows} == {
+        (c, p) for c in ("unregistered", "transforms") for p in ("A/1/0", "A/1/1")
+    }
+    by = {(r["candidate"], r["position"]): float(r["tiles_median_um"]) for r in rows}
+    assert by["transforms", "A/1/0"] < by["unregistered", "A/1/0"]
+    assert {"points_median_um", "z_um", "z_from", "scale_yx"} <= set(rows[0])
+    assert sorted(p.name for p in (tmp_path / "evaluation").glob("*.png"))  # figures
+
+
+def test_tags_add_columns_so_tables_can_be_joined(tmp_path):
+    positions = _plate(tmp_path)[:1]
+    transforms = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_channel="VS",
+            transforms=[TransformEntry(matrix=np.eye(4).tolist())],
+        ),
+        transforms,
+    )
+    output = tmp_path / "evaluation.csv"
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(positions[0]),
+        "-r",
+        str(positions[0]),
+    ]
+    args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64"]
+    args += ["--tag", "case=dragonfly", "--tag", "pipeline=tiles > nuclei"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    rows = _rows(output)
+    assert list(rows[0])[:2] == ["case", "pipeline"]  # first, for reading
+    assert {(r["case"], r["pipeline"]) for r in rows} == {("dragonfly", "tiles > nuclei")}
+
+
+def test_a_per_position_file_is_evaluated_on_held_out_positions(tmp_path):
+    # Estimated on several positions, the file holds one list each; held-out positions
+    # are not in it: each estimated position's transform is a candidate there.
+    positions = _plate(tmp_path)
+    exact = Transform.from_translation([-s for s in SHIFT])
+    transforms = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_channel="VS",
+            positions={"A/1/0": [TransformEntry(matrix=np.asarray(exact.matrix).tolist())]},
+        ),
+        transforms,
+    )
+    output = tmp_path / "evaluation.csv"
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(positions[1]),
+        "-r",
+        str(positions[1]),
+    ]
+    args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert {r["candidate"] for r in _rows(output)} == {"unregistered", "transforms (A/1/0)"}
+
+
+def test_block_candidates_read_only_the_current_runs_layout(tmp_path):
+    import json
+
+    from biahub.registration.benchmark import block_candidates
+
+    run = tmp_path / "run"
+    record = {"t": 0, "blocks": [{"block": "1:a", "matrix": np.eye(4).tolist()}]}
+    (run / "timepoints").mkdir(parents=True)
+    (run / "timepoints" / "0.json").write_text(json.dumps(record))
+    stale = run / "positions" / "A" / "1" / "0" / "timepoints"  # an earlier run's layout
+    stale.mkdir(parents=True)
+    (stale / "0.json").write_text(
+        json.dumps({**record, "blocks": [{**record["blocks"][0], "block": "old"}]})
+    )
+    (run / "run.json").write_text(json.dumps({"positions": ["A/1/0"]}))
+    assert set(block_candidates(run)) == {"1:a"}
+
+
+def test_bead_landmarks_take_the_runs_detection_threshold(tmp_path):
+    # --landmarks beads crashed: bead detection needs a threshold. It comes from the run's
+    # own settings (what the estimate detected beads with), or --bead-threshold.
+    from scipy.ndimage import shift as ndi_shift
+
+    from tests.test_estimate_transform import (
+        APPLIED_SHIFT_ZYX,
+        SHAPE,
+        _run,
+        _synthetic_bead_volume,
+        _write_config,
+        _write_plate,
+    )
+
+    ref = _synthetic_bead_volume(np.random.default_rng(11), SHAPE)
+    mov = ndi_shift(ref, shift=APPLIED_SHIFT_ZYX, order=1, mode="constant", cval=0.0)
+    plate = _write_plate(tmp_path / "beads.zarr", [(ref, mov)])
+    output = tmp_path / "out" / "transforms.yml"
+    _run(plate, _write_config(tmp_path), output)
+
+    table = tmp_path / "evaluation.csv"
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(plate),
+        "-r",
+        str(plate),
+        "-c",
+        str(output),
+    ]
+    args += ["-o", str(table), "--tile-px", "32", "--landmarks", "beads"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    final = [r for r in _rows(table) if r["candidate"] == "transforms"][0]
+    assert int(final["points_n"]) > 5 and float(final["points_median_um"]) < 1.0
+
+    # no run folder and no threshold: say what is missing
+    bare = tmp_path / "bare.yml"
+    bare.write_text(output.read_text())
+    config = args.index("-c") + 1
+    result = CliRunner().invoke(cli, [*args[:config], str(bare), *args[config + 1 :]])
+    assert result.exit_code != 0 and "--bead-threshold" in result.output
+
+
+def test_a_stabilization_is_evaluated_against_its_reference_frame(tmp_path):
+    # Stabilization compares timepoint t with the reference frame (t=0), in the same store
+    # and channel; comparing t with itself measured nothing.
+    from iohub import open_ome_zarr
+    from scipy.ndimage import shift as ndi_shift
+
+    from tests.test_registration_estimators import _synthetic_blob_volume
+
+    first = _synthetic_blob_volume(
+        np.random.default_rng(3), (24, 192, 192), n_blobs=200, sigma=3.0
+    )
+    first = first + 100.0
+    drifted = ndi_shift(first, SHIFT, order=1, mode="nearest")
+    path = tmp_path / "drift.zarr"
+    with open_ome_zarr(path, layout="hcs", mode="w", channel_names=["DAPI"]) as plate:
+        plate.create_position("A", "1", "0").create_image(
+            "0", np.stack([first, drifted])[:, None].astype(np.float32)
+        )
+    position = path / "A" / "1" / "0"
+    exact = Transform.from_translation([-s for s in SHIFT])
+    transforms = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            transforms=[
+                TransformEntry(t=0, matrix=np.eye(4).tolist()),
+                TransformEntry(t=1, matrix=np.asarray(exact.matrix).tolist()),
+            ],
+        ),
+        transforms,
+    )
+    # with -r, and without: a stabilization's reference is its own positions
+    for reference in (["-r", str(position)], []):
+        output = tmp_path / f"evaluation{len(reference)}.csv"
+        args = ["evaluate-transform", "--cluster", "debug", "-m", str(position), *reference]
+        args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64", "--t", "1"]
+        args += ["--reference-t", "0"]
+        result = CliRunner().invoke(cli, args)
+        assert result.exit_code == 0, result.output
+        tiles = {r["candidate"]: float(r["tiles_median_um"]) for r in _rows(output)}
+        assert tiles["transforms"] < 0.05 < tiles["unregistered"]
+
+
+def test_a_registration_file_needs_its_reference_positions(tmp_path):
+    transforms = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["GFP"],
+            reference_channel="Phase3D",
+            transforms=[TransformEntry(matrix=np.eye(4).tolist())],
+        ),
+        transforms,
+    )
+    positions = _plate(tmp_path)
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        str(positions[0]),
+        "-c",
+        str(transforms),
+    ]
+    result = CliRunner().invoke(cli, [*args, "-o", str(tmp_path / "e.csv")])
+    assert result.exit_code == 2 and "-r" in result.output
+
+
+def test_a_blank_position_is_reported_not_left_as_empty_rows(tmp_path):
+    from iohub import open_ome_zarr
+
+    positions = _plate(tmp_path)
+    with open_ome_zarr(positions[1], mode="r+") as position:
+        position.data[0, 0] = 0
+    transforms = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_channel="VS",
+            transforms=[TransformEntry(matrix=Transform.identity(3).to_list())],
+        ),
+        transforms,
+    )
+    output = tmp_path / "evaluation.csv"
+    args = [
+        "evaluate-transform",
+        "--cluster",
+        "debug",
+        "-m",
+        *map(str, positions),
+        "-r",
+        *map(str, positions),
+    ]
+    args += ["-c", str(transforms), "-o", str(output), "--tile-px", "64"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert "blank" in result.output
+    assert [r["empty"] for r in _rows(output) if r["position"] == "A/1/1"] == ["moving"]
+
+
+def _stabilization_file(tmp_path, reference_frame=None):
+    transforms = tmp_path / f"stab_{reference_frame}.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_frame=reference_frame,
+            transforms=[TransformEntry(t=t, matrix=np.eye(4).tolist()) for t in (2, 3)],
+        ),
+        transforms,
+    )
+    return transforms
+
+
+def test_without_reference_t_a_stabilization_reads_its_files_reference_frame(
+    tmp_path, monkeypatch
+):
+    # with no --reference-t, frame t was compared with itself: the unregistered pair
+    # looked perfect
+    from biahub import evaluate_transform as module
+
+    seen = []
+    monkeypatch.setattr(
+        module,
+        "evaluate_candidates",
+        lambda *a, **k: seen.append(k["reference_t"]) or [{"x": 1}],
+    )
+    positions = _plate(tmp_path)
+    for frame, expected in (("first", 2), ("previous", 2)):  # the run starts at t=2
+        module.evaluate_transform(
+            positions[:1], None, _stabilization_file(tmp_path, frame), tmp_path / "e.csv", t=3
+        )
+        assert seen[-1] == expected
+    for frame in ("neighbours", None):  # no single reference frame, or none recorded
+        with pytest.raises(click.UsageError, match="--reference-t"):
+            module.evaluate_transform(
+                positions[:1], None, _stabilization_file(tmp_path, frame), tmp_path / "e.csv"
+            )
+    with pytest.raises(click.UsageError, match="--reference-t"):
+        module.evaluate_transform(
+            positions[:1], None, _stabilization_file(tmp_path), tmp_path / "e.csv"
+        )
+
+
+def test_evaluate_transform_refuses_what_it_would_not_read(tmp_path):
+    from biahub.evaluate_transform import evaluate_transform
+
+    positions = _plate(tmp_path)
+    transforms = _stabilization_file(tmp_path, "first")
+    with pytest.raises(click.UsageError, match="--bead-threshold"):
+        evaluate_transform(
+            positions[:1], None, transforms, tmp_path / "e.csv", bead_threshold=50.0
+        )
+    with pytest.raises(click.UsageError, match="no reference position"):
+        evaluate_transform(  # paired by position, as the other commands do
+            positions, [positions[0], positions[0]], transforms, tmp_path / "e.csv"
+        )
+    with pytest.raises(click.UsageError, match="tiles_median_um"):
+        evaluate_transform(
+            positions[:1], None, transforms, tmp_path / "e.csv", reference_t=0,
+            tags={"tiles_median_um": "x"}, images=False,
+        )  # fmt: skip
+
+
+def test_a_stabilization_is_evaluated_relative_to_its_reference_frames_own_transform(
+    tmp_path, monkeypatch
+):
+    # a neighbours run moves every frame, the reference frame too: frame t warped was
+    # compared with the raw reference frame, and scored worse than unregistered
+    from biahub import evaluate_transform as module
+
+    seen = {}
+
+    def capture(candidates, *args, **kwargs):
+        seen.update(candidates)
+        return [{"x": 1}]
+
+    monkeypatch.setattr(module, "evaluate_candidates", capture)
+    transforms = tmp_path / "neighbours.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["DAPI"],
+            reference_frame="neighbours",
+            transforms=[
+                TransformEntry(
+                    t=t, matrix=Transform.from_translation([0.0, dy, 0.0]).to_list()
+                )
+                for t, dy in ((2, 3.0), (3, 5.0))
+            ],
+        ),
+        transforms,
+    )
+    positions = _plate(tmp_path)
+    with pytest.raises(click.UsageError, match="--reference-t"):  # no single reference frame
+        module.evaluate_transform(positions[:1], None, transforms, tmp_path / "e.csv", t=3)
+    module.evaluate_transform(
+        positions[:1], None, transforms, tmp_path / "e.csv", t=3, reference_t=2, blocks=False
+    )
+    (relative,) = seen["transforms"].values()
+    np.testing.assert_allclose(relative.translation, [0.0, 2.0, 0.0])  # 5 - 3
+
+
+def _rows_of(pairs):
+    return [
+        {"position": str(moving), "reference": str(reference)} for moving, reference in pairs
+    ]
+
+
+def test_evaluation_jobs_are_one_per_position_and_join_in_order(tmp_path, monkeypatch):
+    # evaluate-transform ran in the calling process only: every eval run wrapped it in its
+    # own sbatch script
+    import functools
+
+    from biahub.evaluate_transform import _run_per_position
+
+    monkeypatch.delenv("CI")  # the suite forces jobs in-process; submit them here
+    pairs = [(tmp_path / f"m{i}", tmp_path / f"r{i}") for i in range(3)]
+    rows = _run_per_position(
+        functools.partial(_rows_of), pairs, 2, tmp_path / "out" / "e.csv", "local", None
+    )
+    assert [r["position"] for r in rows] == [str(m) for m, _ in pairs]
+    assert (tmp_path / "out" / "slurm_output" / "evaluate_transform").is_dir()
+
+
+def test_bead_thresholds_may_differ_per_channel(tmp_path):
+    # one threshold for both channels matched no beads on fluorescence against phase
+    from biahub.evaluate_transform import _bead_detection
+
+    both = _bead_detection(tmp_path, 50.0)
+    assert both == {"threshold_abs": 50.0}
+    sides = _bead_detection(tmp_path, (50.0, 800.0))
+    assert sides == {"moving": {"threshold_abs": 50.0}, "reference": {"threshold_abs": 800.0}}
+
+
+def test_the_comparison_and_tile_grid_are_command_line_options(tmp_path, monkeypatch):
+    # the defaults found no tiles on a compact sample, and the command could not change them
+    from biahub import evaluate_transform as module
+
+    seen = {}
+
+    def capture(candidates, pairs, **kwargs):
+        from biahub.registration.benchmark import _empty_row
+
+        seen.update(kwargs)
+        return [{**_empty_row("A/1/0", 0, None), "candidate": "transforms"}]
+
+    monkeypatch.setattr(module, "evaluate_candidates", capture)
+    positions = _plate(tmp_path)
+    transforms = _stabilization_file(tmp_path, "first")
+    args = ["evaluate-transform", "--cluster", "debug", "-m", str(positions[0])]
+    args += ["-c", str(transforms), "-o", str(tmp_path / "e.csv"), "--no-blocks"]
+    args += [
+        "--compare",
+        "intensity",
+        "--grid",
+        "5",
+        "--tile-px",
+        "128",
+        "--bead-threshold",
+        "50,800",
+    ]
+    args += ["--landmarks", "beads"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert (seen["compare"], seen["grid"], seen["tile_px"]) == ("intensity", 5, 128)
+    assert seen["detect_kwargs"]["reference"] == {"threshold_abs": 800.0}
+
+
+def test_the_evaluation_settings_come_from_the_runs_config_a_file_then_the_flags(
+    tmp_path, monkeypatch
+):
+    # how to evaluate was command-line only: a run's config now says it (`evaluation:`),
+    # an -e file does for a transforms file without a run, and a flag overrides either
+    import yaml
+
+    from biahub import evaluate_transform as module
+    from biahub.registration.benchmark import _empty_row
+    from biahub.registration.engine.disk import ENGINE_SETTINGS_FILENAME
+
+    seen = {}
+
+    def capture(candidates, pairs, **kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        return [{**_empty_row("A/1/0", 0, None), "candidate": "transforms"}]
+
+    monkeypatch.setattr(module, "evaluate_candidates", capture)
+    positions = _plate(tmp_path)
+    transforms = _stabilization_file(tmp_path, "first")
+    run_dir = transforms.with_suffix("")
+    run_dir.mkdir()
+    (run_dir / ENGINE_SETTINGS_FILENAME).write_text(
+        yaml.safe_dump(
+            {
+                "moving": {"channel": "DAPI"},
+                "reference": {"frame": "first"},
+                "method": "phase_cross_corr",
+                "evaluation": {"compare": "intensity", "tile_px": 128, "grid": 5},
+            }
+        )
+    )
+    common = ["evaluate-transform", "--cluster", "debug", "-m", str(positions[0])]
+    common += ["-c", str(transforms), "-o", str(tmp_path / "e.csv"), "--no-blocks"]
+
+    def run(*extra):
+        result = CliRunner().invoke(cli, [*common, *extra])
+        assert result.exit_code == 0, result.output
+        return seen["compare"], seen.get("grid"), seen["tile_px"]
+
+    assert run() == ("intensity", 5, 128)  # the run's own section
+    other = tmp_path / "evaluation.yml"
+    other.write_text(yaml.safe_dump({"compare": "edges", "tile_px": 64}))
+    assert run("-e", str(other)) == ("edges", None, 64)  # a file replaces it
+    assert run("-e", str(other), "--tile-px", "32") == ("edges", None, 32)  # a flag wins

@@ -5,17 +5,19 @@
 | Symptom | Likely cause | Action |
 |---|---|---|
 | many records with `job failed: ... CANCELLED ... DUE TO TIME LIMIT` | the partition is busy, or volumes are large | relaunch with `--resume` and an sbatch file setting `#SBATCH --time=...` |
-| the plain CLI exits 3 after `jobs failed (their timepoints hold stand-ins ...)` | a job crashed, e.g. `job failed: UncompletedJobError: ... OOM Killed` (the default sizing is too small for large ANTs volumes) | the transforms file holds the seed at those timepoints: do not apply it. Relaunch with `--resume` and an sbatch file with more memory (`#SBATCH --mem-per-cpu=...`) |
-| the sequential (`previous_timepoint`) job cancelled part-way | its time limit was too short for T | relaunch with `--resume` and a longer limit; finished timepoints are kept and the chain continues |
+| the plain CLI exits 3 after `jobs failed (their timepoints hold stand-ins ...)` | a job crashed, e.g. `job failed: UncompletedJobError: ... OOM Killed` (the default sizing is too small for large ANTs volumes) | the transforms file holds the initial transform at those timepoints: do not apply it. Relaunch with `--resume` and an sbatch file with more memory (`#SBATCH --mem-per-cpu=...`) |
+| the sequential (`transform.initial.propagate`) job cancelled part-way | its time limit was too short for T | relaunch with `--resume` and a longer limit; finished timepoints are kept and the chain continues |
 | `Input/output error` / `Stale file handle` reading the stores | the filesystem, not biahub | check the mount on the node and a compute node (`srun ... ls <path>`); report to HPC; nothing to fix in the run |
 | `--resume: settings_sha256 changed` | the config or inputs changed since the run | rerun without `--resume` into a fresh output directory |
 | Nextflow stops with `Error executing process > '...'` | a task failed with a non-signal exit (a real error, not preemption) | read that task's `.command.err` (work dir in the message) or its log under `<out>/nextflow/slurm_output/`; fix, then relaunch the same script (`-resume` reruns only what failed) |
 | Nextflow `the config changed since --init` / `run with --init first` | the config file was edited after the run started, or the run folder was removed | relaunch into a new output directory (or drop `-resume` so init runs again) |
 | `Manual registration is interactive` at launch | `method: manual` given to `registration_wf.nf` | run manual with the plain CLI in a session with a display, then apply its file with `TRANSFORMS=` |
 | a timepoint `unreliable` with note `job failed: <error>` (e.g. `RuntimeError: blosc encoded value is invalid`) | that timepoint's job raised (unreadable chunk, I/O fault); the run carried on with a stand-in (Nextflow retried the task twice first) | check the data at that timepoint; after fixing it, relaunch with resume (`-resume` / `--resume`): the failed timepoint is redone, finished ones are kept |
+| a timepoint `unreliable` with note `the estimate scored below its start` | the method ended worse than where it started (an optimizer that wandered off): the start is written instead | check the start is right (an earlier registration, the shapes geometry); try another method or reference channel for that timepoint |
 | a timepoint `unreliable` with note `empty frame (no data)` | the raw acquisition is empty there | expected; nothing moves at that timepoint |
 | a timepoint `unreliable` with `too few matches` / `too few nodes` | too few beads detected | check the bead thresholds on that timepoint; or substitute another method's result for it |
-| every timepoint `unreliable` with a correlation-based method | thresholds tuned for the bead-overlap score | read `methods.md`; check a few timepoints visually |
+| several timepoints `unreliable` with a correlation-based method | with an intensity metric the absolute thresholds are off: only the run's own line flags, so these score well below the rest of this run (a single timepoint is never flagged by the line: its line is its own score) | check them visually; `references/methods.md`, "Judging the result" |
+| `flag: 1 of 1 timepoints flagged` on a single-timepoint run | not the run's line: an absolute threshold, e.g. beads overlap below `hard_fail` 0.40 (few beads matched). The log and `flags.json` (`reasons`, `floor`, `hard_fail`) name the rule | check the bead detection (thresholds, a saturated channel, the peaks drawn on the volume) or the method; the transform is written, marked unreliable |
 
 ## Rules
 

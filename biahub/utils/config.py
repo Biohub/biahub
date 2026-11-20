@@ -144,4 +144,13 @@ def yaml_to_model(yaml_path: Path, model):
     except FileNotFoundError:
         raise FileNotFoundError(f"The YAML file '{yaml_path}' does not exist.") from None
 
+    if raw_settings is None:
+        raise ValueError(
+            f"The YAML file '{yaml_path}' is empty: expected {model.__name__} settings."
+        )
+    if not isinstance(raw_settings, dict):
+        raise ValueError(
+            f"The YAML file '{yaml_path}' must hold a mapping of {model.__name__} settings, "
+            f"not a {type(raw_settings).__name__}."
+        )
     return model(**raw_settings)

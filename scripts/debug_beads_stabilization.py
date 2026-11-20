@@ -4,13 +4,13 @@ import numpy as np
 from pathlib import Path
 from iohub import open_ome_zarr
 from biahub.core.transform import Transform
-from biahub.registration.utils import convert_transform_to_ants
 import napari
 # the retired estimate-registration schema this script reads its config with
 from biahub.registration.legacy.convert_settings import EstimateRegistrationSettings
 import numpy as np
 
-from biahub.registration.methods.beads import transform_from_matches, matches_from_beads, peaks_from_beads, optimize_transform
+from biahub.registration.methods.landmark.node_graph import match_nodes, transform_from_matches
+from biahub.registration.methods.landmark.bead_matching import peaks_from_beads
 
 # %%%
 
@@ -116,8 +116,8 @@ if visualize:
 mov_peaks, ref_peaks = peaks_from_beads(
     mov_data,
     ref_data,
-    config.beads_match_settings.source_peaks_settings,
-    config.beads_match_settings.target_peaks_settings,
+    config.beads_match_settings.moving_peaks_settings,
+    config.beads_match_settings.reference_peaks_settings,
     verbose=True,
 )
 
@@ -139,7 +139,7 @@ if visualize:
 
 # %%
 
-matches = matches_from_beads(
+matches = match_nodes(
     mov_peaks,
     ref_peaks,
     config.beads_match_settings,
@@ -178,8 +178,7 @@ fwd_transform, inv_transform = transform_from_matches(
     matches=matches,
     mov_peaks=mov_peaks,
     ref_peaks=ref_peaks,
-    affine_transform_settings=config.affine_transform_settings,
-    ndim=mov_data.ndim,
+    transform_type=config.affine_transform_settings.transform_type,
 )
 mov_data_ants = ants.from_numpy(mov_data)
 ref_data_ants = ants.from_numpy(ref_data)

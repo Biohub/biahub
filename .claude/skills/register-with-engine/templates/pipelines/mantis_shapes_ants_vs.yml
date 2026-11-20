@@ -1,0 +1,19 @@
+# Pipeline: mantis light-sheet onto label-free without a beads well (cells only).
+# The stores' geometry (shapes: the mantis light-sheet turn) gives the start; ANTs refines it
+# on a same-kind pair: a fluorescence channel showing membranes onto the virtual-stained
+# membranes of the phase (membrane_prediction, on the phase grid, so the transform is onto the
+# phase). Phase3D itself as the reference failed (ANTs stayed at its start, scores at noise).
+# Measured on 2025_09_18_72hpf_cldnb-she-myo6b 0/1/000000 (mCherry): 1.2-2.0 µm tile median,
+# yx within 1 µm of the beads registration, z up to 2.6 µm off: prefer a beads well when there
+# is one. Set the moving channel to the one showing membranes (cldnb-she-myo6b: mCherry).
+moving: {channel: mCherry EX561 EM600-37}
+reference: {frame: cross, channel: membrane_prediction}
+method:
+  - shapes: {rotate90: -1, fliplr: false, transform: {type: affine}}
+  - ants:
+      preprocess:
+        - clip_percentiles: {volumes: [moving, reference], low: 1.0, high: 99.5}
+transform: {type: similarity}
+score: {report: [correlation, mutual_information]}
+time_indices: 0
+fallback: {repair: null}
