@@ -13,12 +13,14 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Discriminator,
     Field,
     ImportString,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    Tag,
     field_validator,
     model_validator,
 )
@@ -1122,7 +1124,7 @@ _BIAHUB_EVAL_ARGS = ("self", "x", "channels", "channel_axis", "z_axis")
 
 
 class SegmentationModel(BaseModel):
-    """One cellpose 4 model and how to apply it.
+    """One cellpose 4 model and how to apply it (``backend: cellpose``, the default).
 
     ``channels`` are dataset channel names (1-3, any order: cellpose 4 takes up to 3
     channels). The model segments in 2D unless ``eval_args.do_3D`` (or a
@@ -1131,6 +1133,10 @@ class SegmentationModel(BaseModel):
     arguments.
     """
 
+    # Excluded from dumps: label images written before the field existed record no
+    # backend, and the recorded settings (and resume tokens) of cellpose models must not
+    # change. A dumped model without `backend` reads back as cellpose.
+    backend: Literal["cellpose"] = Field("cellpose", exclude=True)
     pretrained_model: str
     channels: list[str] = Field(min_length=1)
     eval_args: dict[str, Any] = {}
@@ -1154,6 +1160,12 @@ class SegmentationModel(BaseModel):
                     "z_slice_2D was removed: select or project the plane with "
                     "`biahub project` and segment the 2D (Z=1) plate. A model without "
                     "eval_args.do_3D segments in 2D."
+                )
+            microsam_only = [k for k in ("engine", "downsample") if k in data]
+            if microsam_only:
+                raise ValueError(
+                    f"{microsam_only} are micro-sam options: set `backend: microsam` to "
+                    "segment with micro-sam 2."
                 )
         return data
 
@@ -1191,10 +1203,91 @@ class SegmentationModel(BaseModel):
         )
 
 
+# Arguments biahub sets itself when calling micro-sam's automatic_instance_segmentation.
+_BIAHUB_MICROSAM_ARGS = (
+    "predictor",
+    "segmenter",
+    "input_path",
+    "output_path",
+    "embedding_path",
+    "ndim",
+    "verbose",
+    "model_type",
+    "checkpoint",
+    "device",
+)
+
+
+class MicroSamModel(BaseModel):
+    """One micro-sam 2 model and how to apply it (``backend: microsam``).
+
+    Automatic instance segmentation of each 2D plane (a Z=1 plate, see `biahub
+    project`) of one channel. ``pretrained_model`` is a micro-sam 2 model name (the
+    fine-tuned ``hvit_{t,s,b,l}_cells`` for cells and nuclei in light microscopy; the
+    plain SAM2 backbones ``hvit_{t,s,b,l}`` work with ``engine: amg`` only) or the path
+    to a checkpoint, e.g. one trained with ``micro_sam train``. ``engine`` is micro-sam's
+    segmentation mode: ``ais`` (decoder + seeded watershed), ``apg`` (decoder prompts for
+    SAM2's mask decoder) or ``amg`` (grid prompts, no decoder).
+
+    ``downsample`` keeps every n-th pixel in Y and X before segmenting and scales the
+    labels back (nearest) to the input grid. The models were trained on cells tens of
+    pixels across: on mantis-v2 A549 data (0.113 um/px) 3-4 works, 1 outlines whole cell
+    clusters. ``eval_args`` override micro-sam's post-processing defaults (see
+    ``micro_sam.v2.postprocessing.default_postprocessing`` and
+    ``micro_sam.v2.automatic_prompt_generation.default_prompt_generation``).
+    Needs ``biahub[microsam]``.
+    """
+
+    backend: Literal["microsam"]
+    pretrained_model: str
+    channels: list[str] = Field(min_length=1)
+    engine: Literal["ais", "apg", "amg"] = "ais"
+    downsample: PositiveInt = 1
+    eval_args: dict[str, Any] = {}
+    preprocessing: list[PreprocessingFunctions] = []
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    @field_validator("channels")
+    @classmethod
+    def check_one_channel(cls, channels):
+        if len(channels) != 1:
+            raise ValueError(f"micro-sam segments one channel, got {channels}.")
+        return channels
+
+    @field_validator("eval_args")
+    @classmethod
+    def validate_eval_args(cls, value):
+        for key in _BIAHUB_MICROSAM_ARGS:
+            if key in value:
+                raise ValueError(f"{key} is set by biahub; remove it from eval_args.")
+        return value
+
+    @property
+    def is_3d(self) -> bool:
+        """micro-sam models segment 2D planes only (for now)."""
+        return False
+
+
+def _segmentation_backend(value: Any) -> str:
+    if isinstance(value, dict):
+        return value.get("backend", "cellpose")
+    return getattr(value, "backend", "cellpose")
+
+
+SegmentationModelConfig = Annotated[
+    Annotated[SegmentationModel, Tag("cellpose")] | Annotated[MicroSamModel, Tag("microsam")],
+    Discriminator(
+        _segmentation_backend,
+        custom_error_type="invalid_backend",
+        custom_error_message="backend must be 'cellpose' (the default) or 'microsam'",
+    ),
+]
+
+
 class SegmentationSettings(BaseModel):
     # One label image per model, `labels/<name>`, written into the plate segment reads.
     # The name is the strategy's: strategies accumulate as differently named models.
-    models: dict[str, SegmentationModel] = Field(min_length=1)
+    models: dict[str, SegmentationModelConfig] = Field(min_length=1)
     model_config = {"extra": "forbid", "protected_namespaces": ()}
 
     @model_validator(mode="before")
