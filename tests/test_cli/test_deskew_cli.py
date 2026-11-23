@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from click.testing import CliRunner
+from iohub.ngff import open_ome_zarr
 
 from biahub import deskew
 from biahub.cli.main import cli
@@ -97,6 +98,11 @@ def test_deskew_cli(tmp_path, example_plate, example_deskew_settings):
 
     assert output_path.exists(), result.output
     assert result.exit_code == 0, result.output
+    # The time between time points is the input's (1800 s), not a placeholder 1.
+    with open_ome_zarr(plate_path / "A/1/0", mode="r") as source:
+        input_time_scale = source.scale[0]
+    with open_ome_zarr(output_path / "A/1/0", mode="r") as position:
+        assert position.scale[0] == input_time_scale == 1800.0
 
 
 def test_deskew_cli_init_only(tmp_path, example_plate, example_deskew_settings):
