@@ -1234,7 +1234,10 @@ class MicroSamModel(BaseModel):
     pixels across: on mantis-v2 A549 data (0.113 um/px) 3-4 works, 1 outlines whole cell
     clusters. ``eval_args`` override micro-sam's post-processing defaults (see
     ``micro_sam.v2.postprocessing.default_postprocessing`` and
-    ``micro_sam.v2.automatic_prompt_generation.default_prompt_generation``).
+    ``micro_sam.v2.automatic_prompt_generation.default_prompt_generation``); the keys
+    depend on the engine (AIS ``min_size``, AMG ``min_object_size``, ...) and are checked
+    before any job runs. They apply to the downsampled plane: sizes are in downsampled
+    pixels (``min_size: 100`` with ``downsample: 4`` is 1600 input pixels).
     Needs ``biahub[microsam]``.
     """
 

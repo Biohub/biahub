@@ -2,6 +2,8 @@ import os
 import sys
 import types
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import yaml
@@ -288,13 +290,18 @@ def fake_cellpose(monkeypatch, tmp_path):
 
 
 class RecordingMicroSam:
-    """Stand-in for micro_sam.v2: records the models built and the images segmented."""
+    """Stand-in for micro_sam (2.0.1 API): records models built, planes segmented, fetches.
+
+    The post-processing callables carry the real parameter names (biahub reads their
+    signatures to check ``eval_args``), and the cache directory honours
+    MICROSAM_CACHEDIR like micro_sam.util.get_cache_directory.
+    """
 
     MODEL_NAMES = ["hvit_t_cells", "hvit_s_cells", "hvit_b_cells", "hvit_l_cells"]
     BACKBONES = ["hvit_t", "hvit_s", "hvit_b", "hvit_l"]
-    built = []  # (model_type, checkpoint, segmentation_mode)
+    built = []  # (model_type, checkpoint, segmentation_mode, MICROSAM_CACHEDIR)
     segmented = []  # (image, generate_kwargs)
-    fetched = []  # registry names downloaded
+    fetched = []  # names downloaded (registry fetch or backbone checkpoint)
 
     @classmethod
     def get_predictor_and_segmenter(
@@ -305,7 +312,9 @@ class RecordingMicroSam:
         segmentation_mode=None,
         **_,
     ):
-        cls.built.append((model_type, checkpoint, segmentation_mode))
+        cls.built.append(
+            (model_type, checkpoint, segmentation_mode, os.environ.get("MICROSAM_CACHEDIR"))
+        )
         return object(), object()
 
     @classmethod
@@ -314,7 +323,8 @@ class RecordingMicroSam:
     ):
         assert ndim == 2
         cls.segmented.append((np.array(input_path), generate_kwargs))
-        return np.ones(input_path.shape, dtype=np.uint32)
+        # One distinct id per pixel, so the tests can check where each label lands.
+        return np.arange(1, input_path.size + 1, dtype=np.uint32).reshape(input_path.shape)
 
     class _Registry:
         registry = {
@@ -329,9 +339,90 @@ class RecordingMicroSam:
             RecordingMicroSam.fetched.append(name)
             return f"/cache/{name}"
 
+    @staticmethod
+    def get_checkpoint(model_type="hvit_t"):
+        RecordingMicroSam.fetched.append(model_type)
+        return f"/cache/{model_type}"
+
+
+# micro_sam 2.0.1's post-processing signatures (data arguments first).
+def _flow_instance_segmentation(
+    foreground,
+    directed_distances,
+    model_type=None,
+    foreground_threshold=None,
+    n_iter=None,
+    dt=None,
+    sigma=None,
+    spacing=None,
+    density_threshold=None,
+    min_size=None,
+    foreground_weight=None,
+    n_threads=8,
+    boundary=None,
+    boundary_weight=None,
+    boundary_mask_threshold=None,
+):
+    pass
+
+
+def _run_multicut(
+    boundary_map,
+    distances,
+    model_type=None,
+    beta=None,
+    density_threshold=None,
+    n_iter=None,
+    dt=None,
+    sigma=None,
+    n_threads=8,
+):
+    pass
+
+
+class _AutomaticPromptGenerator:
+    def generate(
+        self,
+        candidate_threshold=None,
+        foreground_threshold=None,
+        n_iter=None,
+        dt=None,
+        sigma=None,
+        spacing=None,
+        min_candidate_size=None,
+        score_threshold=None,
+        max_overlap=None,
+        min_size=None,
+        max_size_factor=None,
+        refinement=None,
+        refinement_kwargs=None,
+        multimasking=False,
+        n_objects_per_pass=1,
+        early_stop_patience=None,
+        propagation_waves=1,
+        batch_size=1,
+        n_threads=1,
+        verbose=False,
+        pbar_init=None,
+        pbar_update=None,
+    ):
+        pass
+
+
+class _AutomaticMaskGenerationSegmenter:
+    def generate(
+        self,
+        min_object_size=0,
+        max_object_size=None,
+        with_background=True,
+        output_mode="instance_segmentation",
+    ):
+        pass
+
 
 @pytest.fixture()
-def fake_microsam(monkeypatch):
+def fake_microsam(monkeypatch, tmp_path):
+    """micro_sam stand-in; its shared cache is tmp_path/microsam-shared (no weights in it)."""
     automatic = types.ModuleType("micro_sam.v2.automatic_segmentation")
     automatic.get_predictor_and_segmenter = RecordingMicroSam.get_predictor_and_segmenter
     automatic.automatic_instance_segmentation = (
@@ -341,17 +432,33 @@ def fake_microsam(monkeypatch):
     util.get_model_names = lambda: list(RecordingMicroSam.MODEL_NAMES)
     util.SUPPORTED_MODELS = list(RecordingMicroSam.BACKBONES)
     util.models = RecordingMicroSam._Registry
+    util._get_checkpoint = RecordingMicroSam.get_checkpoint
+    postprocessing = types.ModuleType("micro_sam.v2.postprocessing")
+    postprocessing.flow_instance_segmentation = _flow_instance_segmentation
+    postprocessing.run_multicut = _run_multicut
+    apg = types.ModuleType("micro_sam.v2.automatic_prompt_generation")
+    apg.AutomaticPromptGenerator = _AutomaticPromptGenerator
+    instance = types.ModuleType("micro_sam.v2.instance_segmentation")
+    instance.AutomaticMaskGenerationSegmenter = _AutomaticMaskGenerationSegmenter
+    top_util = types.ModuleType("micro_sam.util")
+    top_util.get_cache_directory = lambda: Path(os.environ["MICROSAM_CACHEDIR"])
     v2 = types.ModuleType("micro_sam.v2")
     v2.automatic_segmentation, v2.util = automatic, util
     package = types.ModuleType("micro_sam")
-    package.v2 = v2
+    package.v2, package.util = v2, top_util
     for name, module in {
         "micro_sam": package,
+        "micro_sam.util": top_util,
         "micro_sam.v2": v2,
         "micro_sam.v2.automatic_segmentation": automatic,
         "micro_sam.v2.util": util,
+        "micro_sam.v2.postprocessing": postprocessing,
+        "micro_sam.v2.automatic_prompt_generation": apg,
+        "micro_sam.v2.instance_segmentation": instance,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setenv("MICROSAM_CACHEDIR", str(tmp_path / "microsam-shared"))
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
     RecordingMicroSam.built, RecordingMicroSam.segmented, RecordingMicroSam.fetched = (
         [],
         [],

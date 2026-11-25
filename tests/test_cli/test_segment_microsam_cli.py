@@ -1,6 +1,5 @@
 """biahub segment with a micro-sam 2 model: --init checks and a debug (in-process) run."""
 
-import numpy as np
 import pytest
 import torch
 import yaml
@@ -108,9 +107,54 @@ def test_debug_run_fills_the_label_image(fake_microsam, cpu_device, plate_2d, mi
     with open_ome_zarr(position, mode="r") as pos:
         label = pos.get_label("nuc")["0"][:]
         assert label.shape == (3, 1, 1, 5, 6)
-        assert np.all(label == 1)  # the stand-in labels every pixel 1, upsampled back
+        assert label.min() >= 1  # every pixel got a label from the stand-in, upsampled back
         attrs = dict(pos.get_label("nuc").zattrs)
     assert attrs["biahub-segment"]["models"]["nuc"]["backend"] == "microsam"
     assert len(fake_microsam.built) == 1  # one model load for the whole position
     assert len(fake_microsam.segmented) == 3  # one per timepoint
     assert fake_microsam.segmented[0][0].shape == (3, 3)  # 5 x 6 downsampled by 2
+
+
+def test_bad_eval_args_stop_before_any_label_image_is_written(
+    fake_microsam, cpu_device, plate_2d, tmp_path
+):
+    # Without --init (SLURM fan-out or a direct debug run), a bad key must still fail on
+    # the head node, not in every GPU job.
+    plate_path, _ = plate_2d
+    position = plate_path / "A" / "1" / "0"
+    config = tmp_path / "bad.yml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "models": {
+                    "nuc": {
+                        "backend": "microsam",
+                        "pretrained_model": "hvit_b_cells",
+                        "channels": ["GFP"],
+                        "engine": "amg",
+                        "eval_args": {"min_size": 100},
+                    }
+                }
+            }
+        )
+    )
+
+    result = _run("--cluster", "debug", "-i", position, "-c", config)
+
+    assert result.exit_code != 0
+    assert "min_size" in str(result.exception) + result.output
+    assert not (position / "labels").exists()
+    assert fake_microsam.segmented == []
+
+
+def test_init_refuses_a_downsample_larger_than_the_plane(
+    fake_microsam, plate_2d, microsam_config
+):
+    plate_path, _ = plate_2d  # Y=5, X=6
+    position = plate_path / "A" / "1" / "0"
+
+    result = _run("--init", "-i", position, "-c", microsam_config(downsample=6))
+
+    assert result.exit_code != 0
+    assert "downsample" in str(result.exception) + result.output
+    assert not (position / "labels").exists()

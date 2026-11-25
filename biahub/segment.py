@@ -41,6 +41,7 @@ from biahub.utils.microsam import (
     check_microsam_model,
     load_microsam_model,
     segment_plane,
+    stage_microsam_weights,
     warm_microsam_weights,
 )
 from biahub.utils.ngff import label_layout
@@ -158,11 +159,28 @@ def _cached_model(model: ResolvedModel, device: "torch.device") -> Any:
 
 
 def _check_model(model) -> None:
-    """Raise if a configured model cannot run (unknown name, missing extra)."""
+    """Raise if a configured model cannot run (unknown name, missing extra, bad eval_args)."""
     if model.backend == "microsam":
-        check_microsam_model(model.pretrained_model, model.engine)
+        check_microsam_model(model.pretrained_model, model.engine, model.eval_args)
     else:
         check_cellpose_model_name(model.pretrained_model)
+
+
+def check_plane_size(models: list[ResolvedModel], y_size: int, x_size: int) -> None:
+    """Refuse a micro-sam ``downsample`` that leaves fewer than 2 pixels along Y or X.
+
+    micro-sam squeezes a singleton axis and then cannot read the plane as 2D.
+    """
+    for model in models:
+        if model.backend != "microsam":
+            continue
+        small = (-(-y_size // model.downsample), -(-x_size // model.downsample))
+        if min(small) < 2:
+            raise ValueError(
+                f"Model {model.name}: downsample {model.downsample} turns the "
+                f"{y_size} x {x_size} plane into {small[0]} x {small[1]} pixels; micro-sam "
+                "needs at least 2 along each axis. Lower downsample."
+            )
 
 
 def _warm_model(model) -> None:
@@ -189,6 +207,11 @@ def _segment_czyx(
         # Stage weights on node-local scratch before cellpose is first imported (no-op
         # after).
         stage_cellpose_weights()
+    microsam_models = [m.pretrained_model for m in models if m.backend == "microsam"]
+    if microsam_models:
+        # Same for micro-sam: its weights and temporary embeddings go to node-local
+        # scratch (no-op after the first timepoint).
+        stage_microsam_weights(microsam_models)
 
     czyx_segmentation = []
     for model in models:
@@ -281,6 +304,7 @@ def _init_label_images(
         channel_names = input_dataset.channel_names
 
     models = resolve_models(settings, channel_names, scale, Z)
+    check_plane_size(models, Y, X)
     label_names = [m.name for m in models]
     recorded = settings.model_dump(mode="json")
 
@@ -389,9 +413,11 @@ def segment(
         # own copy inside the job (_segment_czyx).
         stage_cellpose_weights()
     settings = yaml_to_model(config_filepath, SegmentationSettings)
-    if init_only:
-        # Fail on a bad model name (or a missing extra) before scaffolding anything.
-        for model in settings.models.values():
+    # Fail on a bad model (unknown name, missing extra, bad eval_args) before scaffolding
+    # anything or submitting jobs. micro-sam models are checked on every path: their
+    # eval_args are only checked here, so a bad key would otherwise fail in every GPU job.
+    for model in settings.models.values():
+        if init_only or model.backend == "microsam":
             _check_model(model)
     (T, C, Z, Y, X), models = _init_label_images(input_position_dirpaths, settings)
 

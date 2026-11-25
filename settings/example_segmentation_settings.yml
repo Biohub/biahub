@@ -40,4 +40,6 @@ models:
     channels: ['nuc']
     engine: apg                 # ais (default), apg or amg
     downsample: 4               # every 4th pixel in Y and X; labels are scaled back to the input grid
-    eval_args: {}               # micro-sam post-processing overrides, e.g. {min_size: 100}
+    # micro-sam post-processing overrides; keys depend on the engine (ais / apg: min_size,
+    # amg: min_object_size), sizes in downsampled pixels (100 here = 1600 input pixels)
+    eval_args: {min_size: 100}
