@@ -130,8 +130,10 @@ def example_plate(tmp_path):
     )
 
     # Lateral pixel size matches example_deskew_settings.yml (pixel_size_um:
-    # 0.116) so deskew doesn't warn about a config/metadata scale mismatch.
-    scale = (1, 1, 1.0, 0.116, 0.116)
+    # 0.116) so deskew doesn't warn about a config/metadata scale mismatch. The
+    # T scale is a real one (30 min, in seconds), not the default 1, so a step
+    # that drops it fails its test.
+    scale = (1800.0, 1, 1.0, 0.116, 0.116)
     for row, col, fov in position_list:
         position = plate_dataset.create_position(row, col, fov)
         position.create_image(
