@@ -63,6 +63,22 @@ cpdino = [
   "dinov3 @ git+https://github.com/facebookresearch/dinov3@6876159a11b4df116f30f667f8c9888617df0751",
 ]
 
+# micro-sam 2 (Segment Anything for Microscopy 2, on SAM2) as a `biahub segment` backend
+# (`backend: microsam`). Opt-in, not in `all`: micro_sam hard-requires napari and PyQt6
+# and caps pydantic<2.14. Meta does not publish SAM2 on PyPI (its repo builds the
+# distribution `SAM-2`, import name `sam2`). micro_sam 2.0.1 pins `sam2==1.1.0`, a
+# third-party PyPI upload whose `sam2` code is identical to facebookresearch/sam2 at
+# 2b90b9f (only the setup.py name/author/URL differ; checked, and noted in micro_sam's
+# setup.cfg). We install SAM2 from Meta's repo at that same commit instead, so the
+# source is the original one and does not depend on who controls the PyPI name; the
+# [tool.uv] override below drops the PyPI `sam2`. Plain pip ignores the override and
+# installs both, which is the same code.
+microsam = [
+  "biahub[segment]",
+  "micro_sam==2.0.1",
+  "sam-2 @ git+https://github.com/facebookresearch/sam2@2b90b9f5ceec907a1c18123530e92e794ad901a4",
+]
+
 # The trackers `biahub track` can select with `tracker:`: ultrack (default),
 # tracksdata (ILP on fixed labels), HOCT (learned edge scores + ILP) and Trackastra
 # (transformer links; greedy, or ILP via motile). ultrack is deliberately CPU-only: its
@@ -130,6 +146,9 @@ biahub = "biahub.cli.main:cli"
 # when resolving build-system requirements such as iohub's hatchling /
 # uv-dynamic-versioning chain, which pulls in packaging>=24.2.
 index-strategy = "unsafe-best-match"
+# micro_sam 2.0.1 depends on the PyPI `sam2`, a third-party upload of Meta's SAM2 (see
+# the `microsam` extra); a never-true marker drops it, so Meta's SAM-2 provides `sam2`.
+override-dependencies = ["sam2; sys_platform == 'never'"]
 
 [tool.uv.sources]
 # Private repo, no PyPI release. HTTPS rather than ssh so that installing the

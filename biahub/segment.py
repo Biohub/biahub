@@ -37,6 +37,13 @@ from biahub.utils.cluster import (
     local_executor_parameters,
 )
 from biahub.utils.config import settings_fingerprint, yaml_to_model
+from biahub.utils.microsam import (
+    check_microsam_model,
+    load_microsam_model,
+    segment_plane,
+    stage_microsam_weights,
+    warm_microsam_weights,
+)
 from biahub.utils.ngff import label_layout
 
 if TYPE_CHECKING:
@@ -57,6 +64,10 @@ class ResolvedModel:
     is_3d: bool
     # (function, channel index, kwargs), applied in order
     preprocessing: list[tuple[Callable, int, dict[str, Any]]] = field(default_factory=list)
+    backend: str = "cellpose"
+    # micro-sam only: segmentation mode and in-plane downsampling factor
+    engine: str | None = None
+    downsample: int = 1
 
 
 def resolve_models(
@@ -86,6 +97,12 @@ def resolve_models(
             "stitch_threshold); remove those arguments to segment in 2D."
         )
     if not settings.is_3d and z_size > 1:
+        if any(m.backend == "microsam" for m in settings.models.values()):
+            raise ValueError(
+                f"The input is 3D (Z={z_size}) but micro-sam models segment 2D planes only. "
+                "Project the plate with `biahub project` and segment the projected (Z=1) "
+                "plate."
+            )
         raise ValueError(
             f"The input is 3D (Z={z_size}) but the models segment in 2D. Project the plate "
             "with `biahub project` and segment the projected (Z=1) plate, or set "
@@ -115,22 +132,63 @@ def resolve_models(
                     )
                     for p in model.preprocessing
                 ],
+                backend=model.backend,
+                engine=getattr(model, "engine", None),
+                downsample=getattr(model, "downsample", 1),
             )
         )
     return resolved
 
 
-# Loaded cellpose models of this process, keyed by (pretrained_model, device). A position
-# runs one _segment_czyx call per timepoint; without the cache every frame reloaded the
-# ~1.2 GB checkpoint.
-_MODEL_CACHE: dict[tuple[str, str], Any] = {}
+# Loaded models of this process, keyed by (backend, pretrained_model, engine, device). A
+# position runs one _segment_czyx call per timepoint; without the cache every frame
+# reloaded the checkpoint (~1.2 GB for cellpose).
+_MODEL_CACHE: dict[tuple[str, str, str | None, str], Any] = {}
 
 
-def _cached_model(pretrained_model: str, device: "torch.device") -> Any:
-    key = (pretrained_model, str(device))
+def _cached_model(model: ResolvedModel, device: "torch.device") -> Any:
+    key = (model.backend, model.pretrained_model, model.engine, str(device))
     if key not in _MODEL_CACHE:
-        _MODEL_CACHE[key] = load_cellpose_model(pretrained_model, device)
+        if model.backend == "microsam":
+            _MODEL_CACHE[key] = load_microsam_model(
+                model.pretrained_model, model.engine, device
+            )
+        else:
+            _MODEL_CACHE[key] = load_cellpose_model(model.pretrained_model, device)
     return _MODEL_CACHE[key]
+
+
+def _check_model(model) -> None:
+    """Raise if a configured model cannot run (unknown name, missing extra, bad eval_args)."""
+    if model.backend == "microsam":
+        check_microsam_model(model.pretrained_model, model.engine, model.eval_args)
+    else:
+        check_cellpose_model_name(model.pretrained_model)
+
+
+def check_plane_size(models: list[ResolvedModel], y_size: int, x_size: int) -> None:
+    """Refuse a micro-sam ``downsample`` that leaves fewer than 2 pixels along Y or X.
+
+    micro-sam squeezes a singleton axis and then cannot read the plane as 2D.
+    """
+    for model in models:
+        if model.backend != "microsam":
+            continue
+        small = (-(-y_size // model.downsample), -(-x_size // model.downsample))
+        if min(small) < 2:
+            raise ValueError(
+                f"Model {model.name}: downsample {model.downsample} turns the "
+                f"{y_size} x {x_size} plane into {small[0]} x {small[1]} pixels; micro-sam "
+                "needs at least 2 along each axis. Lower downsample."
+            )
+
+
+def _warm_model(model) -> None:
+    """Fetch a configured model's weights into its shared cache (head node, --init)."""
+    if model.backend == "microsam":
+        warm_microsam_weights(model.pretrained_model)
+    else:
+        warm_cellpose_weights(model.pretrained_model)
 
 
 def _segment_czyx(
@@ -138,15 +196,22 @@ def _segment_czyx(
     models: list[ResolvedModel],
     gpu: bool = True,
 ) -> np.ndarray:
-    """Segment a CZYX image with each resolved cellpose model.
+    """Segment a CZYX image with each resolved model (cellpose 4 or micro-sam 2).
 
     Returns an array of shape (n_models, Z, Y, X); Z is 1 for 2D models.
     """
     # Every job this step submits asks SLURM for a GPU, so an unusable one is a
     # broken allocation, not a reason to fall back to a ~130x slower CPU run.
     device = cellpose_device(gpu)
-    # Stage weights on node-local scratch before cellpose is first imported (no-op after).
-    stage_cellpose_weights()
+    if any(m.backend == "cellpose" for m in models):
+        # Stage weights on node-local scratch before cellpose is first imported (no-op
+        # after).
+        stage_cellpose_weights()
+    microsam_models = [m.pretrained_model for m in models if m.backend == "microsam"]
+    if microsam_models:
+        # Same for micro-sam: its weights and temporary embeddings go to node-local
+        # scratch (no-op after the first timepoint).
+        stage_microsam_weights(microsam_models)
 
     czyx_segmentation = []
     for model in models:
@@ -157,11 +222,21 @@ def _segment_czyx(
             )
             czyx_data[c_idx] = func(czyx_data[c_idx], **kwargs)
 
+        if model.backend == "microsam":
+            # One channel, one Z=1 plane: micro-sam segments the (Y, X) plane.
+            predictor, segmenter = _cached_model(model, device)
+            plane = czyx_data[model.channel_indices[0], 0]
+            labels = segment_plane(
+                plane, predictor, segmenter, model.downsample, **model.eval_args
+            )
+            czyx_segmentation.append(labels[np.newaxis])
+            continue
+
         # Cellpose 4 refuses a z axis for 2D processing, so a 2D model gets the (C, Y, X)
         # plane of the Z=1 input and a 3D model the (C, Z, Y, X) stack. It also ignores
         # `channels` and keeps the first 3 channels it is given, so pass only the
         # configured ones.
-        cellpose_model = _cached_model(model.pretrained_model, device)
+        cellpose_model = _cached_model(model, device)
         if model.is_3d:
             image, z_axis = czyx_data[model.channel_indices], 1
         else:
@@ -229,6 +304,7 @@ def _init_label_images(
         channel_names = input_dataset.channel_names
 
     models = resolve_models(settings, channel_names, scale, Z)
+    check_plane_size(models, Y, X)
     label_names = [m.name for m in models]
     recorded = settings.model_dump(mode="json")
 
@@ -269,8 +345,7 @@ def _segment_position(
     """Segment one position into its own label images, one per model.
 
     Each model gets one ``process_single_position`` call writing the label image named
-    after it (iohub's ``output_label``); the cellpose model cache makes the repeated
-    calls free.
+    after it (iohub's ``output_label``); the model cache makes the repeated calls free.
     """
     for model in models:
         process_single_position(
@@ -297,7 +372,7 @@ def segment(
     init_only: bool = False,
     resume: bool = False,
 ):
-    """Segment positions with cellpose 4 models (one GPU job per position).
+    """Segment positions with cellpose 4 or micro-sam 2 models (one GPU job per position).
 
     Parameters
     ----------
@@ -338,10 +413,12 @@ def segment(
         # own copy inside the job (_segment_czyx).
         stage_cellpose_weights()
     settings = yaml_to_model(config_filepath, SegmentationSettings)
-    if init_only:
-        # Fail on a bad model name before scaffolding anything.
-        for name in dict.fromkeys(m.pretrained_model for m in settings.models.values()):
-            check_cellpose_model_name(name)
+    # Fail on a bad model (unknown name, missing extra, bad eval_args) before scaffolding
+    # anything or submitting jobs. micro-sam models are checked on every path: their
+    # eval_args are only checked here, so a bad key would otherwise fail in every GPU job.
+    for model in settings.models.values():
+        if init_only or model.backend == "microsam":
+            _check_model(model)
     (T, C, Z, Y, X), models = _init_label_images(input_position_dirpaths, settings)
 
     # Calibrated on a real 2D run (2026_04_28 SEC61B, 67 x 1664 x 1193, 6 input channels,
@@ -365,8 +442,11 @@ def segment(
     if init_only:
         # --init runs once on the head node: populate the shared weights cache once, rather
         # than N workers racing for it. Workers must not (staging needs cellpose unimported).
-        for name in dict.fromkeys(m.pretrained_model for m in models):
-            warm_cellpose_weights(name)
+        warmed = set()
+        for model in models:
+            if (model.backend, model.pretrained_model) not in warmed:
+                _warm_model(model)
+                warmed.add((model.backend, model.pretrained_model))
         click.echo(
             f"Created labels/{{{', '.join(m.name for m in models)}}} in "
             f"{Path(input_position_dirpaths[0]).parents[2]} "
@@ -447,7 +527,7 @@ def segment_cli(
     init_only: bool = False,
     resume: bool = False,
 ):
-    """Segment positions with cellpose 4 models configured in a YAML file.
+    """Segment positions with cellpose 4 or micro-sam 2 models configured in a YAML file.
 
     Writes one label image per model into each -i position (labels/<model>), where
     `biahub track` reads them. Strategies accumulate as differently named models; a
