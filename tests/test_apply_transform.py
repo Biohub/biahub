@@ -294,6 +294,37 @@ def test_apply_transform_time_indices_subset_uses_each_timepoints_own_matrix(
     assert moved == pytest.approx(4, abs=0.6)
 
 
+@pytest.mark.parametrize("time_indices, expected", [("all", 1800.0), ([0, 2], 3600.0)])
+def test_apply_transform_keeps_the_time_between_timepoints(
+    structured_plate, tmp_path, time_indices, expected
+):
+    position, _ = structured_plate
+    with open_ome_zarr(position, mode="r+") as moving:
+        moving.set_scale("0", "T", 1800.0)
+    config = tmp_path / "transforms.yml"
+    model_to_yaml(
+        TransformSettings(
+            direction="forward",
+            moving_channels=["GFP"],
+            transforms=[TransformEntry(t=t, matrix=_translation(0, 0, 0)) for t in range(3)],
+        ),
+        config,
+    )
+    output = tmp_path / "out.zarr"
+
+    apply_transform(
+        [position],
+        config,
+        output,
+        time_indices=time_indices,
+        keep_overhang=True,
+        cluster="debug",
+    )
+
+    with open_ome_zarr(output / "A" / "1" / "0", mode="r") as out:
+        assert out.scale[0] == expected
+
+
 def test_apply_transform_cli_takes_moving_and_reference_position_paths(
     structured_plate, tmp_path
 ):

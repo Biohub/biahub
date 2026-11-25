@@ -36,6 +36,7 @@ from biahub.utils.config import settings_fingerprint, yaml_to_model
 from biahub.utils.ngff import (
     PROVENANCE_METADATA_KEYS,
     get_output_paths,
+    output_time_scale,
     resolve_ome_zarr_version,
 )
 
@@ -518,6 +519,7 @@ def _resolve_concatenate_inputs(
     all_shapes = []
     all_dtypes = []
     all_voxel_sizes = []
+    all_time_scales = []
     for path in all_data_paths:
         with open_ome_zarr(path) as dataset:
             if len(dataset.array_keys()) > 1:
@@ -528,6 +530,7 @@ def _resolve_concatenate_inputs(
             all_shapes.append(dataset.data.shape)
             all_dtypes.append(dataset.data.dtype)
             all_voxel_sizes.append(dataset.scale[-3:])
+            all_time_scales.append(float(dataset.scale[0]))
 
     # Only check for shape compatibility when using 'all' for slicing
     if (
@@ -543,6 +546,11 @@ def _resolve_concatenate_inputs(
     if not all(voxel_size == all_voxel_sizes[0] for voxel_size in all_voxel_sizes):
         click.echo(
             "Warning: Datasets have different voxel sizes. Taking the first voxel size."
+        )
+    if len(set(all_time_scales)) > 1:
+        click.echo(
+            f"Warning: Datasets have different T scales {sorted(set(all_time_scales))}. "
+            f"Taking the first, {all_time_scales[0]}."
         )
 
     T, C, Z, Y, X = all_shapes[0]
@@ -655,7 +663,9 @@ def _resolve_concatenate_inputs(
         "version": resolve_ome_zarr_version(
             all_data_paths[0], settings.output_ome_zarr_version
         ),
-        "scale": (1,) * 2 + tuple(output_voxel_size),
+        # The sources' time between time points, times the step of the selection.
+        "scale": (output_time_scale(all_time_scales[0], input_time_indices), 1)
+        + tuple(output_voxel_size),
         "channel_names": all_channel_names,
         "dtype": dtype,
     }

@@ -130,8 +130,10 @@ def example_plate(tmp_path):
     )
 
     # Lateral pixel size matches example_deskew_settings.yml (pixel_size_um:
-    # 0.116) so deskew doesn't warn about a config/metadata scale mismatch.
-    scale = (1, 1, 1.0, 0.116, 0.116)
+    # 0.116) so deskew doesn't warn about a config/metadata scale mismatch. The
+    # T scale is a real one (30 min, in seconds), not the default 1, so a step
+    # that drops it fails its test.
+    scale = (1800.0, 1, 1.0, 0.116, 0.116)
     for row, col, fov in position_list:
         position = plate_dataset.create_position(row, col, fov)
         position.create_image(
@@ -274,6 +276,8 @@ def fake_cellpose(monkeypatch, tmp_path):
     package.models = models
     monkeypatch.setitem(sys.modules, "cellpose", package)
     monkeypatch.setitem(sys.modules, "cellpose.models", models)
+    # The cpdino models need dinov3 (checked by name); stand in for it like cellpose.
+    monkeypatch.setitem(sys.modules, "dinov3", types.ModuleType("dinov3"))
     monkeypatch.setenv("CELLPOSE_LOCAL_MODELS_PATH", str(tmp_path / "no-weights"))
     RecordingModel.built, RecordingModel.evaluated = [], []
     from biahub import segment
