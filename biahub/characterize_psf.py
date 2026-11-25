@@ -15,8 +15,6 @@ import markdown
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn.functional as F  # noqa: N812
 
 from iohub.ngff import open_ome_zarr
 from numpy.typing import ArrayLike
@@ -614,6 +612,10 @@ def detect_peaks(
         3D coordinates of detected peaks (N, 3)
 
     """
+    # here, not at the top: torch takes 1.7 s to import, and only these functions need it
+    import torch
+    import torch.nn.functional as F  # noqa: N812
+
     zyx_shape = zyx_data.shape[-3:]
     zyx_image = torch.from_numpy(zyx_data.astype(np.float32)[None, None])
 
@@ -718,6 +720,8 @@ def _characterize_psf(
     input_dataset_path: str,
     input_dataset_name: str,
 ):
+    import torch  # here, not at the top: see detect_peaks
+
     settings_dict = settings.model_dump()
     patch_size = settings_dict.pop("patch_size")
     axis_labels = settings_dict.pop("axis_labels")

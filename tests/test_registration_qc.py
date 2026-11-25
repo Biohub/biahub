@@ -48,12 +48,15 @@ def test_select_flagged_returns_stats_used_for_the_decision():
     assert stats["median"] == pytest.approx(0.90)
 
 
-def test_select_flagged_caps_to_the_worst_n_and_reports_what_it_dropped():
+def test_a_pass_cap_keeps_the_worst_n_and_reports_what_it_dropped():
+    from biahub.registration.engine.fallback import cap_worst
+
     scores = np.full(20, 0.90)
     scores[[1, 5, 10]] = [0.05, 0.20, 0.01]
-    flagged, _ = select_flagged(scores, label="test pass", max_timepoints=2)
+    flagged, _ = select_flagged(scores, label="test pass")
+    capped = cap_worst(flagged, dict(enumerate(scores)), max_timepoints=2)
     # Worst two by score: t=10 (0.01), t=1 (0.05); t=5 (0.20) is dropped.
-    assert sorted(flagged) == [1, 10]
+    assert sorted(capped) == [1, 10]
 
 
 def test_select_flagged_returns_empty_when_nothing_flagged():
@@ -61,3 +64,93 @@ def test_select_flagged_returns_empty_when_nothing_flagged():
     flagged, stats = select_flagged(scores, label="test pass")
     assert flagged == []
     assert stats["median"] == pytest.approx(0.9)
+
+
+def read_run_settings(metric, **fallback):
+    from biahub.settings import EstimateTransformSettings
+
+    return EstimateTransformSettings(
+        moving={"channel": "GFP"},
+        reference={"frame": "cross", "channel": "Phase3D"},
+        method="phase_cross_corr" if metric != "overlap" else "bead_matching",
+        score={"metric": metric},
+        fallback=fallback,
+    )
+
+
+def test_the_absolute_thresholds_are_the_bead_overlaps_and_off_for_other_metrics():
+    # floor 0.80 / hard_fail 0.40 / consensus 0.75 are bead-overlap values: on a
+    # correlation (a correct cross-modal pair scores ~0.1) they flagged whole runs
+    overlap = read_run_settings("overlap").fallback_thresholds()
+    assert (overlap.floor, overlap.hard_fail, overlap.consensus) == (0.80, 0.40, 0.75)
+    correlation = read_run_settings("correlation").fallback_thresholds()
+    assert (correlation.floor, correlation.hard_fail, correlation.consensus) == (
+        None,
+        None,
+        None,
+    )
+    given = read_run_settings(
+        "correlation",
+        flag={"floor": 0.2, "hard_fail": 0.05},
+        repair={"consensus_threshold": 0.3},
+    ).fallback_thresholds()
+    assert (given.floor, given.hard_fail, given.consensus) == (0.2, 0.05, 0.3)
+
+
+def test_without_absolute_thresholds_only_the_runs_own_line_flags():
+    scores = np.full(20, 0.10)
+    scores[[4, 11]] = [0.02, 0.098]  # 0.02 far below the run, 0.098 within its spread
+    scores += np.linspace(0, 0.004, 20)
+    flags = flag_timepoints(scores, floor=None, hard_fail=None)
+    assert list(flags.loc[flags["flagged"], "t"]) == [4]
+
+
+def test_without_hard_fail_a_flagged_timepoint_is_unreliable_while_below_the_runs_line():
+    from biahub.core.transform import Transform
+    from biahub.estimate_transform import transform_entries
+    from biahub.registration.engine import SeriesResult
+
+    result = SeriesResult(scores={0: 0.10, 1: 0.02, 2: 0.09}, flagged=[1, 2], flag_line=0.08)
+    entries = transform_entries(result, [0, 1, 2], [Transform.identity(3)] * 3, hard_fail=None)
+    # t=1 still below the line after the fallbacks; t=2 was lifted above it
+    assert [e.status for e in entries] == ["accepted", "unreliable", "accepted"]
+
+
+def test_a_correlation_run_scoring_about_0_1_is_not_unreliable_as_a_whole():
+    # nf/ runs: pcc 96/125, focus 123/125, ANTs+Sobel 36/36 timepoints were unreliable
+    # because the bead thresholds judged their correlation scores
+    from biahub.core.transform import Transform
+    from biahub.estimate_transform import transform_entries
+    from biahub.registration.engine import SeriesResult
+    from biahub.registration.engine.fallback import flag_series
+
+    rng = np.random.default_rng(0)
+    scores = 0.1 + rng.permutation(np.linspace(-0.003, 0.003, 40))  # a run's spread
+    scores[17] = 0.01  # one timepoint that really failed
+    result = SeriesResult(scores=dict(enumerate(scores)))
+    thresholds = read_run_settings("correlation").fallback_thresholds()
+    flagged = flag_series(result, floor=thresholds.floor, hard_fail=thresholds.hard_fail)
+    entries = transform_entries(
+        result, list(range(40)), [Transform.identity(3)] * 40, thresholds.hard_fail
+    )
+    assert flagged == [17]
+    assert [t for t, e in enumerate(entries) if e.status == "unreliable"] == [17]
+
+
+def test_select_flagged_names_the_rule_that_flagged_a_single_timepoint(capsys):
+    # One beads timepoint at 0.354 overlap: the adaptive line equals its own score, so
+    # only the absolute hard_fail (0.40) can flag it. The log named the adaptive line
+    # only ("adaptive line 0.354, median 0.354"), which read as the line flagging itself.
+    flagged, stats = select_flagged(
+        np.array([0.354]), label="flag", floor=0.80, hard_fail=0.40
+    )
+    assert flagged == [0]
+    assert stats["reasons"] == {0: ["below_hard_fail"]}
+    out = capsys.readouterr().out
+    assert "below hard_fail 0.400: [0]" in out
+
+
+def test_a_single_timepoint_is_never_flagged_by_the_adaptive_line_alone():
+    flagged, stats = select_flagged(np.array([0.05]), label="flag", floor=None, hard_fail=None)
+    assert flagged == []
+    assert stats["reasons"] == {}

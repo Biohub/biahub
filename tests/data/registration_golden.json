@@ -1,0 +1,661 @@
+{
+ "blank": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/2": {
+    "filled_from": "initial",
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "unreliable"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {
+     "2": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
+    },
+    "filled_from": {
+     "2": "initial"
+    },
+    "flagged": [
+     2
+    ],
+    "repaired_from": {},
+    "repairs": {
+     "2": {
+      "accepted": false,
+      "candidate_failures": {
+       "consensus": "CandidateUnavailableError: Consensus initial transform: only 2 timepoints are unflagged and score >= 0.75; need at least 5.",
+       "initial": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)",
+       "t-1": "EstimationError: too few nodes to fit a transform: 0 moving, 17 reference (need >= 3 each)"
+      },
+      "candidate_scores": {},
+      "polish_rounds": 0,
+      "repair_transform_score": null,
+      "repaired_from": "unchanged",
+      "score": null
+     }
+    },
+    "scores": {
+     "0": 1.0,
+     "1": 1.0,
+     "2": null
+    }
+   }
+  }
+ },
+ "file": {
+  "entries": {
+   "A/1/0/None": {
+    "filled_from": null,
+    "initialized_from": "file+refined",
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "A/1/1/None": {
+    "filled_from": null,
+    "initialized_from": "file",
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      -3.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0,
+      3.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "A/1/2/None": {
+    "filled_from": null,
+    "initialized_from": "file+refined",
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      0.0,
+      -6.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0,
+      3.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "positions/A/1/0/estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0
+    }
+   },
+   "positions/A/1/1/estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0
+    }
+   },
+   "positions/A/1/2/estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0
+    }
+   }
+  }
+ },
+ "matrix": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      0.999970344,
+      0.005068464,
+      -0.005798361,
+      -2.03626863
+     ],
+     [
+      -0.004999678,
+      0.99991768,
+      0.01181675,
+      2.356669974
+     ],
+     [
+      0.005857776,
+      -0.011787409,
+      0.999913368,
+      -3.726049884
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      0.999970344,
+      0.005068464,
+      -0.005798361,
+      -2.03626863
+     ],
+     [
+      -0.004999678,
+      0.99991768,
+      0.01181675,
+      2.356669974
+     ],
+     [
+      0.005857776,
+      -0.011787409,
+      0.999913368,
+      -3.726049884
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.3076923076923077,
+     "1": 1.3076923076923077
+    }
+   }
+  }
+ },
+ "propagate": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      -0.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      0.0
+     ],
+     [
+      -0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/2": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      0.999992676,
+      -0.00097708,
+      -0.003700387,
+      -3.823698277
+     ],
+     [
+      0.000973016,
+      0.999998922,
+      -0.001099869,
+      6.023448804
+     ],
+     [
+      0.003701458,
+      0.001096261,
+      0.999992549,
+      -8.009541885
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0,
+     "1": 1.0,
+     "2": 1.0
+    }
+   }
+  }
+ },
+ "repair": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      -0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      1.0,
+      -0.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -0.0,
+      1.0,
+      -4.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/2": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      0.999997467,
+      -0.000503589,
+      -0.002193703,
+      -1.897610017
+     ],
+     [
+      0.000516236,
+      0.999983229,
+      0.005768523,
+      2.754657637
+     ],
+     [
+      0.002190761,
+      -0.005769641,
+      0.999980956,
+      -10.610642856
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [
+     2
+    ],
+    "repaired_from": {
+     "2": "t-1"
+    },
+    "repairs": {
+     "2": {
+      "accepted": true,
+      "candidate_failures": {
+       "consensus": "CandidateUnavailableError: Consensus initial transform: only 2 timepoints are unflagged and score >= 0.75; need at least 5.",
+       "initial": "EstimationError: too few matches to fit a transform: 2 from 14 x 17 nodes (need >= 3)"
+      },
+      "candidate_scores": {
+       "t-1": 1.2307692307692308
+      },
+      "polish_rounds": 0,
+      "repair_transform_score": 1.2307692307692308,
+      "repaired_from": "t-1",
+      "score": 1.2307692307692308
+     }
+    },
+    "scores": {
+     "0": 1.0,
+     "1": 1.0,
+     "2": 1.2307692307692308
+    }
+   }
+  }
+ },
+ "shapes": {
+  "entries": {
+   "None/0": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      0.0,
+      1.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -1.0,
+      -0.0,
+      55.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   },
+   "None/1": {
+    "filled_from": null,
+    "initialized_from": null,
+    "matrix": [
+     [
+      1.0,
+      0.0,
+      -0.0,
+      -2.0
+     ],
+     [
+      -0.0,
+      0.0,
+      1.0,
+      3.0
+     ],
+     [
+      -0.0,
+      -1.0,
+      -0.0,
+      55.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "status": "accepted"
+   }
+  },
+  "reports": {
+   "estimate_transform_report.json": {
+    "errors": {},
+    "filled_from": {},
+    "flagged": [],
+    "repaired_from": {},
+    "repairs": {},
+    "scores": {
+     "0": 1.0,
+     "1": 1.0
+    }
+   }
+  }
+ }
+}

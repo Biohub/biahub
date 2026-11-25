@@ -6,8 +6,9 @@ become a `TransformSettings` for `apply-transform`. The retired schemas are defi
 and nowhere else: the rest of biahub reads only the unified models, and its loaders point
 at this command when they meet a legacy file.
 
-`use_prev_t_transform` becomes `transform.seed_from: previous_timepoint` for beads, the
-only method that read it.
+`approx_transform` becomes `transform.initial` (`from: matrix`, inverse direction), or
+`from: shapes` with `compute_approx_transform`; `use_prev_t_transform` becomes
+`transform.initial.propagate` for beads, the only method that read it.
 
 What has no equivalent and is dropped, with a note printed at conversion time:
 `eval_transform_settings` (the engine flags and repairs outlying timepoints instead of
@@ -29,8 +30,12 @@ from pydantic import Field, NonNegativeInt, PositiveFloat, field_validator, mode
 
 from biahub.cli.parsing import config_filepaths, output_filepath
 from biahub.settings import (
+    LEGACY_BEAD_KEYS,
+    METHOD_TRANSFORM_TYPES,
+    RENAMED_METHODS,
     AffineTransformSettings,
     AntsRegistrationSettings,
+    ApplySettings,
     BeadsMatchSettings,
     ChannelSettings,
     EstimateTransformSettings,
@@ -79,6 +84,22 @@ class EvalTransformSettings(MyBaseModel):
     interpolation_type: Literal["linear", "cubic"] = "linear"
 
 
+class LegacyAntsRegistrationSettings(MyBaseModel):
+    """The retired ANTs block; its preparation fields become preprocess blocks."""
+
+    sobel_filter: bool = False
+    crop: bool = False
+    ref_mask_radius: float | None = None
+    clip: bool = False
+
+
+def _with_new_bead_keys(beads):
+    """Return a legacy `beads_match_settings` with today's names for its two detections."""
+    if not isinstance(beads, dict):
+        return beads
+    return {LEGACY_BEAD_KEYS.get(k, k): v for k, v in beads.items()}
+
+
 class EstimateRegistrationSettings(MyBaseModel):
     target_channel_name: str
     source_channel_name: str
@@ -90,10 +111,15 @@ class EstimateRegistrationSettings(MyBaseModel):
         default_factory=AffineTransformSettings
     )
     eval_transform_settings: EvalTransformSettings | None = None
-    ants_registration_settings: AntsRegistrationSettings | None = None
+    ants_registration_settings: LegacyAntsRegistrationSettings | None = None
     manual_registration_settings: ManualRegistrationSettings | None = None
     time_indices: NonNegativeInt | list[NonNegativeInt] | Literal["all"] = "all"
     verbose: bool = False
+
+    @field_validator("beads_match_settings", mode="before")
+    @classmethod
+    def rename_bead_keys(cls, beads):
+        return _with_new_bead_keys(beads)
 
     @model_validator(mode="after")
     def set_defaults_and_validate(self) -> EstimateRegistrationSettings:
@@ -102,7 +128,7 @@ class EstimateRegistrationSettings(MyBaseModel):
         elif self.estimation_method == "beads" and self.beads_match_settings is None:
             self.beads_match_settings = BeadsMatchSettings()
         elif self.estimation_method == "ants" and self.ants_registration_settings is None:
-            self.ants_registration_settings = AntsRegistrationSettings()
+            self.ants_registration_settings = LegacyAntsRegistrationSettings()
         elif (
             self.estimation_method == "phase-cross-corr"
             and self.phase_cross_corr_settings is None
@@ -127,6 +153,11 @@ class EstimateStabilizationSettings(MyBaseModel):
     )
     eval_transform_settings: EvalTransformSettings | None = None
     verbose: bool = False
+
+    @field_validator("beads_match_settings", mode="before")
+    @classmethod
+    def rename_bead_keys(cls, beads):
+        return _with_new_bead_keys(beads)
 
     @model_validator(mode="after")
     def set_defaults_and_validate(self) -> EstimateStabilizationSettings:
@@ -204,6 +235,53 @@ LegacySettings = (
 # --------------------------------------------------------------------------------------
 
 
+def _ants_blocks(legacy, notes: list[str]) -> list[dict]:
+    """Return the retired ANTs preparation fields as preprocess blocks."""
+    if legacy.estimation_method != "ants":
+        return []
+    ants = legacy.ants_registration_settings
+    blocks = []
+    if ants.clip:
+        blocks.append({"clip_percentiles": {}})
+        notes.append(
+            "ants clip: its fixed limits (phase 0-0.5, fluorescence 110 to the 99th "
+            "percentile) became clip_percentiles, each volume clipped to its own 1st-99.5th "
+            "percentiles"
+        )
+    if ants.sobel_filter:
+        blocks.append({"sobel": {}})
+    # the old pipeline used ref_mask_radius only to choose its crop
+    if ants.ref_mask_radius is not None and ants.crop:
+        blocks.append(
+            {"mask_circle": {"volumes": ["reference"], "radius": ants.ref_mask_radius}}
+        )
+    elif ants.ref_mask_radius is not None:
+        notes.append("ants ref_mask_radius dropped: without crop it was never applied")
+    if ants.crop:
+        notes.append(
+            "ants crop dropped: ANTs no longer warps the moving volume first, so there is no "
+            "empty border to crop; to use only part of the field, add a mask_box block"
+        )
+    return blocks
+
+
+# The legacy section each unified block came from, for the notes.
+_LEGACY_SECTION = {
+    "bead_matching": "beads_match_settings",
+    "phase_cross_corr": "phase_cross_corr_settings",
+    "manual": "manual_registration_settings",
+    "focus_finding": "focus_finding_settings",
+}
+
+
+def _only_the_methods_blocks(method: str, blocks: dict, notes: list[str]) -> dict:
+    """Keep the block `method` reads; note each other one given (a legacy file kept them all)."""
+    for name, block in blocks.items():
+        if block is not None and name != method:
+            notes.append(f"{_LEGACY_SECTION[name]} dropped: read only by {name}, not {method}")
+    return {name: block for name, block in blocks.items() if name == method}
+
+
 def estimate_settings_from_legacy(
     legacy: EstimateRegistrationSettings | EstimateStabilizationSettings,
 ) -> tuple[EstimateTransformSettings, list[str]]:
@@ -218,19 +296,34 @@ def estimate_settings_from_legacy(
         else legacy.stabilization_method
     )
     propagate = ats.use_prev_t_transform and legacy_method == "beads"
-    seed_from = "previous_timepoint" if propagate else "input"
     if legacy.eval_transform_settings is not None:
         notes.append(
             "eval_transform_settings dropped: the engine flags and repairs outlying "
             "timepoints (fallback) instead of smoothing the series afterwards"
         )
-    fit = TransformFitSettings(
-        type=ats.transform_type,
-        seed=ats.approx_transform,
-        seed_direction="inverse",
-        seed_from_shapes=ats.compute_approx_transform,
-        seed_from=seed_from,
-    )
+    initial: dict = {}
+    if ats.compute_approx_transform:
+        # the legacy pipeline built it from the store shapes, in the mantis orientation
+        initial = {"from": "shapes", "rotate90": -1, "fliplr": False}
+        if not np.allclose(np.asarray(ats.approx_transform, dtype=float), np.eye(4)):
+            notes.append(
+                "approx_transform ignored: compute_approx_transform replaced it (as before), "
+                "so the run starts from the shapes method's answer"
+            )
+    elif not np.allclose(np.asarray(ats.approx_transform, dtype=float), np.eye(4)):
+        initial = {"from": "matrix", "matrix": ats.approx_transform, "direction": "inverse"}
+    if propagate:
+        initial["propagate"] = True
+    method = RENAMED_METHODS.get(legacy_method, legacy_method)
+    transform_type = ats.transform_type
+    fits = METHOD_TRANSFORM_TYPES.get(method)
+    if fits is not None and transform_type not in fits:
+        notes.append(
+            f"transform_type {transform_type!r} -> {fits[0]!r}: {method} fits "
+            f"{' or '.join(fits)} only (the legacy pipeline ignored the setting)"
+        )
+        transform_type = fits[0]
+    fit = TransformFitSettings(type=transform_type, initial=initial or None)
     if isinstance(legacy, EstimateRegistrationSettings):
         # estimate-registration always read the source channel from the source store and
         # the target channel from the target store, so this is a cross estimate even when
@@ -242,19 +335,32 @@ def estimate_settings_from_legacy(
                 "reference.frame to 'first' or 'previous' and drop reference.channel"
             )
         manual = legacy.manual_registration_settings
+        blocks = _only_the_methods_blocks(
+            method,
+            {
+                "bead_matching": legacy.beads_match_settings,
+                "phase_cross_corr": _unified_pcc(legacy.phase_cross_corr_settings, notes),
+                "manual": None
+                if manual is None
+                else ManualSettings(
+                    affine_90degree_rotation=manual.affine_90degree_rotation,
+                    affine_fliplr=manual.affine_fliplr,
+                ),
+            },
+            notes,
+        )
         settings = EstimateTransformSettings(
             moving=ChannelSettings(channel=legacy.source_channel_name),
             reference=ReferenceSettings(frame="cross", channel=legacy.target_channel_name),
-            method=legacy.estimation_method,
-            beads=legacy.beads_match_settings,
-            ants=legacy.ants_registration_settings,
-            phase_cross_corr=_unified_pcc(legacy.phase_cross_corr_settings, notes),
-            manual=None
-            if manual is None
-            else ManualSettings(
-                affine_90degree_rotation=manual.affine_90degree_rotation,
-                affine_fliplr=manual.affine_fliplr,
-            ),
+            method=method,
+            **blocks,
+            ants=AntsRegistrationSettings() if legacy.estimation_method == "ants" else None,
+            preprocess=_ants_blocks(legacy, notes),
+            # the legacy ANTs score compared Sobel edges when sobel_filter was on
+            score={"preprocess": [{"sobel": {}}]}
+            if legacy.estimation_method == "ants"
+            and legacy.ants_registration_settings.sobel_filter
+            else {},
             transform=fit,
             # legacy manual registered manual_registration_settings.time_index
             time_indices=manual.time_index
@@ -264,10 +370,9 @@ def estimate_settings_from_legacy(
         )
         return settings, notes
 
-    method = legacy.stabilization_method
     focus_finding = None
     reference = ats.t_reference
-    if method == "focus-finding":
+    if legacy_method == "focus-finding":
         stack_reg = legacy.stack_reg_settings
         focus = legacy.focus_finding_settings or (
             stack_reg.focus_finding_settings if stack_reg is not None else None
@@ -303,15 +408,21 @@ def estimate_settings_from_legacy(
                 "average_across_wells / skip_beads_fov dropped: per-plate orchestration, "
                 "not part of the estimate (leave the beads FOV out of -m)"
             )
-    elif method == "phase-cross-corr" and legacy.phase_cross_corr_settings is not None:
+    elif legacy_method == "phase-cross-corr" and legacy.phase_cross_corr_settings is not None:
         reference = legacy.phase_cross_corr_settings.t_reference
     settings = EstimateTransformSettings(
         moving=ChannelSettings(channel=legacy.stabilization_estimation_channel),
         reference=ReferenceSettings(frame=reference),
         method=method,
-        beads=legacy.beads_match_settings,
-        phase_cross_corr=_unified_pcc(legacy.phase_cross_corr_settings, notes),
-        focus_finding=focus_finding,
+        **_only_the_methods_blocks(
+            method,
+            {
+                "bead_matching": legacy.beads_match_settings,
+                "phase_cross_corr": _unified_pcc(legacy.phase_cross_corr_settings, notes),
+                "focus_finding": focus_finding,
+            },
+            notes,
+        ),
         transform=fit,
         verbose=legacy.verbose,
     )
@@ -320,31 +431,19 @@ def estimate_settings_from_legacy(
 
 def transform_settings_from_legacy(
     legacy: RegistrationSettings | StabilizationSettings,
+    reference_channel: str | None = None,
 ) -> tuple[TransformSettings, list[str]]:
     """Convert a legacy register / stabilize config to a inverse-direction transform series.
 
-    How the series is applied (timepoints, canvas, interpolation, output version) is no
+    How the series is applied (timepoints, crop, interpolation, output version) is no
     longer stored with the transforms: those are `apply-transform` options, noted here.
     """
     notes = []
     if legacy.time_indices != "all":
         notes.append(
-            f"time_indices {legacy.time_indices!r} dropped: pass --time-indices to apply-transform"
-        )
-    if legacy.output_ome_zarr_version is not None:
-        notes.append(
-            "output_ome_zarr_version dropped: pass --ome-zarr-version to apply-transform"
+            f"time_indices {legacy.time_indices!r} dropped: pass --timepoints to apply-transform"
         )
     if isinstance(legacy, RegistrationSettings):
-        if not legacy.keep_overhang:
-            notes.append(
-                "register cropped to the overlap: pass --crop-to-overlap to apply-transform "
-                "(it keeps the full grid by default)"
-            )
-        if legacy.interpolation != "linear":
-            notes.append(
-                f"interpolation {legacy.interpolation!r} dropped: pass --interpolation to apply-transform"
-            )
         settings = TransformSettings(
             direction="inverse",
             moving_channels=legacy.source_channel_names,
@@ -353,14 +452,27 @@ def transform_settings_from_legacy(
         )
         return settings, notes
     # stabilize transformed every listed channel onto the estimation channel's own grid,
-    # so the estimation channel is one of the moving channels and there is no reference.
+    # so the estimation channel is one of the moving channels and there is no reference --
+    # unless the file is a registration written in this schema (`reference_channel`).
+    channels = sorted(
+        {*legacy.stabilization_channels, legacy.stabilization_estimation_channel}
+    )
+    if reference_channel is not None:
+        if reference_channel not in channels:
+            raise ValueError(
+                f"reference channel {reference_channel!r} is not one of the file's channels "
+                f"{channels}"
+            )
+        channels.remove(reference_channel)
+        notes.append(
+            f"read as a registration onto {reference_channel!r} (the stabilize schema holds "
+            "no reference channel)"
+        )
     settings = TransformSettings(
         direction="inverse",
-        moving_channels=sorted(
-            {*legacy.stabilization_channels, legacy.stabilization_estimation_channel}
-        ),
-        reference_channel=None,
-        method=legacy.stabilization_method,
+        moving_channels=channels,
+        reference_channel=reference_channel,
+        method=RENAMED_METHODS.get(legacy.stabilization_method, legacy.stabilization_method),
         voxel_size=list(legacy.output_voxel_size),
         transforms=[
             TransformEntry(t=t, matrix=matrix)
@@ -368,6 +480,24 @@ def transform_settings_from_legacy(
         ],
     )
     return settings, notes
+
+
+def apply_settings_from_legacy(
+    legacy: RegistrationSettings | StabilizationSettings,
+) -> ApplySettings:
+    """Return how a legacy register / stabilize config applied its transforms.
+
+    The crop, interpolation and output version are no longer stored with the transforms:
+    they are apply-transform's settings (`ApplySettings`, `-a`).
+    """
+    fields = {}
+    if legacy.output_ome_zarr_version is not None:
+        fields["ome_zarr_version"] = legacy.output_ome_zarr_version
+    if isinstance(legacy, RegistrationSettings):
+        # register cropped to the overlap unless keep_overhang; apply keeps the full grid
+        fields["crop_to_overlap"] = not legacy.keep_overhang
+        fields["interpolation"] = legacy.interpolation
+    return ApplySettings(**fields)
 
 
 def load_legacy_settings(path: Path) -> LegacySettings:
@@ -402,14 +532,26 @@ def _unified_pcc(pcc, notes: list[str]):
 
 
 def convert_settings(
-    legacy: LegacySettings,
+    legacy: LegacySettings, reference_channel: str | None = None
 ) -> tuple[EstimateTransformSettings | TransformSettings, list[str]]:
+    """Convert one legacy config.
+
+    `reference_channel` reads a stabilize-schema file as a registration onto that channel
+    (the schema cannot say which it is).
+    """
+    if reference_channel is not None and not isinstance(legacy, StabilizationSettings):
+        raise ValueError(
+            "--reference-channel is for a stabilize-schema file (a registration written as "
+            f"one); this is a {type(legacy).__name__}, which names its own"
+        )
     if isinstance(legacy, (EstimateRegistrationSettings, EstimateStabilizationSettings)):
         return estimate_settings_from_legacy(legacy)
-    return transform_settings_from_legacy(legacy)
+    return transform_settings_from_legacy(legacy, reference_channel)
 
 
-def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, list[str]]:
+def per_position_stabilization(
+    paths: list[Path], reference_channel: str | None = None
+) -> tuple[TransformSettings, list[str]]:
     """Fold legacy per-FOV stabilize configs (`<row>_<col>_<fov>.yml`) into one file.
 
     Legacy estimate-stabilization wrote one stabilize config per position; the unified
@@ -428,7 +570,7 @@ def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, li
             raise click.UsageError(
                 f"{path}: per-position stabilize configs are named <row>_<col>_<fov>.yml"
             )
-        settings, file_notes = transform_settings_from_legacy(legacy)
+        settings, file_notes = transform_settings_from_legacy(legacy, reference_channel)
         if first is None:
             first = settings
         elif (settings.moving_channels, settings.voxel_size) != (
@@ -444,17 +586,35 @@ def per_position_stabilization(paths: list[Path]) -> tuple[TransformSettings, li
     return TransformSettings.model_validate(merged.model_dump()), notes
 
 
-def convert_settings_file(config_filepaths: list[Path], output_filepath: Path) -> None:
+def convert_settings_file(
+    config_filepaths: list[Path], output_filepath: Path, reference_channel: str | None = None
+) -> None:
     config_filepaths = [Path(p) for p in config_filepaths]
     if len(config_filepaths) == 1:
         legacy = load_legacy_settings(config_filepaths[0])
-        settings, notes = convert_settings(legacy)
+        try:
+            settings, notes = convert_settings(legacy, reference_channel)
+        except ValueError as error:
+            raise click.UsageError(str(error)) from None
         source = f"{config_filepaths[0]} ({type(legacy).__name__})"
     else:
-        settings, notes = per_position_stabilization(config_filepaths)
+        settings, notes = per_position_stabilization(config_filepaths, reference_channel)
         source = f"{len(config_filepaths)} per-position stabilize configs"
     Path(output_filepath).parent.mkdir(parents=True, exist_ok=True)
     model_to_yaml(settings, output_filepath)
+    if len(config_filepaths) == 1 and isinstance(
+        legacy, (RegistrationSettings, StabilizationSettings)
+    ):
+        apply = apply_settings_from_legacy(legacy)
+        if apply != ApplySettings():  # how the old config applied it, beside the file
+            apply_path = Path(output_filepath).with_name(
+                Path(output_filepath).stem + "_apply.yml"
+            )
+            model_to_yaml(apply, apply_path)
+            notes.append(
+                f"how it was applied (crop, interpolation, version) is in {apply_path}: "
+                f"pass -a {apply_path} to apply-transform"
+            )
     command = (
         "estimate-transform"
         if isinstance(settings, EstimateTransformSettings)
@@ -470,7 +630,15 @@ def convert_settings_file(config_filepaths: list[Path], output_filepath: Path) -
 @click.command("convert-settings")
 @config_filepaths()
 @output_filepath()
-def convert_settings_cli(config_filepaths: list[Path], output_filepath: Path) -> None:
+@click.option(
+    "--reference-channel",
+    default=None,
+    help="Read a stabilize-schema file as a registration onto this channel (e.g. Phase3D): "
+    "the schema cannot say which it is. Default: a stabilization.",
+)
+def convert_settings_cli(
+    config_filepaths: list[Path], output_filepath: Path, reference_channel: str | None
+) -> None:
     """Convert a retired registration / stabilization config to the unified one.
 
     estimate-registration / estimate-stabilization -> estimate-transform;
@@ -481,5 +649,9 @@ def convert_settings_cli(config_filepaths: list[Path], output_filepath: Path) ->
     >> biahub convert-settings -c estimate-registration.yml -o estimate-transform.yml
 
     >> biahub convert-settings -c "xyz_stabilization_settings/*.yml" -o transforms.yml
+
+    A registration written as a stabilize config (e.g. the 2025 mantis 1-register files):
+
+    >> biahub convert-settings -c registration_settings.yml -o transforms.yml --reference-channel Phase3D
     """
-    convert_settings_file(config_filepaths, Path(output_filepath))
+    convert_settings_file(config_filepaths, Path(output_filepath), reference_channel)

@@ -4,18 +4,48 @@
 
 | Project family | Moving (light-sheet, deskewed) | Reference (phase) | Beads well |
 |---|---|---|---|
-| tlg2 mantis (`/hpc/projects/tlg2_mantis/<DATASET>`) | `1-preprocess/light-sheet/raw/0-deskew/<DATASET>.zarr` | `1-preprocess/label-free/0-reconstruct/<DATASET>.zarr` | `0/8/000` or `0/8/000000` |
+| tlg2 mantis (`/hpc/projects/tlg2_mantis/<DATASET>`) | `1-preprocess/light-sheet/raw/0-deskew/<DATASET>.zarr` | `1-preprocess/label-free/0-reconstruct/<DATASET>.zarr`; often cleaned: then `2-assemble/<DATASET>.zarr` (Phase3D and the virtual stains `nuclei_prediction` / `membrane_prediction`, same grid) | `0/8/000` or `0/8/000000` |
 | A549 organelle dynamics, mantis v1 (`/hpc/projects/intracellular_dashboard/organelle_dynamics/<DATASET>`) | `1-preprocess/light-sheet/raw/0-deskew/<DATASET>.zarr` | `1-preprocess/label-free/0-reconstruct/<DATASET>.zarr` | `C/1/000000` |
 | mantis v2 (`0-flatfield` ... `4-assemble`) | `1-deskew/<DATASET>_1.zarr` (BF + fluorescence in one store) | `2-reconstruct/<DATASET>_1.zarr` | none: the arms are aligned on acquisition |
+| mantis02 dynatrack (`/hpc/projects/tlg2_mantis02/<DATASET>`; also recovered copies of tlg2_mantis stores) | `1-deskew/`, or the assembled `4-assemble/<DATASET>.zarr` (every channel); stabilization only | the same store (its own frames) | none |
+| DragonFly spinning disk, organelle_box (`/hpc/projects/intracellular_dashboard/organelle_box/<DATASET>`) | `0-convert/<plate>.zarr` (2026 projects: `0-convert/converted.zarr`; some sort the plates into `0-convert/<group>/` or link them into `1-link/<group>/<group>.zarr`), a `*-Prime_*` channel (fluorescence camera; the store also holds `*-Zyla_BF`) | `1-reconstruct*/<plate>_Phase.zarr`, `2-reconstruct/<group>.zarr` or (2026) `1-reconstruct/phase.zarr` (`Phase3D`); virtual stains in `2-VS/VS_<plate>.zarr` or (2026) `3-VS/*.zarr` (`nuclei_prediction`), all from the Zyla BF | some projects have `0-convert/beads.zarr` or `0-convert/beads/beads.zarr` (one position: the BF and the fluorescence, no phase -- see "DragonFly beads"); most have none: register on the cells (SKILL.md step 3b) |
+
+**DragonFly.** The two cameras differ in magnification by a few percent in y/x, although both
+stores claim the same pixel size, and the ratio changes between setups: measure it for each
+dataset rather than reuse one. So the transform is a camera-to-camera geometry and needs an
+initial transform that carries that scale (measured, or an earlier registration of the same setup:
+`references/methods.md`, "ANTs"). Expect a z offset of several slices between the cameras,
+which can differ between wells by a couple of slices -- and between fluorescence channels:
+beads in one colour register that colour only, so check other channels' z (e.g. their z
+profiles against phase in a few cells). Often T=1 (nothing to repair: repair is off by default). Applying:
+pass `--channels` with the fluorescence channels only -- the moving store also holds the BF
+channel, which is already on the reference camera.
+
+The layout differs between DragonFly projects (stage folders are renumbered, e.g. `3-register`
+in 2025 projects and `2-register` in 2026 ones): list the project folder and read the
+channel names of each store (`iohub info`) rather than assume this table. Channel names are
+not always `*-Prime_*` / `*-Zyla_BF`: some plates were acquired with a MultiCam setup
+(`4-MultiCam_GFP_BF`, `Channel1`, `4-MultiCam_GFP_Cy5-Prime`), so check which channel is the
+fluorescence before choosing. A project's previous registration is in its register folder:
+`*registration.yml` next to the `register.sh` that applied it, or `optimize/optimized.yml` /
+`optimized.yml` (from `optimize/beads_optimize.sh` when it was estimated on the beads).
 
 Previous registrations live in `1-preprocess/light-sheet/raw/1-register/` (the
 `estimate-registration*.sh` script names the beads well; the
-`estimate-registration-beads.yml` holds the seed and detection settings). Configs from
+`estimate-registration-beads.yml` holds the initial transform and detection settings). Configs from
 before 2026-03 use retired field names; `convert-settings` handles the current legacy
 schema, older ones need the renames first (`beads_match_settings.t_reference` ->
 `affine_transform_settings.t_reference`, `filter_*_distance_threshold` ->
 `filter_matches_settings.*_distance_quantile`, `filter_angle_threshold` ->
 `filter_matches_settings.angle_threshold`).
+
+**DragonFly beads.** `0-convert/beads.zarr` holds `1-Zyla_BF` and `2-Prime_GFP`: reconstruct
+its phase first, with the project's `1-reconstruct/phase_config.yaml`, into your own folder.
+Its z step is often finer than the plate's (0.2 µm against 0.4 µm): the engine's matrices are
+in voxels, so make the beads stack match the plate first (keep every other slice: a full
+101-slice stack also fails `reconstruct`, whose transfer function is a single chunk over
+blosc's 2 GB limit). The beads give the camera geometry in yx and z; one transform serves
+every `*-Prime_*` channel (one camera).
 
 ## Regenerating a cleaned beads FOV
 
